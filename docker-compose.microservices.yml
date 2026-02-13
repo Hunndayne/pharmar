@@ -1,0 +1,131 @@
+﻿services:
+  auth-db:
+    image: postgres:16-alpine
+    container_name: pharmar-auth-db
+    environment:
+      POSTGRES_DB: pharmar_auth
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - auth_db_data:/var/lib/postgresql/data
+      - ./Users/Database/Auth.sql:/docker-entrypoint-initdb.d/01-auth.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pharmar_auth"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: pharmar-redis
+    ports:
+      - "6379:6379"
+
+  users-service:
+    build:
+      context: ./Users
+      dockerfile: dockerfile
+    container_name: pharmar-users-service
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@auth-db:5432/pharmar_auth
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+    ports:
+      - "8001:8001"
+    depends_on:
+      auth-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  inventory-service:
+    build:
+      context: ./Inventory Service
+      dockerfile: dockerfile
+    container_name: pharmar-inventory-service
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+    ports:
+      - "8002:8002"
+    depends_on:
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  sale-service:
+    build:
+      context: ./Sale
+      dockerfile: dockerfile
+    container_name: pharmar-sale-service
+    environment:
+      INVENTORY_SERVICE_URL: http://inventory-service:8002
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+    ports:
+      - "8003:8003"
+    depends_on:
+      inventory-service:
+        condition: service_started
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  report-service:
+    build:
+      context: ./Report
+      dockerfile: dockerfile
+    container_name: pharmar-report-service
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8004:8004"
+    depends_on:
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./FrontEnd
+      dockerfile: dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+    container_name: pharmar-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      api-gateway:
+        condition: service_started
+    restart: unless-stopped
+
+  api-gateway:
+    build:
+      context: ./API Gateway
+      dockerfile: dockerfile
+    container_name: pharmar-api-gateway
+    environment:
+      AUTH_SERVICE_URL: http://users-service:8001
+      SALE_SERVICE_URL: http://sale-service:8003
+      INVENTORY_SERVICE_URL: http://inventory-service:8002
+      REPORT_SERVICE_URL: http://report-service:8004
+    ports:
+      - "8000:8000"
+    depends_on:
+      users-service:
+        condition: service_started
+      sale-service:
+        condition: service_started
+      inventory-service:
+        condition: service_started
+      report-service:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  auth_db_data:

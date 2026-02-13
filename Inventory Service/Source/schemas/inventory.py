@@ -1,0 +1,71 @@
+from datetime import date
+
+from pydantic import BaseModel, Field, model_validator
+
+from ..domain import BatchStatus
+
+
+class ReserveItemRequest(BaseModel):
+    sku: str = Field(min_length=1, max_length=64)
+    quantity: int = Field(gt=0)
+
+
+class ReserveRequest(BaseModel):
+    sale_id: str = Field(min_length=1, max_length=64)
+    items: list[ReserveItemRequest] = Field(min_length=1)
+
+
+class ImportReceiptLineRequest(BaseModel):
+    drug_id: str | None = Field(default=None, max_length=64)
+    drug_code: str | None = Field(default=None, max_length=64)
+    batch_code: str | None = Field(default=None, max_length=64)
+    lot_number: str = Field(min_length=1, max_length=64)
+    quantity: int = Field(gt=0)
+    mfg_date: date
+    exp_date: date
+    import_price: float = Field(ge=0)
+    promo_note: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def validate_line(self):
+        if not self.drug_id and not self.drug_code:
+            raise ValueError("Either drug_id or drug_code is required")
+        if self.exp_date <= self.mfg_date:
+            raise ValueError("exp_date must be later than mfg_date")
+        return self
+
+
+class ImportReceiptCreateRequest(BaseModel):
+    receipt_date: date
+    supplier_id: str = Field(min_length=1, max_length=64)
+    note: str | None = Field(default=None, max_length=500)
+    lines: list[ImportReceiptLineRequest] = Field(min_length=1)
+
+
+class ImportReceiptUpdateRequest(BaseModel):
+    receipt_date: date
+    supplier_id: str = Field(min_length=1, max_length=64)
+    note: str | None = Field(default=None, max_length=500)
+    lines: list[ImportReceiptLineRequest] = Field(min_length=1)
+
+
+class BatchStatusUpdateRequest(BaseModel):
+    status: BatchStatus
+
+
+class StockAdjustmentRequest(BaseModel):
+    batch_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=255)
+    note: str | None = Field(default=None, max_length=500)
+    quantity_delta: int | None = None
+    new_quantity: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_qty(self):
+        has_delta = self.quantity_delta is not None
+        has_new = self.new_quantity is not None
+        if has_delta == has_new:
+            raise ValueError("Provide exactly one of quantity_delta or new_quantity")
+        if self.quantity_delta == 0:
+            raise ValueError("quantity_delta cannot be 0")
+        return self
