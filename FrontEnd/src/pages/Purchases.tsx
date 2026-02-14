@@ -5,12 +5,16 @@ import {
   inventoryApi,
   type InventoryCreateReceiptPayload,
   type InventoryMetaDrug,
+  type InventoryPaymentMethod,
+  type InventoryPaymentStatus,
   type InventoryMetaSupplier,
   type InventoryReceipt,
   type InventoryReceiptLine,
+  type InventoryReceiptLineUnitPrice,
 } from '../api/inventoryService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
+import { isOwnerOrAdmin } from '../auth/permissions'
 
 type Unit = {
   id: string
@@ -40,7 +44,7 @@ type Supplier = {
 
 type PaymentStatus = 'Đã thanh toán' | 'Còn nợ'
 type PaymentMethod = 'Ngân hàng' | 'Ví điện tử Momo/ZaloPay' | 'Thanh toán thẻ'
-type ShippingCarrier = 'GHN' | 'J&T'
+type ShippingCarrier = string
 type PromoType = 'none' | 'buy_x_get_y' | 'discount_percent'
 
 type LineRetailPrice = {
@@ -216,111 +220,7 @@ const buildLineRetailPrices = (
   }))
 }
 
-const initialOrders: PurchaseOrder[] = [
-  {
-    id: 'po-1',
-    code: 'PN20260205001',
-    date: '2026-02-05',
-    supplierId: 's1',
-    shippingCarrier: 'GHN',
-    note: 'Đã đối chiếu công nợ.',
-    paymentStatus: 'Đã thanh toán',
-    paymentMethod: 'Ngân hàng',
-    createdAt: Date.now() - 1000 * 60 * 60 * 3,
-    lines: [
-      {
-        id: 'l1',
-        batchCode: 'LO20260205001',
-        drugId: 'd1',
-        lotNumber: 'L0205A',
-        quantity: '240',
-        mfgDate: '2025-11-15',
-        expDate: '2027-11-15',
-        price: '245000',
-        promoType: 'buy_x_get_y',
-        promoBuyQty: '10',
-        promoGetQty: '1',
-        promoDiscountPercent: '',
-        barcode: '8936012345003',
-        unitRetailPrices: buildLineRetailPrices('d1'),
-      },
-      {
-        id: 'l2',
-        batchCode: 'LO20260205002',
-        drugId: 'd2',
-        lotNumber: 'L0205C',
-        quantity: '90',
-        mfgDate: '2025-12-10',
-        expDate: '2027-12-10',
-        price: '178000',
-        promoType: 'discount_percent',
-        promoBuyQty: '',
-        promoGetQty: '',
-        promoDiscountPercent: '20',
-        barcode: '8936017777002',
-        unitRetailPrices: buildLineRetailPrices('d2'),
-      },
-    ],
-  },
-  {
-    id: 'po-2',
-    code: 'PN20260204002',
-    date: '2026-02-04',
-    supplierId: 's2',
-    shippingCarrier: 'GHN',
-    note: 'Chờ nhận đủ chứng từ.',
-    paymentStatus: 'Còn nợ',
-    paymentMethod: 'Ví điện tử Momo/ZaloPay',
-    createdAt: Date.now() - 1000 * 60 * 60 * 8,
-    lines: [
-      {
-        id: 'l3',
-        batchCode: 'LO20260204001',
-        drugId: 'd3',
-        lotNumber: 'A02-0402',
-        quantity: '500',
-        mfgDate: '2025-09-01',
-        expDate: '2027-09-01',
-        price: '39000',
-        promoType: 'none',
-        promoBuyQty: '',
-        promoGetQty: '',
-        promoDiscountPercent: '',
-        barcode: '8936011111002',
-        unitRetailPrices: buildLineRetailPrices('d3'),
-      },
-    ],
-  },
-  {
-    id: 'po-3',
-    code: 'PN20260203001',
-    date: '2026-02-03',
-    supplierId: 's3',
-    shippingCarrier: 'J&T',
-    note: '',
-    paymentStatus: 'Còn nợ',
-    paymentMethod: 'Thanh toán thẻ',
-    createdAt: Date.now() - 1000 * 60 * 60 * 18,
-    lines: [
-      {
-        id: 'l4',
-        batchCode: 'LO20260203001',
-        drugId: 'd4',
-        lotNumber: 'ORE-0203',
-        quantity: '200',
-        mfgDate: '2025-10-01',
-        expDate: '2027-10-01',
-        price: '5200',
-        promoType: 'buy_x_get_y',
-        promoBuyQty: '20',
-        promoGetQty: '2',
-        promoDiscountPercent: '',
-        barcode: '8936013333001',
-        unitRetailPrices: buildLineRetailPrices('d4'),
-      },
-    ],
-  },
-]
+const initialOrders: PurchaseOrder[] = []
 
 const paymentStatusStyles: Record<PaymentStatus, string> = {
   'Đã thanh toán': 'bg-brand-500/15 text-brand-600 border border-brand-500/30',
@@ -357,6 +257,27 @@ const escapeHtml = (value: string) =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
+
+const paymentStatusToApi = (value: PaymentStatus): InventoryPaymentStatus =>
+  value === 'Đã thanh toán' ? 'paid' : 'debt'
+
+const paymentStatusFromApi = (
+  value: InventoryPaymentStatus | undefined,
+): PaymentStatus => (value === 'debt' ? 'Còn nợ' : 'Đã thanh toán')
+
+const paymentMethodToApi = (value: PaymentMethod): InventoryPaymentMethod => {
+  if (value === 'Ví điện tử Momo/ZaloPay') return 'ewallet'
+  if (value === 'Thanh toán thẻ') return 'card'
+  return 'bank'
+}
+
+const paymentMethodFromApi = (
+  value: InventoryPaymentMethod | undefined,
+): PaymentMethod => {
+  if (value === 'ewallet') return 'Ví điện tử Momo/ZaloPay'
+  if (value === 'card') return 'Thanh toán thẻ'
+  return 'Ngân hàng'
+}
 
 const createOrderCode = (orders: PurchaseOrder[], date: string) => {
   const key = toDateKey(date)
@@ -587,15 +508,42 @@ const normalizeReceiptLineExtra = (
     : fallback.unitRetailPrices,
 })
 
+const mapInventoryLineUnitPricesToRetail = (
+  items: InventoryReceiptLineUnitPrice[] | undefined,
+): LineRetailPrice[] =>
+  (items ?? []).map((item) => ({
+    unitId: item.unit_id,
+    unitName: item.unit_name,
+    conversion: item.conversion,
+    price: String(item.price),
+  }))
+
 const mapInventoryReceiptLineToFormLine = (
   line: InventoryReceiptLine,
   drugs: Drug[],
   defaults: Record<string, Record<string, string>>,
   extraByBatchCode: Record<string, ReceiptLineExtra>,
 ): LineItemForm => {
-  const promoFromApi = parsePromoNote(line.promo_note)
-  const fallbackRetailPrices = buildLineRetailPrices(line.drug_id, undefined, drugs, defaults)
-  const fallbackExtra = defaultReceiptLineExtra(fallbackRetailPrices)
+  const promoFromApi = line.promo_type
+    ? {
+        promoType: line.promo_type as PromoType,
+        promoBuyQty: line.promo_buy_qty ? String(line.promo_buy_qty) : '',
+        promoGetQty: line.promo_get_qty ? String(line.promo_get_qty) : '',
+        promoDiscountPercent: line.promo_discount_percent
+          ? String(line.promo_discount_percent)
+          : '',
+      }
+    : parsePromoNote(line.promo_note)
+  const apiRetailPrices = mapInventoryLineUnitPricesToRetail(line.unit_prices)
+  const fallbackRetailPrices = buildLineRetailPrices(
+    line.drug_id,
+    apiRetailPrices.length ? apiRetailPrices : undefined,
+    drugs,
+    defaults,
+  )
+  const fallbackExtra = defaultReceiptLineExtra(
+    apiRetailPrices.length ? apiRetailPrices : fallbackRetailPrices,
+  )
   const storedExtra = extraByBatchCode[line.batch_code]
   const mergedExtra = normalizeReceiptLineExtra(storedExtra, fallbackExtra)
 
@@ -624,7 +572,7 @@ const mapInventoryReceiptLineToFormLine = (
     promoDiscountPercent: storedExtra
       ? mergedExtra.promoDiscountPercent
       : promoFromApi.promoDiscountPercent,
-    barcode: mergedExtra.barcode || fallbackBarcode,
+    barcode: line.barcode || mergedExtra.barcode || fallbackBarcode,
     unitRetailPrices: lineRetailPrices,
   }
 }
@@ -637,16 +585,21 @@ const mapInventoryReceiptToPurchaseOrder = (
 ): PurchaseOrder => {
   const extra = extras
   const lineExtras = extra?.lineExtras ?? {}
+  const shippingCarrier = receipt.shipping_carrier?.trim() || extra?.shippingCarrier || 'GHN'
 
   return {
     id: receipt.id,
     code: receipt.code,
     date: receipt.receipt_date,
     supplierId: receipt.supplier_id,
-    shippingCarrier: extra?.shippingCarrier ?? 'GHN',
+    shippingCarrier,
     note: receipt.note ?? '',
-    paymentStatus: extra?.paymentStatus ?? 'Đã thanh toán',
-    paymentMethod: extra?.paymentMethod ?? 'Ngân hàng',
+    paymentStatus: receipt.payment_status
+      ? paymentStatusFromApi(receipt.payment_status)
+      : extra?.paymentStatus ?? 'Đã thanh toán',
+    paymentMethod: receipt.payment_method
+      ? paymentMethodFromApi(receipt.payment_method)
+      : extra?.paymentMethod ?? 'Ngân hàng',
     lines: receipt.lines.map((line) =>
       mapInventoryReceiptLineToFormLine(line, drugs, defaults, lineExtras),
     ),
@@ -683,6 +636,9 @@ const buildReceiptExtraFromOrder = (order: OrderFormState): ReceiptExtra => ({
 const buildInventoryPayloadFromForm = (order: OrderFormState): InventoryCreateReceiptPayload => ({
   receipt_date: order.date,
   supplier_id: order.supplierId,
+  shipping_carrier: order.shippingCarrier.trim(),
+  payment_status: paymentStatusToApi(order.paymentStatus),
+  payment_method: paymentMethodToApi(order.paymentMethod),
   note: order.note.trim() || null,
   lines: order.lines.map((line) => ({
     drug_id: line.drugId || undefined,
@@ -692,6 +648,26 @@ const buildInventoryPayloadFromForm = (order: OrderFormState): InventoryCreateRe
     mfg_date: line.mfgDate,
     exp_date: line.expDate,
     import_price: Math.max(0, parseNumber(line.price)),
+    barcode: line.barcode.trim() || null,
+    promo_type: line.promoType,
+    promo_buy_qty:
+      line.promoType === 'buy_x_get_y'
+        ? Math.max(1, Math.floor(parseNumber(line.promoBuyQty)))
+        : null,
+    promo_get_qty:
+      line.promoType === 'buy_x_get_y'
+        ? Math.max(1, Math.floor(parseNumber(line.promoGetQty)))
+        : null,
+    promo_discount_percent:
+      line.promoType === 'discount_percent'
+        ? Math.max(0, parseNumber(line.promoDiscountPercent))
+        : null,
+    unit_prices: line.unitRetailPrices.map((unitPrice) => ({
+      unit_id: unitPrice.unitId,
+      unit_name: unitPrice.unitName,
+      conversion: unitPrice.conversion,
+      price: Math.max(0, parseNumber(unitPrice.price)),
+    })),
     promo_note: toPromoNote(line),
   })),
 })
@@ -785,8 +761,9 @@ const quaggaConfig = (target: HTMLElement, deviceId?: string, fallback = false) 
 }
 
 export function Purchases() {
-  const { token } = useAuth()
+  const { token, user } = useAuth()
   const accessToken = token?.access_token ?? ''
+  const canOverrideReceiptLock = isOwnerOrAdmin(user)
 
   const [supplierOptions, setSupplierOptions] = useState<Supplier[]>(suppliers)
   const [drugOptions, setDrugOptions] = useState<Drug[]>(drugCatalog)
@@ -897,8 +874,27 @@ export function Purchases() {
         setDefaultRetailPrices(nextDefaultRetailPrices)
         setOrders(nextOrders)
         setAlert(null)
+        const hasStructuredFields = apiReceipts.every((receipt) => {
+          const rawReceipt = receipt as unknown as Record<string, unknown>
+          const hasReceiptFields =
+            'payment_status' in rawReceipt &&
+            'payment_method' in rawReceipt &&
+            'shipping_carrier' in rawReceipt
+          const hasLineFields = receipt.lines.every((line) => {
+            const rawLine = line as unknown as Record<string, unknown>
+            return (
+              'barcode' in rawLine &&
+              'promo_type' in rawLine &&
+              'unit_prices' in rawLine
+            )
+          })
+          return hasReceiptFields && hasLineFields
+        })
+
         setApiMismatchNotice(
-          'API hiện chưa lưu trạng thái/phương thức thanh toán, đơn vị vận chuyển, chi tiết KM cấu trúc, barcode dòng và giá bán lẻ theo đơn vị. Các trường này đang được lưu tạm trên máy theo mã phiếu + mã lô.',
+          hasStructuredFields
+            ? null
+            : 'API chưa trả đủ trường mở rộng cho trang nhập hàng. Hệ thống đang fallback bằng dữ liệu cục bộ để không mất dữ liệu thao tác.',
         )
       } catch (error) {
         setAlert(getApiErrorMessage(error, 'Không tải được dữ liệu nhập hàng từ API.'))
@@ -979,6 +975,18 @@ export function Purchases() {
     ]
   }, [orders, supplierOptions.length])
 
+  const shippingCarrierSuggestions = useMemo(() => {
+    const next = new Set<string>()
+    shippingCarriers.forEach((item) => next.add(item))
+    orders.forEach((order) => {
+      const value = order.shippingCarrier.trim()
+      if (value) next.add(value)
+    })
+    const current = form.shippingCarrier.trim()
+    if (current) next.add(current)
+    return Array.from(next)
+  }, [orders, form.shippingCarrier])
+
   const filtered = useMemo(() => {
     const keyword = search.trim().toLowerCase()
     return orders.filter((order) => {
@@ -1016,8 +1024,12 @@ export function Purchases() {
   }
 
   const openEdit = (order: PurchaseOrder) => {
-    if (order.canEdit === false) {
-      setAlert('Phiếu này đã phát sinh giao dịch nên không thể chỉnh sửa.')
+    if (order.receiptStatus === 'cancelled') {
+      setAlert('Phiếu đã hủy không thể chỉnh sửa.')
+      return
+    }
+    if (order.canEdit === false && !canOverrideReceiptLock) {
+      setAlert('Phiếu này đã phát sinh giao dịch nên chỉ owner/admin mới được chỉnh sửa.')
       return
     }
     setErrors({})
@@ -1125,7 +1137,7 @@ export function Purchases() {
     const next: Record<string, string> = {}
     if (!form.date) next.date = 'Bắt buộc'
     if (!form.supplierId) next.supplierId = 'Bắt buộc'
-    if (!form.shippingCarrier) next.shippingCarrier = 'Bắt buộc'
+    if (!form.shippingCarrier.trim()) next.shippingCarrier = 'Bắt buộc'
     if (!form.lines.length) next.lines = 'Cần ít nhất 1 dòng thuốc'
 
     form.lines.forEach((line, index) => {
@@ -1197,16 +1209,15 @@ export function Purchases() {
         nextExtras[receipt.id],
       )
 
-      await loadPurchasesData(nextExtras)
-
       setModalOpen(false)
       setEditingId(null)
       setErrors({})
-      setAlert(isCreating ? 'Đã tạo phiếu nhập.' : 'Đã cập nhật phiếu nhập.')
-
       if (isCreating) {
         openLabelConfirm(mappedOrder)
       }
+
+      await loadPurchasesData(nextExtras)
+      setAlert(isCreating ? 'Đã tạo phiếu nhập.' : 'Đã cập nhật phiếu nhập.')
     } catch (error) {
       setAlert(
         getApiErrorMessage(
@@ -2042,7 +2053,11 @@ export function Purchases() {
             </thead>
             <tbody className="divide-y divide-white/70">
               {paged.map((order) => {
-                const canEditOrder = order.canEdit !== false && order.receiptStatus !== 'cancelled'
+                const canEditOrder =
+                  (order.canEdit !== false || canOverrideReceiptLock) &&
+                  order.receiptStatus !== 'cancelled'
+                const canCancelOrder =
+                  order.canEdit !== false && order.receiptStatus !== 'cancelled'
                 return (
                   <Fragment key={order.id}>
                     <tr className="hover:bg-white/80">
@@ -2068,15 +2083,15 @@ export function Purchases() {
                           </button>
                           <button
                             onClick={() => openEdit(order)}
-                            disabled={!canEditOrder}
-                            className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-50"
+                            title={canEditOrder ? 'Sửa phiếu nhập' : 'Phiếu này đã phát sinh giao dịch, chỉ owner/admin được sửa'}
+                            className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900"
                           >
                             Sửa
                           </button>
                           <button
                             onClick={() => removeOrder(order.id)}
-                            disabled={!canEditOrder}
-                            className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500 disabled:opacity-50"
+                            title={canCancelOrder ? 'Hủy phiếu nhập' : 'Phiếu này đã phát sinh giao dịch, không thể hủy'}
+                            className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500"
                           >
                             Xóa
                           </button>
@@ -2202,15 +2217,18 @@ export function Purchases() {
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">
                   <span>Đơn vị vận chuyển</span>
-                  <select
+                  <input
+                    list="shipping-carrier-options"
                     value={form.shippingCarrier}
-                    onChange={(event) => updateForm('shippingCarrier', event.target.value as ShippingCarrier)}
+                    onChange={(event) => updateForm('shippingCarrier', event.target.value)}
                     className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
-                  >
-                    {shippingCarriers.map((carrier) => (
-                      <option key={carrier} value={carrier}>{carrier}</option>
+                    placeholder="Ví dụ: GHN, J&T, Viettel Post"
+                  />
+                  <datalist id="shipping-carrier-options">
+                    {shippingCarrierSuggestions.map((carrier) => (
+                      <option key={carrier} value={carrier} />
                     ))}
-                  </select>
+                  </datalist>
                   {errors.shippingCarrier ? <span className="text-xs text-coral-500">{errors.shippingCarrier}</span> : null}
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">

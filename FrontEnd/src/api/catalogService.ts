@@ -8,6 +8,16 @@ export type CatalogPageResponse<T> = {
   pages: number
 }
 
+export type DrugGroupItem = {
+  id: string
+  code: string
+  name: string
+  description: string | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
 export type ManufacturerItem = {
   id: string
   code: string
@@ -16,6 +26,62 @@ export type ManufacturerItem = {
   address: string | null
   phone: string | null
   is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type ProductGroupRef = {
+  id: string
+  code: string
+  name: string
+}
+
+export type ProductManufacturerRef = {
+  id: string
+  code: string
+  name: string
+}
+
+export type ProductUnitItem = {
+  id: string
+  product_id: string
+  unit_name: string
+  conversion_rate: number
+  barcode: string | null
+  selling_price: string | number
+  is_base_unit: boolean
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type ProductListItem = {
+  id: string
+  code: string
+  barcode: string | null
+  name: string
+  registration_number: string | null
+  group_name: string | null
+  manufacturer_name: string | null
+  base_unit: string | null
+  base_price: string | number | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type ProductDetailItem = {
+  id: string
+  code: string
+  barcode: string | null
+  name: string
+  registration_number: string | null
+  group: ProductGroupRef | null
+  manufacturer: ProductManufacturerRef | null
+  instructions: string | null
+  note: string | null
+  is_active: boolean
+  units: ProductUnitItem[]
   created_at: string
   updated_at: string
 }
@@ -71,6 +137,36 @@ type ListSuppliersParams = {
   size?: number
 }
 
+type ListDrugGroupsParams = {
+  search?: string
+  is_active?: boolean
+  page?: number
+  size?: number
+}
+
+type DrugGroupCreatePayload = {
+  code?: string | null
+  name: string
+  description?: string | null
+  is_active?: boolean
+}
+
+type DrugGroupUpdatePayload = {
+  code?: string | null
+  name?: string
+  description?: string | null
+  is_active?: boolean
+}
+
+type ListProductsParams = {
+  search?: string
+  group_id?: string
+  manufacturer_id?: string
+  is_active?: boolean
+  page?: number
+  size?: number
+}
+
 type ManufacturerCreatePayload = {
   code?: string | null
   name: string
@@ -120,6 +216,52 @@ type SupplierDebtPaymentPayload = {
   reference_id?: string | null
 }
 
+type ProductCreatePayload = {
+  code?: string | null
+  barcode?: string | null
+  name: string
+  registration_number?: string | null
+  group_id?: string | null
+  manufacturer_id?: string | null
+  instructions?: string | null
+  note?: string | null
+  is_active?: boolean
+  base_unit?: {
+    unit_name: string
+    selling_price: string | number
+  } | null
+}
+
+type ProductUpdatePayload = {
+  code?: string | null
+  barcode?: string | null
+  name?: string
+  registration_number?: string | null
+  group_id?: string | null
+  manufacturer_id?: string | null
+  instructions?: string | null
+  note?: string | null
+  is_active?: boolean
+}
+
+type ProductUnitCreatePayload = {
+  unit_name: string
+  conversion_rate: number
+  barcode?: string | null
+  selling_price: string | number
+  is_base_unit?: boolean
+  is_active?: boolean
+}
+
+type ProductUnitUpdatePayload = {
+  unit_name?: string
+  conversion_rate?: number
+  barcode?: string | null
+  selling_price?: string | number
+  is_base_unit?: boolean
+  is_active?: boolean
+}
+
 const requestCatalogJson = async <T>(
   path: string,
   token: string,
@@ -162,6 +304,48 @@ const requestCatalogJson = async <T>(
 }
 
 export const catalogApi = {
+  listDrugGroups: (token: string, params?: ListDrugGroupsParams) =>
+    requestCatalogJson<CatalogPageResponse<DrugGroupItem>>(
+      '/catalog/drug-groups',
+      token,
+      { method: 'GET' },
+      params,
+    ),
+
+  getDrugGroup: (token: string, groupId: string) =>
+    requestCatalogJson<DrugGroupItem>(
+      `/catalog/drug-groups/${groupId}`,
+      token,
+      { method: 'GET' },
+    ),
+
+  createDrugGroup: (token: string, payload: DrugGroupCreatePayload) =>
+    requestCatalogJson<DrugGroupItem>(
+      '/catalog/drug-groups',
+      token,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  updateDrugGroup: (token: string, groupId: string, payload: DrugGroupUpdatePayload) =>
+    requestCatalogJson<DrugGroupItem>(
+      `/catalog/drug-groups/${groupId}`,
+      token,
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  deleteDrugGroup: (token: string, groupId: string) =>
+    requestCatalogJson<{ message: string }>(
+      `/catalog/drug-groups/${groupId}`,
+      token,
+      { method: 'DELETE' },
+    ),
+
   listManufacturers: (token: string, params?: ListManufacturersParams) =>
     requestCatalogJson<CatalogPageResponse<ManufacturerItem>>(
       '/catalog/manufacturers',
@@ -262,5 +446,79 @@ export const catalogApi = {
         method: 'POST',
         body: JSON.stringify(payload),
       },
+    ),
+
+  listProducts: (token: string, params?: ListProductsParams) =>
+    requestCatalogJson<CatalogPageResponse<ProductListItem>>(
+      '/catalog/products',
+      token,
+      { method: 'GET' },
+      params,
+    ),
+
+  getProduct: (token: string, productId: string) =>
+    requestCatalogJson<ProductDetailItem>(
+      `/catalog/products/${productId}`,
+      token,
+      { method: 'GET' },
+    ),
+
+  createProduct: (token: string, payload: ProductCreatePayload) =>
+    requestCatalogJson<ProductDetailItem>(
+      '/catalog/products',
+      token,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  updateProduct: (token: string, productId: string, payload: ProductUpdatePayload) =>
+    requestCatalogJson<ProductDetailItem>(
+      `/catalog/products/${productId}`,
+      token,
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  deleteProduct: (token: string, productId: string) =>
+    requestCatalogJson<{ message: string }>(
+      `/catalog/products/${productId}`,
+      token,
+      { method: 'DELETE' },
+    ),
+
+  createProductUnit: (token: string, productId: string, payload: ProductUnitCreatePayload) =>
+    requestCatalogJson<ProductUnitItem>(
+      `/catalog/products/${productId}/units`,
+      token,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  updateProductUnit: (
+    token: string,
+    productId: string,
+    unitId: string,
+    payload: ProductUnitUpdatePayload,
+  ) =>
+    requestCatalogJson<ProductUnitItem>(
+      `/catalog/products/${productId}/units/${unitId}`,
+      token,
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  deleteProductUnit: (token: string, productId: string, unitId: string) =>
+    requestCatalogJson<{ message: string }>(
+      `/catalog/products/${productId}/units/${unitId}`,
+      token,
+      { method: 'DELETE' },
     ),
 }

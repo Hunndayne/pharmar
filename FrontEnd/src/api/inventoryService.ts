@@ -20,6 +20,10 @@ export type InventoryMetaUnitPrice = {
   price: number
 }
 
+export type InventoryPaymentStatus = 'paid' | 'debt'
+export type InventoryPaymentMethod = 'bank' | 'ewallet' | 'card'
+export type InventoryPromoType = 'none' | 'buy_x_get_y' | 'discount_percent'
+
 export type InventoryMetaDrug = {
   id: string
   code: string
@@ -30,6 +34,13 @@ export type InventoryMetaDrug = {
   units: InventoryMetaUnit[]
   unit_prices: InventoryMetaUnitPrice[]
   sku_aliases: string[]
+}
+
+export type InventoryReceiptLineUnitPrice = {
+  unit_id: string
+  unit_name: string
+  conversion: number
+  price: number
 }
 
 export type InventoryReceiptLine = {
@@ -44,6 +55,12 @@ export type InventoryReceiptLine = {
   mfg_date: string
   exp_date: string
   import_price: number
+  barcode: string
+  promo_type: InventoryPromoType
+  promo_buy_qty: number | null
+  promo_get_qty: number | null
+  promo_discount_percent: number | null
+  unit_prices: InventoryReceiptLineUnitPrice[]
   promo_note: string | null
   line_total: number
   batch_status: 'active' | 'expired' | 'depleted' | 'cancelled'
@@ -56,6 +73,9 @@ export type InventoryReceipt = {
   supplier_id: string
   supplier_name: string
   supplier_contact: string
+  shipping_carrier: string | null
+  payment_status: InventoryPaymentStatus
+  payment_method: InventoryPaymentMethod
   note: string | null
   status: 'confirmed' | 'cancelled'
   created_by: string
@@ -70,6 +90,9 @@ export type InventoryReceipt = {
 export type InventoryCreateReceiptPayload = {
   receipt_date: string
   supplier_id: string
+  shipping_carrier?: string | null
+  payment_status?: InventoryPaymentStatus
+  payment_method?: InventoryPaymentMethod
   note?: string | null
   lines: Array<{
     drug_id?: string
@@ -80,6 +103,12 @@ export type InventoryCreateReceiptPayload = {
     mfg_date: string
     exp_date: string
     import_price: number
+    barcode?: string | null
+    promo_type?: InventoryPromoType
+    promo_buy_qty?: number | null
+    promo_get_qty?: number | null
+    promo_discount_percent?: number | null
+    unit_prices?: InventoryReceiptLineUnitPrice[]
     promo_note?: string | null
   }>
 }

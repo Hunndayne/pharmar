@@ -1,5 +1,15 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Quagga from '@ericblade/quagga2'
+import {
+  catalogApi,
+  type DrugGroupItem,
+  type ManufacturerItem,
+  type ProductDetailItem,
+  type ProductUnitItem,
+} from '../api/catalogService'
+import { ApiError } from '../api/usersService'
+import { useAuth } from '../auth/AuthContext'
+import { isOwnerOrAdmin } from '../auth/permissions'
 
 type Unit = {
   id: string
@@ -14,7 +24,9 @@ type Drug = {
   code: string
   name: string
   regNo: string
+  groupId: string | null
   group: string
+  makerId: string | null
   maker: string
   barcode: string
   usage: string
@@ -35,8 +47,8 @@ type FormState = {
   code: string
   name: string
   regNo: string
-  group: string
-  maker: string
+  groupId: string
+  makerId: string
   barcode: string
   usage: string
   note: string
@@ -50,8 +62,6 @@ type FormState = {
 
 type ScanTarget = 'search' | 'form'
 
-const groups = ['Giảm đau', 'Kháng sinh', 'Vitamin', 'Tiêu hóa', 'Chăm sóc da', 'Vật tư y tế']
-const makers = ['GSK', 'DHG', 'Imexpharm', 'Santen', 'DHC', 'Traphaco']
 const unitNames = [
   'Chai',
   'Đôi',
@@ -83,86 +93,19 @@ const unitNames = [
   'Bao',
 ]
 
-const initialDrugs: Drug[] = [
-  {
-    id: 'd1',
-    code: 'T0001',
-    name: 'Panadol Extra',
-    regNo: 'VD-12345-21',
-    group: 'Giảm đau',
-    maker: 'GSK',
-    barcode: '8936012345678',
-    usage: 'Uống sau ăn, không dùng quá 4 viên/ngày.',
-    note: 'Sản phẩm bán chạy.',
-    active: true,
-    hasTransactions: true,
-    units: [
-      { id: 'u1', name: 'Viên', conversion: 1, price: 3000, level: 'retail' },
-      { id: 'u2', name: 'Vỉ', conversion: 10, price: 28000, level: 'intermediate' },
-      { id: 'u3', name: 'Hộp', conversion: 100, price: 320000, level: 'import' },
-    ],
-  },
-  {
-    id: 'd2',
-    code: 'T0034',
-    name: 'Vitamin C 1000',
-    regNo: 'VN-98765-19',
-    group: 'Vitamin',
-    maker: 'DHC',
-    barcode: '8936017777777',
-    usage: 'Uống 1 viên/ngày.',
-    note: '',
-    active: true,
-    hasTransactions: false,
-    units: [
-      { id: 'u1', name: 'Viên', conversion: 1, price: 6000, level: 'retail' },
-      { id: 'u2', name: 'Chai', conversion: 30, price: 185000, level: 'import' },
-    ],
-  },
-  {
-    id: 'd3',
-    code: 'T0088',
-    name: 'Amoxicillin 500mg',
-    regNo: 'VD-55544-18',
-    group: 'Kháng sinh',
-    maker: 'Imexpharm',
-    barcode: '8936011111111',
-    usage: 'Theo chỉ định bác sĩ.',
-    note: 'Hàng cần kiểm soát.',
-    active: true,
-    hasTransactions: true,
-    units: [
-      { id: 'u1', name: 'Viên', conversion: 1, price: 4200, level: 'retail' },
-      { id: 'u2', name: 'Vỉ', conversion: 10, price: 42000, level: 'import' },
-    ],
-  },
-  {
-    id: 'd4',
-    code: 'T0104',
-    name: 'Oresol',
-    regNo: 'VN-11223-17',
-    group: 'Tiêu hóa',
-    maker: 'DHG',
-    barcode: '8936013333333',
-    usage: 'Pha 1 gói với 200ml nước.',
-    note: '',
-    active: true,
-    hasTransactions: false,
-    units: [{ id: 'u1', name: 'Gói', conversion: 1, price: 6000, level: 'retail' }],
-  },
-]
+const initialDrugs: Drug[] = []
 
 const statusStyles: Record<string, string> = {
   'Đang bán': 'bg-brand-500/15 text-brand-600 border border-brand-500/30',
   'Ngừng bán': 'bg-ink-600/10 text-ink-600 border border-ink-600/20',
 }
 
-const emptyForm = (): FormState => ({
+const emptyForm = (groupId = '', makerId = ''): FormState => ({
   code: '',
   name: '',
   regNo: '',
-  group: groups[0],
-  maker: makers[0],
+  groupId,
+  makerId,
   barcode: '',
   usage: '',
   note: '',
@@ -257,6 +200,148 @@ const inferFormFromDrug = (drug: Drug) => {
   }
 }
 
+const toPriceNumber = (value: string | number | null | undefined) => {
+  const parsed = Number(value ?? 0)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+const toUiUnitsFromProductUnits = (units: ProductUnitItem[]): Unit[] => {
+  const active = units
+    .filter((unit) => unit.is_active)
+    .sort((a, b) => a.conversion_rate - b.conversion_rate)
+
+  if (!active.length) return []
+
+  if (active.length === 1) {
+    const retail = active[0]
+    return [
+      {
+        id: retail.id,
+        name: retail.unit_name,
+        conversion: 1,
+        price: toPriceNumber(retail.selling_price),
+        level: 'retail',
+      },
+    ]
+  }
+
+  if (active.length === 2) {
+    const retail = active[0]
+    const importUnit = active[1]
+    return [
+      {
+        id: retail.id,
+        name: retail.unit_name,
+        conversion: 1,
+        price: toPriceNumber(retail.selling_price),
+        level: 'retail',
+      },
+      {
+        id: importUnit.id,
+        name: importUnit.unit_name,
+        conversion: Math.max(1, importUnit.conversion_rate),
+        price: toPriceNumber(importUnit.selling_price),
+        level: 'import',
+      },
+    ]
+  }
+
+  const retail = active[0]
+  const intermediate = active[active.length - 2]
+  const importUnit = active[active.length - 1]
+  return [
+    {
+      id: retail.id,
+      name: retail.unit_name,
+      conversion: 1,
+      price: toPriceNumber(retail.selling_price),
+      level: 'retail',
+    },
+    {
+      id: intermediate.id,
+      name: intermediate.unit_name,
+      conversion: Math.max(1, intermediate.conversion_rate),
+      price: toPriceNumber(intermediate.selling_price),
+      level: 'intermediate',
+    },
+    {
+      id: importUnit.id,
+      name: importUnit.unit_name,
+      conversion: Math.max(1, importUnit.conversion_rate),
+      price: toPriceNumber(importUnit.selling_price),
+      level: 'import',
+    },
+  ]
+}
+
+const mapProductDetailToDrug = (item: ProductDetailItem): Drug => {
+  const units = toUiUnitsFromProductUnits(item.units)
+  return {
+    id: item.id,
+    code: item.code,
+    name: item.name,
+    regNo: item.registration_number ?? '',
+    groupId: item.group?.id ?? null,
+    group: item.group?.name ?? '-',
+    makerId: item.manufacturer?.id ?? null,
+    maker: item.manufacturer?.name ?? '-',
+    barcode: item.barcode ?? '',
+    usage: item.instructions ?? '',
+    note: item.note ?? '',
+    units,
+    active: item.is_active,
+    hasTransactions: false,
+  }
+}
+
+type DesiredUnit = {
+  name: string
+  conversion: number
+  price: number
+  level: Unit['level']
+}
+
+const buildDesiredUnits = (form: FormState): DesiredUnit[] => {
+  const result: DesiredUnit[] = [
+    {
+      name: form.retailUnit.name.trim(),
+      conversion: 1,
+      price: toNumber(form.retailUnit.price),
+      level: 'retail',
+    },
+  ]
+
+  if (!form.singleUnit) {
+    const importConversion = toNumber(form.importUnit.conversion)
+    if (form.hasIntermediate) {
+      const intermediateConversion = toNumber(form.intermediateUnit.conversion)
+      result.push(
+        {
+          name: form.intermediateUnit.name.trim(),
+          conversion: intermediateConversion,
+          price: toNumber(form.intermediateUnit.price),
+          level: 'intermediate',
+        },
+        {
+          name: form.importUnit.name.trim(),
+          conversion: importConversion * intermediateConversion,
+          price: toNumber(form.importUnit.price),
+          level: 'import',
+        },
+      )
+    } else {
+      result.push({
+        name: form.importUnit.name.trim(),
+        conversion: importConversion,
+        price: toNumber(form.importUnit.price),
+        level: 'import',
+      })
+    }
+  }
+
+  return result
+}
+
 // ============================================================
 // Barcode Scanning Engine (Quagga2)
 //
@@ -333,7 +418,16 @@ const quaggaConfig = (target: HTMLElement, deviceId?: string) => ({
 
 
 export function DrugCatalog() {
+  const { token, user } = useAuth()
+  const accessToken = token?.access_token ?? ''
+  const canManage = user?.role === 'owner' || user?.role === 'manager' || user?.username === 'admin'
+  const canDelete = isOwnerOrAdmin(user)
+
   const [drugs, setDrugs] = useState<Drug[]>(initialDrugs)
+  const [groupOptions, setGroupOptions] = useState<DrugGroupItem[]>([])
+  const [makerOptions, setMakerOptions] = useState<ManufacturerItem[]>([])
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [search, setSearch] = useState('')
   const [barcodeSearch, setBarcodeSearch] = useState('')
   const [groupFilter, setGroupFilter] = useState('Tất cả')
@@ -365,6 +459,115 @@ export function DrugCatalog() {
 
   const pageSize = 6
 
+  const getApiErrorMessage = useCallback((error: unknown, fallback: string) => {
+    if (error instanceof ApiError) {
+      if (error.status === 401) return 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'
+      if (error.status === 403) return 'Bạn không có quyền thực hiện thao tác này.'
+      return error.message || fallback
+    }
+    return fallback
+  }, [])
+
+  const loadCatalogData = useCallback(async () => {
+    if (!accessToken) return
+    setLoading(true)
+    try {
+      const fetchAllProducts = async () => {
+        const allProducts: Array<{ id: string }> = []
+        let currentPage = 1
+        let totalPages = 1
+
+        while (currentPage <= totalPages) {
+          const pageResponse = await catalogApi.listProducts(accessToken, {
+            page: currentPage,
+            size: 200,
+          })
+          allProducts.push(...pageResponse.items.map((item) => ({ id: item.id })))
+          totalPages = Math.max(1, pageResponse.pages)
+          currentPage += 1
+        }
+        return allProducts
+      }
+
+      const [groupPage, manufacturerPage, products] = await Promise.all([
+        catalogApi.listDrugGroups(accessToken, { is_active: true, page: 1, size: 200 }),
+        catalogApi.listManufacturers(accessToken, { is_active: true, page: 1, size: 200 }),
+        fetchAllProducts(),
+      ])
+
+      const details = await Promise.all(
+        products.map((item) => catalogApi.getProduct(accessToken, item.id)),
+      )
+
+      setGroupOptions(groupPage.items)
+      setMakerOptions(manufacturerPage.items)
+      setDrugs(details.map(mapProductDetailToDrug))
+    } catch (error) {
+      setAlert(getApiErrorMessage(error, 'Không thể tải danh mục thuốc từ cơ sở dữ liệu.'))
+    } finally {
+      setLoading(false)
+    }
+  }, [accessToken, getApiErrorMessage])
+
+  useEffect(() => {
+    void loadCatalogData()
+  }, [loadCatalogData])
+
+  const syncProductUnits = useCallback(
+    async (productId: string, existingUnits: ProductUnitItem[], desiredUnits: DesiredUnit[]) => {
+      if (!accessToken) return
+      const baseDesired = desiredUnits.find((item) => item.level === 'retail')
+      if (!baseDesired) return
+
+      const baseUnit = existingUnits.find((item) => item.is_base_unit) ?? existingUnits[0]
+      if (baseUnit) {
+        await catalogApi.updateProductUnit(accessToken, productId, baseUnit.id, {
+          unit_name: baseDesired.name,
+          conversion_rate: 1,
+          selling_price: baseDesired.price,
+          barcode: null,
+          is_base_unit: true,
+          is_active: true,
+        })
+      }
+
+      const desiredNonBase = desiredUnits
+        .filter((item) => item.level !== 'retail')
+        .sort((a, b) => a.conversion - b.conversion)
+      const activeNonBase = existingUnits
+        .filter((item) => !item.is_base_unit && item.is_active)
+        .sort((a, b) => a.conversion_rate - b.conversion_rate)
+
+      for (let index = 0; index < desiredNonBase.length; index += 1) {
+        const desired = desiredNonBase[index]
+        const existing = activeNonBase[index]
+        if (existing) {
+          await catalogApi.updateProductUnit(accessToken, productId, existing.id, {
+            unit_name: desired.name,
+            conversion_rate: desired.conversion,
+            selling_price: desired.price,
+            barcode: null,
+            is_active: true,
+          })
+        } else {
+          await catalogApi.createProductUnit(accessToken, productId, {
+            unit_name: desired.name,
+            conversion_rate: desired.conversion,
+            selling_price: desired.price,
+            barcode: null,
+            is_base_unit: false,
+            is_active: true,
+          })
+        }
+      }
+
+      for (let index = desiredNonBase.length; index < activeNonBase.length; index += 1) {
+        await catalogApi.deleteProductUnit(accessToken, productId, activeNonBase[index].id)
+      }
+    },
+    [accessToken],
+  )
+
   const filtered = useMemo(() => {
     const keyword = search.trim().toLowerCase()
     const barcodeKey = barcodeSearch.trim().toLowerCase()
@@ -378,8 +581,8 @@ export function DrugCatalog() {
       const matchBarcode =
         !barcodeKey ||
         drug.barcode.toLowerCase().includes(barcodeKey)
-      const matchGroup = groupFilter === 'Tất cả' || drug.group === groupFilter
-      const matchMaker = makerFilter === 'Tất cả' || drug.maker === makerFilter
+      const matchGroup = groupFilter === 'Tất cả' || drug.groupId === groupFilter
+      const matchMaker = makerFilter === 'Tất cả' || drug.makerId === makerFilter
       return matchKeyword && matchBarcode && matchGroup && matchMaker
     })
   }, [drugs, search, barcodeSearch, groupFilter, makerFilter])
@@ -387,8 +590,12 @@ export function DrugCatalog() {
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize)
 
+  useEffect(() => {
+    setPage((current) => Math.min(current, totalPages))
+  }, [totalPages])
+
   const stats = [
-    { label: 'Tổng thuốc', value: drugs.length.toString(), note: `${groups.length} nhóm` },
+    { label: 'Tổng thuốc', value: drugs.length.toString(), note: `${groupOptions.length} nhóm` },
     { label: 'Sắp hết hàng', value: '38', note: 'dưới ngưỡng' },
     { label: 'Cận date', value: '12', note: 'trong 30 ngày' },
     { label: 'Đang bán', value: drugs.filter((d) => d.active).length.toString(), note: 'đang hoạt động' },
@@ -423,12 +630,20 @@ export function DrugCatalog() {
   ])
 
   const openCreate = () => {
+    if (!canManage) {
+      setAlert('Bạn không có quyền thêm thuốc.')
+      return
+    }
     setErrors({})
-    setForm(emptyForm())
+    setForm(emptyForm(groupOptions[0]?.id ?? '', makerOptions[0]?.id ?? ''))
     setModalOpen(true)
   }
 
   const openEdit = (drug: Drug) => {
+    if (!canManage) {
+      setAlert('Bạn không có quyền chỉnh sửa thuốc.')
+      return
+    }
     setErrors({})
     const unitForm = inferFormFromDrug(drug)
     setForm({
@@ -436,8 +651,8 @@ export function DrugCatalog() {
       code: drug.code,
       name: drug.name,
       regNo: drug.regNo,
-      group: drug.group,
-      maker: drug.maker,
+      groupId: drug.groupId ?? '',
+      makerId: drug.makerId ?? '',
       barcode: drug.barcode,
       usage: drug.usage,
       note: drug.note,
@@ -447,12 +662,25 @@ export function DrugCatalog() {
     setModalOpen(true)
   }
 
-  const removeDrug = (drug: Drug) => {
-    if (drug.hasTransactions) {
-      setAlert('Không thể xóa vì thuốc đã có giao dịch.')
+  const removeDrug = async (drug: Drug) => {
+    if (!accessToken) {
+      setAlert('Bạn cần đăng nhập để xóa thuốc.')
       return
     }
-    setDrugs((prev) => prev.filter((item) => item.id !== drug.id))
+    if (!canDelete) {
+      setAlert('Chỉ owner/admin mới có quyền xóa thuốc.')
+      return
+    }
+    if (!window.confirm(`Xóa thuốc ${drug.name}?`)) {
+      return
+    }
+    try {
+      await catalogApi.deleteProduct(accessToken, drug.id)
+      await loadCatalogData()
+      setAlert('Đã xóa thuốc.')
+    } catch (error) {
+      setAlert(getApiErrorMessage(error, 'Không thể xóa thuốc.'))
+    }
   }
 
   const updateForm = <K extends keyof FormState>(field: K, value: FormState[K]) => {
@@ -490,11 +718,10 @@ export function DrugCatalog() {
 
   const validate = () => {
     const next: Record<string, string> = {}
-    if (!form.code.trim()) next.code = 'Bắt buộc'
     if (!form.name.trim()) next.name = 'Bắt buộc'
     if (!form.regNo.trim()) next.regNo = 'Bắt buộc'
-    if (!form.group) next.group = 'Bắt buộc'
-    if (!form.maker) next.maker = 'Bắt buộc'
+    if (!form.groupId) next.group = 'Bắt buộc'
+    if (!form.makerId) next.maker = 'Bắt buộc'
 
     const retailPrice = parsePositive(form.retailUnit.price)
     if (!form.retailUnit.name.trim()) next['retail-name'] = 'Bắt buộc'
@@ -516,75 +743,75 @@ export function DrugCatalog() {
       }
     }
 
+    const selectedNames = [form.retailUnit.name.trim().toLowerCase()]
+    if (!form.singleUnit) {
+      selectedNames.push(form.importUnit.name.trim().toLowerCase())
+      if (form.hasIntermediate) selectedNames.push(form.intermediateUnit.name.trim().toLowerCase())
+    }
+    const unique = new Set(selectedNames.filter(Boolean))
+    if (unique.size !== selectedNames.filter(Boolean).length) {
+      next['unit-duplicate'] = 'Tên đơn vị không được trùng nhau.'
+    }
+
     setErrors(next)
     return Object.keys(next).length === 0
   }
 
-  const saveDrug = () => {
+  const saveDrug = async () => {
+    if (!accessToken) {
+      setAlert('Bạn cần đăng nhập để lưu thuốc.')
+      return
+    }
+    if (!canManage) {
+      setAlert('Bạn không có quyền cập nhật danh mục thuốc.')
+      return
+    }
     if (!validate()) return
-    const now = Date.now()
-    const formattedUnits: Unit[] = [
-      {
-        id: `retail-${now}`,
-        name: form.retailUnit.name.trim(),
-        conversion: 1,
-        price: toNumber(form.retailUnit.price),
-        level: 'retail',
-      },
-    ]
 
-    if (!form.singleUnit) {
-      const importConversion = toNumber(form.importUnit.conversion)
-      if (form.hasIntermediate) {
-        const intermediateConversion = toNumber(form.intermediateUnit.conversion)
-        formattedUnits.push(
-          {
-            id: `intermediate-${now}`,
-            name: form.intermediateUnit.name.trim(),
-            conversion: intermediateConversion,
-            price: toNumber(form.intermediateUnit.price),
-            level: 'intermediate',
-          },
-          {
-            id: `import-${now}`,
-            name: form.importUnit.name.trim(),
-            conversion: importConversion * intermediateConversion,
-            price: toNumber(form.importUnit.price),
-            level: 'import',
-          }
-        )
-      } else {
-        formattedUnits.push({
-          id: `import-${now}`,
-          name: form.importUnit.name.trim(),
-          conversion: importConversion,
-          price: toNumber(form.importUnit.price),
-          level: 'import',
-        })
+    setSaving(true)
+    try {
+      const desiredUnits = buildDesiredUnits(form)
+      const baseUnit = desiredUnits.find((item) => item.level === 'retail')
+      if (!baseUnit) {
+        setAlert('Không thể xác định đơn vị bán lẻ.')
+        return
       }
-    }
 
-    const payload: Drug = {
-      id: form.id ?? `d-${Date.now()}`,
-      code: form.code.trim(),
-      name: form.name.trim(),
-      regNo: form.regNo.trim(),
-      group: form.group,
-      maker: form.maker,
-      barcode: form.barcode.trim(),
-      usage: form.usage.trim(),
-      note: form.note.trim(),
-      active: form.active,
-      units: formattedUnits,
-      hasTransactions: form.id ? drugs.find((d) => d.id === form.id)?.hasTransactions ?? false : false,
+      const productPayload = {
+        name: form.name.trim(),
+        registration_number: form.regNo.trim() || null,
+        group_id: form.groupId || null,
+        manufacturer_id: form.makerId || null,
+        barcode: form.barcode.trim() || null,
+        instructions: form.usage.trim() || null,
+        note: form.note.trim() || null,
+        is_active: form.active,
+      }
+
+      if (form.id) {
+        const updated = await catalogApi.updateProduct(accessToken, form.id, productPayload)
+        await syncProductUnits(updated.id, updated.units, desiredUnits)
+        setAlert('Đã cập nhật thuốc.')
+      } else {
+        const created = await catalogApi.createProduct(accessToken, {
+          ...productPayload,
+          base_unit: {
+            unit_name: baseUnit.name,
+            selling_price: baseUnit.price,
+          },
+        })
+        await syncProductUnits(created.id, created.units, desiredUnits)
+        setAlert('Đã thêm thuốc.')
+      }
+
+      setModalOpen(false)
+      setErrors({})
+      await loadCatalogData()
+    } catch (error) {
+      setAlert(getApiErrorMessage(error, 'Không thể lưu thuốc.'))
+    } finally {
+      setSaving(false)
     }
-    setDrugs((prev) => {
-      const exists = prev.some((item) => item.id === payload.id)
-      return exists
-        ? prev.map((item) => (item.id === payload.id ? payload : item))
-        : [payload, ...prev]
-    })
-    setModalOpen(false)
   }
 
   const exportCsv = () => {
@@ -923,7 +1150,11 @@ export function DrugCatalog() {
           <p className="mt-2 text-sm text-ink-600">Master data thuốc, đơn vị tính và barcode.</p>
         </div>
         <div className="flex flex-wrap gap-3">
-          <button onClick={openCreate} className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift">
+          <button
+            onClick={openCreate}
+            disabled={!canManage}
+            className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift disabled:opacity-60"
+          >
             Thêm thuốc
           </button>
           <label className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900">
@@ -961,19 +1192,49 @@ export function DrugCatalog() {
 
       <section className="glass-card rounded-3xl p-6 space-y-4">
         <div className="grid gap-3 md:grid-cols-[1.2fr,1fr,1fr,auto]">
-          <input value={search} onChange={(e) => setSearch(e.target.value)} className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm" placeholder="Tìm theo tên, mã, số đăng ký" />
-          <select value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)} className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm">
-            <option>Tất cả</option>
-            {groups.map((g) => <option key={g}>{g}</option>)}
+          <input
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value)
+              setPage(1)
+            }}
+            className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
+            placeholder="Tìm theo tên, mã, số đăng ký"
+          />
+          <select
+            value={groupFilter}
+            onChange={(e) => {
+              setGroupFilter(e.target.value)
+              setPage(1)
+            }}
+            className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
+          >
+            <option value="Tất cả">Tất cả</option>
+            {groupOptions.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
           </select>
-          <select value={makerFilter} onChange={(e) => setMakerFilter(e.target.value)} className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm">
-            <option>Tất cả</option>
-            {makers.map((m) => <option key={m}>{m}</option>)}
+          <select
+            value={makerFilter}
+            onChange={(e) => {
+              setMakerFilter(e.target.value)
+              setPage(1)
+            }}
+            className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
+          >
+            <option value="Tất cả">Tất cả</option>
+            {makerOptions.map((maker) => <option key={maker.id} value={maker.id}>{maker.name}</option>)}
           </select>
           <button onClick={resetFilters} className="rounded-2xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white">Reset</button>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <input value={barcodeSearch} onChange={(e) => setBarcodeSearch(e.target.value)} className="min-w-[220px] flex-1 rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm" placeholder="Quét barcode để tìm nhanh" />
+          <input
+            value={barcodeSearch}
+            onChange={(e) => {
+              setBarcodeSearch(e.target.value)
+              setPage(1)
+            }}
+            className="min-w-[220px] flex-1 rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
+            placeholder="Quét barcode để tìm nhanh"
+          />
           <button type="button" onClick={() => openScan('search')} className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900">
             Quét bằng camera
           </button>
@@ -996,7 +1257,17 @@ export function DrugCatalog() {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/70">
-              {paged.map((drug) => (
+              {loading ? (
+                <tr>
+                  <td colSpan={8} className="px-6 py-6 text-sm text-ink-600">Đang tải dữ liệu...</td>
+                </tr>
+              ) : null}
+              {!loading && paged.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="px-6 py-6 text-sm text-ink-600">Không có dữ liệu thuốc.</td>
+                </tr>
+              ) : null}
+              {!loading ? paged.map((drug) => (
                 <Fragment key={drug.id}>
                   <tr className="hover:bg-white/80">
                     <td className="px-6 py-4 font-semibold text-ink-900">{drug.code}</td>
@@ -1013,8 +1284,20 @@ export function DrugCatalog() {
                     <td className="px-6 py-4">
                       <div className="flex flex-wrap gap-2">
                         <button onClick={() => setExpandedId((prev) => (prev === drug.id ? null : drug.id))} className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900">Chi tiết</button>
-                        <button onClick={() => openEdit(drug)} className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900">Sửa</button>
-                        <button onClick={() => removeDrug(drug)} className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500">Xóa</button>
+                        <button
+                          onClick={() => openEdit(drug)}
+                          disabled={!canManage}
+                          className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-60"
+                        >
+                          Sửa
+                        </button>
+                        <button
+                          onClick={() => void removeDrug(drug)}
+                          disabled={!canDelete}
+                          className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500 disabled:opacity-60"
+                        >
+                          Xóa
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -1047,14 +1330,16 @@ export function DrugCatalog() {
                     </tr>
                   ) : null}
                 </Fragment>
-              ))}
+              )) : null}
             </tbody>
           </table>
         </div>
       </section>
 
       <section className="flex flex-wrap items-center justify-between gap-3 text-sm text-ink-600">
-        <span>Hiển thị {(page - 1) * pageSize + 1} - {Math.min(page * pageSize, filtered.length)} trong {filtered.length} thuốc</span>
+        <span>
+          Hiển thị {filtered.length === 0 ? 0 : (page - 1) * pageSize + 1} - {Math.min(page * pageSize, filtered.length)} trong {filtered.length} thuốc
+        </span>
         <div className="flex items-center gap-2">
           <button onClick={() => setPage((p) => Math.max(1, p - 1))} className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900">Trước</button>
           <span>{page}/{totalPages}</span>
@@ -1076,9 +1361,10 @@ export function DrugCatalog() {
             <div className="flex-1 overflow-y-auto px-6 py-5">
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="space-y-2 text-sm text-ink-700">
-                  <span>Mã thuốc *</span>
-                  <input value={form.code} onChange={(e) => updateForm('code', e.target.value)} className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2" />
-                  {errors.code ? <span className="text-xs text-coral-500">{errors.code}</span> : null}
+                  <span>Mã thuốc</span>
+                  <div className="w-full rounded-2xl border border-ink-900/10 bg-fog-50 px-4 py-2 text-ink-700">
+                    {form.code || 'Tự động sinh khi lưu'}
+                  </div>
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">
                   <span>Tên thuốc *</span>
@@ -1092,15 +1378,17 @@ export function DrugCatalog() {
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">
                   <span>Nhóm thuốc *</span>
-                  <select value={form.group} onChange={(e) => updateForm('group', e.target.value)} className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2">
-                    {groups.map((g) => <option key={g}>{g}</option>)}
+                  <select value={form.groupId} onChange={(e) => updateForm('groupId', e.target.value)} className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2">
+                    <option value="">Chọn nhóm thuốc</option>
+                    {groupOptions.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
                   </select>
                   {errors.group ? <span className="text-xs text-coral-500">{errors.group}</span> : null}
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">
                   <span>Hãng sản xuất *</span>
-                  <select value={form.maker} onChange={(e) => updateForm('maker', e.target.value)} className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2">
-                    {makers.map((m) => <option key={m}>{m}</option>)}
+                  <select value={form.makerId} onChange={(e) => updateForm('makerId', e.target.value)} className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2">
+                    <option value="">Chọn hãng sản xuất</option>
+                    {makerOptions.map((maker) => <option key={maker.id} value={maker.id}>{maker.name}</option>)}
                   </select>
                   {errors.maker ? <span className="text-xs text-coral-500">{errors.maker}</span> : null}
                 </label>
@@ -1150,6 +1438,7 @@ export function DrugCatalog() {
                     ) : null}
                   </div>
                 </div>
+                {errors['unit-duplicate'] ? <p className="text-xs text-coral-500">{errors['unit-duplicate']}</p> : null}
 
                 {!form.singleUnit ? (
                   <div className="rounded-2xl bg-fog-50 p-4">
@@ -1230,8 +1519,20 @@ export function DrugCatalog() {
               </div>
             </div>
             <div className="flex flex-wrap gap-3 border-t border-ink-900/10 px-6 py-4">
-              <button onClick={saveDrug} className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift">Lưu</button>
-              <button onClick={() => setModalOpen(false)} className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900">Hủy</button>
+              <button
+                onClick={() => void saveDrug()}
+                disabled={saving || !canManage}
+                className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift disabled:opacity-60"
+              >
+                {saving ? 'Đang lưu...' : 'Lưu'}
+              </button>
+              <button
+                onClick={() => setModalOpen(false)}
+                disabled={saving}
+                className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
+              >
+                Hủy
+              </button>
             </div>
           </div>
         </div>
