@@ -51,3 +51,59 @@ type DefaultSetting struct {
 	Description string
 	IsPublic    bool
 }
+
+type DrugCategory struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description *string   `json:"description"`
+	IsActive    bool      `json:"is_active"`
+	SortOrder   int       `json:"sort_order"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type DrugGroup struct {
+	ID          string    `json:"id"`
+	CategoryID  string    `json:"category_id"`
+	Name        string    `json:"name"`
+	Description *string   `json:"description"`
+	IsActive    bool      `json:"is_active"`
+	SortOrder   int       `json:"sort_order"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type DrugCategoryWithGroups struct {
+	DrugCategory
+	Groups []DrugGroup `json:"groups"`
+}
+
+type CreateDrugCategoryRequest struct {
+	Name        string  `json:"name"`
+	Description *string `json:"description"`
+	IsActive    *bool   `json:"is_active"`
+	SortOrder   *int    `json:"sort_order"`
+}
+
+type UpdateDrugCategoryRequest struct {
+	Name        *string `json:"name"`
+	Description *string `json:"description"`
+	IsActive    *bool   `json:"is_active"`
+	SortOrder   *int    `json:"sort_order"`
+}
+
+type CreateDrugGroupRequest struct {
+	CategoryID  string  `json:"category_id"`
+	Name        string  `json:"name"`
+	Description *string `json:"description"`
+	IsActive    *bool   `json:"is_active"`
+	SortOrder   *int    `json:"sort_order"`
+}
+
+type UpdateDrugGroupRequest struct {
+	CategoryID  *string `json:"category_id"`
+	Name        *string `json:"name"`
+	Description *string `json:"description"`
+	IsActive    *bool   `json:"is_active"`
+	SortOrder   *int    `json:"sort_order"`
+}

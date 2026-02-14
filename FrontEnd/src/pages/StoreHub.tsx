@@ -7,6 +7,12 @@ const storeModules = [
     path: '/cua-hang/cai-dat',
   },
   {
+    title: 'Loại & nhóm thuốc',
+    description:
+      'Owner quản lý loại hàng (ví dụ thuốc kê đơn, TPBVSK, vật tư y tế) và nhóm thuốc chi tiết.',
+    path: '/cua-hang/nhom-thuoc',
+  },
+  {
     title: 'Nhà sản xuất',
     description: 'Quản lý danh sách công ty sản xuất và thông tin liên hệ.',
     path: '/nha-san-xuat',

@@ -152,9 +152,21 @@ def receipt_code_for_date(receipt_date: date) -> str:
     return f"PN{receipt_date.strftime('%Y%m%d')}{same_day + 1:03d}"
 
 
-def batch_code_for_date(receipt_date: date) -> str:
-    same_day = sum(1 for b in runtime_state.batches.values() if b["received_date"] == receipt_date)
-    return f"LO{receipt_date.strftime('%Y%m%d')}{same_day + 1:03d}"
+def next_available_batch_code(
+    receipt_date: date,
+    reserved_codes: set[str],
+    ignore_ids: set[str] | None = None,
+) -> str:
+    sequence = 1
+    prefix = f"LO{receipt_date.strftime('%Y%m%d')}"
+    while True:
+        candidate = normalize_code(f"{prefix}{sequence:03d}")
+        if candidate in reserved_codes:
+            sequence += 1
+            continue
+        if not is_batch_code_used(candidate, ignore_ids=ignore_ids):
+            return candidate
+        sequence += 1
 
 
 def get_supplier_or_404(supplier_id: str) -> dict[str, Any]:
@@ -633,13 +645,24 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
         receipt_id = next_id("receipt", "rcp")
         now = utc_now()
         lines: list[dict[str, Any]] = []
+        staged_batches: list[dict[str, Any]] = []
+        staged_movements: list[tuple[str, str, int]] = []
+        reserved_batch_codes: set[str] = set()
         total = 0.0
 
         for line in payload.lines:
             drug = resolve_drug(drug_id=line.drug_id, drug_code_or_sku=line.drug_code)
-            batch_code = normalize_code(line.batch_code) if line.batch_code else batch_code_for_date(payload.receipt_date)
+
+            if line.batch_code:
+                batch_code = normalize_code(line.batch_code)
+            else:
+                batch_code = next_available_batch_code(payload.receipt_date, reserved_batch_codes)
+
+            if batch_code in reserved_batch_codes:
+                raise HTTPException(status_code=409, detail=f"Batch code '{batch_code}' is duplicated in payload")
             if is_batch_code_used(batch_code):
                 raise HTTPException(status_code=409, detail=f"Batch code '{batch_code}' already exists")
+            reserved_batch_codes.add(batch_code)
 
             batch_id = next_id("batch", "bt")
             line_id = next_id("receipt_line", "rline")
@@ -672,7 +695,7 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
                 "created_at": now,
                 "updated_at": now,
             }
-            runtime_state.batches[batch_id] = batch
+            staged_batches.append(batch)
 
             row = {
                 "id": line_id,
@@ -696,8 +719,7 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
             }
             lines.append(row)
             total += line.quantity * line.import_price
-
-            add_movement(MovementType.IMPORT_RECEIPT, drug["id"], batch_id, line.quantity, "import_receipt", receipt_id, actor, "create import receipt")
+            staged_movements.append((drug["id"], batch_id, line.quantity))
 
         receipt = {
             "id": receipt_id,
@@ -715,7 +737,21 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
             "total_value": round(total, 2),
             "lines": lines,
         }
+
+        for batch in staged_batches:
+            runtime_state.batches[batch["id"]] = batch
         runtime_state.receipts[receipt_id] = receipt
+        for drug_id, batch_id, quantity in staged_movements:
+            add_movement(
+                MovementType.IMPORT_RECEIPT,
+                drug_id,
+                batch_id,
+                quantity,
+                "import_receipt",
+                receipt_id,
+                actor,
+                "create import receipt",
+            )
 
     return receipt_to_view(receipt)
 
@@ -743,6 +779,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
             existing_batch_ids = {line["batch_id"] for line in receipt["lines"]}
             incoming_batch_codes: set[str] = set()
             lines: list[dict[str, Any]] = []
+            staged_batch_updates: list[tuple[dict[str, Any], dict[str, Any]]] = []
             total = 0.0
 
             for line in payload.lines:
@@ -809,28 +846,37 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                 }
                 lines.append(row)
                 total += row["quantity"] * row["import_price"]
-
-                batch["batch_code"] = row["batch_code"]
-                batch["lot_number"] = row["lot_number"]
-                batch["supplier_id"] = supplier["id"]
-                batch["received_date"] = payload.receipt_date
-                batch["mfg_date"] = row["mfg_date"]
-                batch["exp_date"] = row["exp_date"]
-                batch["import_price"] = row["import_price"]
-                batch["barcode"] = row["barcode"]
-                batch["promo_type"] = row["promo_type"]
-                batch["promo_buy_qty"] = row["promo_buy_qty"]
-                batch["promo_get_qty"] = row["promo_get_qty"]
-                batch["promo_discount_percent"] = row["promo_discount_percent"]
-                batch["unit_prices"] = row["unit_prices"]
-                batch["promo_note"] = row["promo_note"]
-                batch["updated_at"] = now
+                staged_batch_updates.append(
+                    (
+                        batch,
+                        {
+                            "batch_code": row["batch_code"],
+                            "lot_number": row["lot_number"],
+                            "supplier_id": supplier["id"],
+                            "received_date": payload.receipt_date,
+                            "mfg_date": row["mfg_date"],
+                            "exp_date": row["exp_date"],
+                            "import_price": row["import_price"],
+                            "barcode": row["barcode"],
+                            "promo_type": row["promo_type"],
+                            "promo_buy_qty": row["promo_buy_qty"],
+                            "promo_get_qty": row["promo_get_qty"],
+                            "promo_discount_percent": row["promo_discount_percent"],
+                            "unit_prices": row["unit_prices"],
+                            "promo_note": row["promo_note"],
+                            "updated_at": now,
+                        },
+                    )
+                )
 
             if len(incoming_batch_codes) != len(existing_by_batch_code):
                 raise HTTPException(
                     status_code=409,
                     detail="Receipt has sales/adjustments. Owner/admin cannot add/remove lines.",
                 )
+
+            for batch, patch in staged_batch_updates:
+                batch.update(patch)
 
             receipt["receipt_date"] = payload.receipt_date
             receipt["supplier_id"] = supplier["id"]
@@ -844,23 +890,29 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
             return receipt_to_view(receipt)
 
         old_batch_ids = {line["batch_id"] for line in receipt["lines"]}
-        for batch_id in old_batch_ids:
-            runtime_state.batches.pop(batch_id, None)
-
-        runtime_state.movements = [
-            m
-            for m in runtime_state.movements
-            if not (m["batch_id"] in old_batch_ids and m["event_type"] == MovementType.IMPORT_RECEIPT and m["reference_id"] == receipt["id"])
-        ]
-
         lines: list[dict[str, Any]] = []
+        staged_batches: list[dict[str, Any]] = []
+        staged_movements: list[tuple[str, str, int]] = []
+        reserved_batch_codes: set[str] = set()
         total = 0.0
 
         for line in payload.lines:
             drug = resolve_drug(drug_id=line.drug_id, drug_code_or_sku=line.drug_code)
-            batch_code = normalize_code(line.batch_code) if line.batch_code else batch_code_for_date(payload.receipt_date)
-            if is_batch_code_used(batch_code):
+
+            if line.batch_code:
+                batch_code = normalize_code(line.batch_code)
+            else:
+                batch_code = next_available_batch_code(
+                    payload.receipt_date,
+                    reserved_batch_codes,
+                    ignore_ids=old_batch_ids,
+                )
+
+            if batch_code in reserved_batch_codes:
+                raise HTTPException(status_code=409, detail=f"Batch code '{batch_code}' is duplicated in payload")
+            if is_batch_code_used(batch_code, ignore_ids=old_batch_ids):
                 raise HTTPException(status_code=409, detail=f"Batch code '{batch_code}' already exists")
+            reserved_batch_codes.add(batch_code)
 
             batch_id = next_id("batch", "bt")
             line_id = next_id("receipt_line", "rline")
@@ -893,7 +945,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                 "created_at": now,
                 "updated_at": now,
             }
-            runtime_state.batches[batch_id] = batch
+            staged_batches.append(batch)
 
             row = {
                 "id": line_id,
@@ -917,8 +969,19 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
             }
             lines.append(row)
             total += line.quantity * line.import_price
+            staged_movements.append((drug["id"], batch_id, line.quantity))
 
-            add_movement(MovementType.IMPORT_RECEIPT, drug["id"], batch_id, line.quantity, "import_receipt", receipt["id"], actor, "update import receipt")
+        for batch_id in old_batch_ids:
+            runtime_state.batches.pop(batch_id, None)
+
+        runtime_state.movements = [
+            m
+            for m in runtime_state.movements
+            if not (m["batch_id"] in old_batch_ids and m["event_type"] == MovementType.IMPORT_RECEIPT and m["reference_id"] == receipt["id"])
+        ]
+
+        for batch in staged_batches:
+            runtime_state.batches[batch["id"]] = batch
 
         receipt["receipt_date"] = payload.receipt_date
         receipt["supplier_id"] = supplier["id"]
@@ -929,6 +992,17 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
         receipt["lines"] = lines
         receipt["total_value"] = round(total, 2)
         receipt["updated_at"] = now
+        for drug_id, batch_id, quantity in staged_movements:
+            add_movement(
+                MovementType.IMPORT_RECEIPT,
+                drug_id,
+                batch_id,
+                quantity,
+                "import_receipt",
+                receipt["id"],
+                actor,
+                "update import receipt",
+            )
 
     return receipt_to_view(receipt)
 

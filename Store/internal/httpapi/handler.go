@@ -62,6 +62,15 @@ func (h *Handler) routes() http.Handler {
 		r.With(auth.OwnerOnly(h.cfg)).Put("/settings", h.updateSettingsBulk)
 		r.With(auth.OwnerOnly(h.cfg)).Post("/settings/reset", h.resetAllSettings)
 		r.With(auth.OwnerOnly(h.cfg)).Post("/settings/reset/{key}", h.resetSetting)
+
+		r.Get("/drug-categories", h.listDrugCategories)
+		r.With(auth.OwnerOnly(h.cfg)).Post("/drug-categories", h.createDrugCategory)
+		r.With(auth.OwnerOnly(h.cfg)).Put("/drug-categories/{categoryID}", h.updateDrugCategory)
+		r.With(auth.OwnerOnly(h.cfg)).Delete("/drug-categories/{categoryID}", h.deleteDrugCategory)
+
+		r.With(auth.OwnerOnly(h.cfg)).Post("/drug-groups", h.createDrugGroup)
+		r.With(auth.OwnerOnly(h.cfg)).Put("/drug-groups/{groupID}", h.updateDrugGroup)
+		r.With(auth.OwnerOnly(h.cfg)).Delete("/drug-groups/{groupID}", h.deleteDrugGroup)
 	})
 
 	return r
@@ -263,6 +272,162 @@ func (h *Handler) resetSetting(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) listDrugCategories(w http.ResponseWriter, r *http.Request) {
+	includeInactive := parseBoolQuery(r.URL.Query().Get("include_inactive"))
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+
+	items, err := h.svc.ListDrugCategories(r.Context(), includeInactive, search)
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	totalGroups := 0
+	for _, item := range items {
+		totalGroups += len(item.Groups)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":            items,
+		"total_categories": len(items),
+		"total_groups":     totalGroups,
+	})
+}
+
+func (h *Handler) createDrugCategory(w http.ResponseWriter, r *http.Request) {
+	var payload domain.CreateDrugCategoryRequest
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	category, err := h.svc.CreateDrugCategory(r.Context(), payload, getActorSubject(r))
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	responseItem := domain.DrugCategoryWithGroups{
+		DrugCategory: category,
+		Groups:       []domain.DrugGroup{},
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"message": "Drug category created",
+		"data":    responseItem,
+	})
+}
+
+func (h *Handler) updateDrugCategory(w http.ResponseWriter, r *http.Request) {
+	categoryID := chi.URLParam(r, "categoryID")
+	if strings.TrimSpace(categoryID) == "" {
+		writeError(w, http.StatusBadRequest, "categoryID is required")
+		return
+	}
+
+	var payload domain.UpdateDrugCategoryRequest
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	category, err := h.svc.UpdateDrugCategory(r.Context(), categoryID, payload, getActorSubject(r))
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	responseItem := domain.DrugCategoryWithGroups{
+		DrugCategory: category,
+		Groups:       []domain.DrugGroup{},
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Drug category updated",
+		"data":    responseItem,
+	})
+}
+
+func (h *Handler) deleteDrugCategory(w http.ResponseWriter, r *http.Request) {
+	categoryID := chi.URLParam(r, "categoryID")
+	if strings.TrimSpace(categoryID) == "" {
+		writeError(w, http.StatusBadRequest, "categoryID is required")
+		return
+	}
+
+	if err := h.svc.DeleteDrugCategory(r.Context(), categoryID); err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Drug category deleted",
+		"id":      categoryID,
+	})
+}
+
+func (h *Handler) createDrugGroup(w http.ResponseWriter, r *http.Request) {
+	var payload domain.CreateDrugGroupRequest
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	group, err := h.svc.CreateDrugGroup(r.Context(), payload, getActorSubject(r))
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"message": "Drug group created",
+		"data":    group,
+	})
+}
+
+func (h *Handler) updateDrugGroup(w http.ResponseWriter, r *http.Request) {
+	groupID := chi.URLParam(r, "groupID")
+	if strings.TrimSpace(groupID) == "" {
+		writeError(w, http.StatusBadRequest, "groupID is required")
+		return
+	}
+
+	var payload domain.UpdateDrugGroupRequest
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	group, err := h.svc.UpdateDrugGroup(r.Context(), groupID, payload, getActorSubject(r))
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Drug group updated",
+		"data":    group,
+	})
+}
+
+func (h *Handler) deleteDrugGroup(w http.ResponseWriter, r *http.Request) {
+	groupID := chi.URLParam(r, "groupID")
+	if strings.TrimSpace(groupID) == "" {
+		writeError(w, http.StatusBadRequest, "groupID is required")
+		return
+	}
+
+	if err := h.svc.DeleteDrugGroup(r.Context(), groupID); err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Drug group deleted",
+		"id":      groupID,
+	})
+}
+
 func (h *Handler) handleServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, app.ErrBadRequest):
@@ -280,6 +445,11 @@ func getActorSubject(r *http.Request) string {
 		return ""
 	}
 	return claims.Subject
+}
+
+func parseBoolQuery(raw string) bool {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	return value == "1" || value == "true" || value == "yes"
 }
 
 func decodeJSON(r *http.Request, dst any) error {

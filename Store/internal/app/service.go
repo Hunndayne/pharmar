@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -30,6 +31,7 @@ const (
 	settingsCacheKeyAllPrefix   = "store:settings:all"
 	settingsCacheKeyGroupPrefix = "store:settings:group:"
 	settingsCacheKeyItemPrefix  = "store:settings:item:"
+	defaultSortOrder            = 100
 )
 
 type Service struct {
@@ -74,6 +76,10 @@ func New(ctx context.Context, cfg config.Config) (*Service, error) {
 	}
 
 	if err := svc.seedDefaults(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	if err := svc.seedDrugClassification(ctx); err != nil {
 		pool.Close()
 		return nil, err
 	}
@@ -140,6 +146,37 @@ func (s *Service) migrate(ctx context.Context) error {
 			updated_by UUID
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_settings_group ON store.settings(group_name)`,
+		`CREATE TABLE IF NOT EXISTS store.drug_categories (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			name VARCHAR(120) NOT NULL,
+			description TEXT,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			sort_order INTEGER NOT NULL DEFAULT 100,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			created_by TEXT,
+			updated_by TEXT
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_drug_categories_name_unique
+		  ON store.drug_categories ((lower(name)))`,
+		`CREATE INDEX IF NOT EXISTS idx_drug_categories_active_sort
+		  ON store.drug_categories (is_active, sort_order, name)`,
+		`CREATE TABLE IF NOT EXISTS store.drug_groups (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			category_id UUID NOT NULL REFERENCES store.drug_categories(id) ON DELETE RESTRICT,
+			name VARCHAR(120) NOT NULL,
+			description TEXT,
+			is_active BOOLEAN NOT NULL DEFAULT TRUE,
+			sort_order INTEGER NOT NULL DEFAULT 100,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			created_by TEXT,
+			updated_by TEXT
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_drug_groups_category_name_unique
+		  ON store.drug_groups (category_id, lower(name))`,
+		`CREATE INDEX IF NOT EXISTS idx_drug_groups_category_active_sort
+		  ON store.drug_groups (category_id, is_active, sort_order, name)`,
 	}
 
 	for _, query := range queries {
@@ -191,6 +228,502 @@ func (s *Service) seedDefaults(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (s *Service) seedDrugClassification(ctx context.Context) error {
+	type categorySeed struct {
+		Name        string
+		Description string
+		SortOrder   int
+	}
+
+	type groupSeed struct {
+		CategoryName string
+		Name         string
+		Description  string
+		SortOrder    int
+	}
+
+	categories := []categorySeed{
+		{Name: "Thuốc kê đơn", Description: "Nhóm thuốc cần đơn bác sĩ theo quy định.", SortOrder: 10},
+		{Name: "Thực phẩm bảo vệ sức khỏe", Description: "Sản phẩm hỗ trợ sức khỏe, không phải thuốc điều trị.", SortOrder: 20},
+		{Name: "Vật tư y tế", Description: "Dụng cụ, thiết bị và vật tư y tế tiêu hao.", SortOrder: 30},
+	}
+
+	for _, item := range categories {
+		if _, err := s.pool.Exec(
+			ctx,
+			`INSERT INTO store.drug_categories (name, description, is_active, sort_order)
+			 VALUES ($1, $2, TRUE, $3)
+			 ON CONFLICT DO NOTHING`,
+			item.Name,
+			item.Description,
+			item.SortOrder,
+		); err != nil {
+			return fmt.Errorf("seed drug category '%s': %w", item.Name, err)
+		}
+	}
+
+	groups := []groupSeed{
+		{CategoryName: "Thuốc kê đơn", Name: "Thuốc kháng sinh", Description: "Thuốc điều trị nhiễm khuẩn.", SortOrder: 10},
+		{CategoryName: "Thuốc kê đơn", Name: "Dùng ngoài da", Description: "Thuốc bôi/đắp dùng ngoài da.", SortOrder: 20},
+	}
+
+	for _, item := range groups {
+		if _, err := s.pool.Exec(
+			ctx,
+			`INSERT INTO store.drug_groups (category_id, name, description, is_active, sort_order)
+			 SELECT c.id, $2, $3, TRUE, $4
+			   FROM store.drug_categories c
+			  WHERE lower(c.name) = lower($1)
+			 ON CONFLICT DO NOTHING`,
+			item.CategoryName,
+			item.Name,
+			item.Description,
+			item.SortOrder,
+		); err != nil {
+			return fmt.Errorf("seed drug group '%s': %w", item.Name, err)
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) ListDrugCategories(ctx context.Context, includeInactive bool, search string) ([]domain.DrugCategoryWithGroups, error) {
+	keyword := strings.TrimSpace(search)
+	rows, err := s.pool.Query(
+		ctx,
+		`SELECT c.id::text, c.name, c.description, c.is_active, c.sort_order, c.created_at, c.updated_at
+		   FROM store.drug_categories c
+		  WHERE ($1 OR c.is_active = TRUE)
+		    AND (
+		      $2 = ''
+		      OR c.name ILIKE '%' || $2 || '%'
+		      OR EXISTS (
+		        SELECT 1
+		          FROM store.drug_groups g
+		         WHERE g.category_id = c.id
+		           AND ($1 OR g.is_active = TRUE)
+		           AND g.name ILIKE '%' || $2 || '%'
+		      )
+		    )
+		  ORDER BY c.sort_order ASC, c.name ASC`,
+		includeInactive,
+		keyword,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]domain.DrugCategoryWithGroups, 0)
+	categoryIDs := make([]string, 0)
+	indexByCategory := make(map[string]int)
+
+	for rows.Next() {
+		item, scanErr := scanDrugCategory(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, domain.DrugCategoryWithGroups{
+			DrugCategory: item,
+			Groups:       []domain.DrugGroup{},
+		})
+		categoryIDs = append(categoryIDs, item.ID)
+		indexByCategory[item.ID] = len(items) - 1
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(items) == 0 {
+		return items, nil
+	}
+
+	groupRows, err := s.pool.Query(
+		ctx,
+		`SELECT g.id::text, g.category_id::text, g.name, g.description, g.is_active, g.sort_order, g.created_at, g.updated_at
+		   FROM store.drug_groups g
+		  WHERE g.category_id::text = ANY($1)
+		    AND ($2 OR g.is_active = TRUE)
+		  ORDER BY g.sort_order ASC, g.name ASC`,
+		categoryIDs,
+		includeInactive,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer groupRows.Close()
+
+	for groupRows.Next() {
+		group, scanErr := scanDrugGroup(groupRows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		index, exists := indexByCategory[group.CategoryID]
+		if !exists {
+			continue
+		}
+		items[index].Groups = append(items[index].Groups, group)
+	}
+	if err := groupRows.Err(); err != nil {
+		return nil, err
+	}
+
+	return items, nil
+}
+
+func (s *Service) CreateDrugCategory(
+	ctx context.Context,
+	payload domain.CreateDrugCategoryRequest,
+	actor string,
+) (domain.DrugCategory, error) {
+	name := strings.TrimSpace(payload.Name)
+	if name == "" {
+		return domain.DrugCategory{}, fmt.Errorf("%w: category name is required", ErrBadRequest)
+	}
+
+	sortOrder := defaultSortOrder
+	if payload.SortOrder != nil {
+		sortOrder = *payload.SortOrder
+	}
+	if sortOrder < 0 {
+		return domain.DrugCategory{}, fmt.Errorf("%w: sort_order must be >= 0", ErrBadRequest)
+	}
+
+	isActive := true
+	if payload.IsActive != nil {
+		isActive = *payload.IsActive
+	}
+
+	row := s.pool.QueryRow(
+		ctx,
+		`INSERT INTO store.drug_categories (name, description, is_active, sort_order, created_by, updated_by)
+		 VALUES ($1, $2, $3, $4, $5, $5)
+		 RETURNING id::text, name, description, is_active, sort_order, created_at, updated_at`,
+		name,
+		normalizeOptionalText(payload.Description),
+		isActive,
+		sortOrder,
+		normalizeActor(actor),
+	)
+
+	item, err := scanDrugCategory(row)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return domain.DrugCategory{}, fmt.Errorf("%w: category name already exists", ErrBadRequest)
+		}
+		return domain.DrugCategory{}, err
+	}
+
+	return item, nil
+}
+
+func (s *Service) UpdateDrugCategory(
+	ctx context.Context,
+	categoryID string,
+	payload domain.UpdateDrugCategoryRequest,
+	actor string,
+) (domain.DrugCategory, error) {
+	item, err := s.getDrugCategoryByID(ctx, categoryID)
+	if err != nil {
+		return domain.DrugCategory{}, err
+	}
+
+	if payload.Name != nil {
+		nextName := strings.TrimSpace(*payload.Name)
+		if nextName == "" {
+			return domain.DrugCategory{}, fmt.Errorf("%w: category name is required", ErrBadRequest)
+		}
+		item.Name = nextName
+	}
+
+	if payload.Description != nil {
+		item.Description = normalizeOptionalText(payload.Description)
+	}
+
+	if payload.IsActive != nil {
+		item.IsActive = *payload.IsActive
+	}
+
+	if payload.SortOrder != nil {
+		if *payload.SortOrder < 0 {
+			return domain.DrugCategory{}, fmt.Errorf("%w: sort_order must be >= 0", ErrBadRequest)
+		}
+		item.SortOrder = *payload.SortOrder
+	}
+
+	row := s.pool.QueryRow(
+		ctx,
+		`UPDATE store.drug_categories
+		    SET name = $2,
+		        description = $3,
+		        is_active = $4,
+		        sort_order = $5,
+		        updated_at = NOW(),
+		        updated_by = $6
+		  WHERE id = $1
+		  RETURNING id::text, name, description, is_active, sort_order, created_at, updated_at`,
+		categoryID,
+		item.Name,
+		item.Description,
+		item.IsActive,
+		item.SortOrder,
+		normalizeActor(actor),
+	)
+
+	updated, err := scanDrugCategory(row)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return domain.DrugCategory{}, fmt.Errorf("%w: category name already exists", ErrBadRequest)
+		}
+		return domain.DrugCategory{}, err
+	}
+
+	return updated, nil
+}
+
+func (s *Service) DeleteDrugCategory(ctx context.Context, categoryID string) error {
+	categoryID = strings.TrimSpace(categoryID)
+	if categoryID == "" {
+		return fmt.Errorf("%w: category_id is required", ErrBadRequest)
+	}
+
+	if _, err := uuid.Parse(categoryID); err != nil {
+		return fmt.Errorf("%w: invalid category_id", ErrBadRequest)
+	}
+
+	var groupCount int
+	if err := s.pool.QueryRow(
+		ctx,
+		`SELECT COUNT(*) FROM store.drug_groups WHERE category_id = $1`,
+		categoryID,
+	).Scan(&groupCount); err != nil {
+		return err
+	}
+	if groupCount > 0 {
+		return fmt.Errorf("%w: cannot delete category while groups still exist", ErrBadRequest)
+	}
+
+	commandTag, err := s.pool.Exec(ctx, `DELETE FROM store.drug_categories WHERE id = $1`, categoryID)
+	if err != nil {
+		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: category not found", ErrNotFound)
+	}
+
+	return nil
+}
+
+func (s *Service) CreateDrugGroup(
+	ctx context.Context,
+	payload domain.CreateDrugGroupRequest,
+	actor string,
+) (domain.DrugGroup, error) {
+	categoryID := strings.TrimSpace(payload.CategoryID)
+	if categoryID == "" {
+		return domain.DrugGroup{}, fmt.Errorf("%w: category_id is required", ErrBadRequest)
+	}
+
+	if _, err := s.getDrugCategoryByID(ctx, categoryID); err != nil {
+		return domain.DrugGroup{}, err
+	}
+
+	name := strings.TrimSpace(payload.Name)
+	if name == "" {
+		return domain.DrugGroup{}, fmt.Errorf("%w: group name is required", ErrBadRequest)
+	}
+
+	sortOrder := defaultSortOrder
+	if payload.SortOrder != nil {
+		sortOrder = *payload.SortOrder
+	}
+	if sortOrder < 0 {
+		return domain.DrugGroup{}, fmt.Errorf("%w: sort_order must be >= 0", ErrBadRequest)
+	}
+
+	isActive := true
+	if payload.IsActive != nil {
+		isActive = *payload.IsActive
+	}
+
+	row := s.pool.QueryRow(
+		ctx,
+		`INSERT INTO store.drug_groups (category_id, name, description, is_active, sort_order, created_by, updated_by)
+		 VALUES ($1, $2, $3, $4, $5, $6, $6)
+		 RETURNING id::text, category_id::text, name, description, is_active, sort_order, created_at, updated_at`,
+		categoryID,
+		name,
+		normalizeOptionalText(payload.Description),
+		isActive,
+		sortOrder,
+		normalizeActor(actor),
+	)
+
+	group, err := scanDrugGroup(row)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return domain.DrugGroup{}, fmt.Errorf("%w: group name already exists in this category", ErrBadRequest)
+		}
+		return domain.DrugGroup{}, err
+	}
+
+	return group, nil
+}
+
+func (s *Service) UpdateDrugGroup(
+	ctx context.Context,
+	groupID string,
+	payload domain.UpdateDrugGroupRequest,
+	actor string,
+) (domain.DrugGroup, error) {
+	group, err := s.getDrugGroupByID(ctx, groupID)
+	if err != nil {
+		return domain.DrugGroup{}, err
+	}
+
+	if payload.CategoryID != nil {
+		nextCategoryID := strings.TrimSpace(*payload.CategoryID)
+		if nextCategoryID == "" {
+			return domain.DrugGroup{}, fmt.Errorf("%w: category_id is required", ErrBadRequest)
+		}
+		if _, err := s.getDrugCategoryByID(ctx, nextCategoryID); err != nil {
+			return domain.DrugGroup{}, err
+		}
+		group.CategoryID = nextCategoryID
+	}
+
+	if payload.Name != nil {
+		nextName := strings.TrimSpace(*payload.Name)
+		if nextName == "" {
+			return domain.DrugGroup{}, fmt.Errorf("%w: group name is required", ErrBadRequest)
+		}
+		group.Name = nextName
+	}
+
+	if payload.Description != nil {
+		group.Description = normalizeOptionalText(payload.Description)
+	}
+
+	if payload.IsActive != nil {
+		group.IsActive = *payload.IsActive
+	}
+
+	if payload.SortOrder != nil {
+		if *payload.SortOrder < 0 {
+			return domain.DrugGroup{}, fmt.Errorf("%w: sort_order must be >= 0", ErrBadRequest)
+		}
+		group.SortOrder = *payload.SortOrder
+	}
+
+	row := s.pool.QueryRow(
+		ctx,
+		`UPDATE store.drug_groups
+		    SET category_id = $2,
+		        name = $3,
+		        description = $4,
+		        is_active = $5,
+		        sort_order = $6,
+		        updated_at = NOW(),
+		        updated_by = $7
+		  WHERE id = $1
+		  RETURNING id::text, category_id::text, name, description, is_active, sort_order, created_at, updated_at`,
+		groupID,
+		group.CategoryID,
+		group.Name,
+		group.Description,
+		group.IsActive,
+		group.SortOrder,
+		normalizeActor(actor),
+	)
+
+	updated, err := scanDrugGroup(row)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return domain.DrugGroup{}, fmt.Errorf("%w: group name already exists in this category", ErrBadRequest)
+		}
+		return domain.DrugGroup{}, err
+	}
+
+	return updated, nil
+}
+
+func (s *Service) DeleteDrugGroup(ctx context.Context, groupID string) error {
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return fmt.Errorf("%w: group_id is required", ErrBadRequest)
+	}
+
+	if _, err := uuid.Parse(groupID); err != nil {
+		return fmt.Errorf("%w: invalid group_id", ErrBadRequest)
+	}
+
+	commandTag, err := s.pool.Exec(ctx, `DELETE FROM store.drug_groups WHERE id = $1`, groupID)
+	if err != nil {
+		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: group not found", ErrNotFound)
+	}
+
+	return nil
+}
+
+func (s *Service) getDrugCategoryByID(ctx context.Context, categoryID string) (domain.DrugCategory, error) {
+	categoryID = strings.TrimSpace(categoryID)
+	if categoryID == "" {
+		return domain.DrugCategory{}, fmt.Errorf("%w: category_id is required", ErrBadRequest)
+	}
+	if _, err := uuid.Parse(categoryID); err != nil {
+		return domain.DrugCategory{}, fmt.Errorf("%w: invalid category_id", ErrBadRequest)
+	}
+
+	row := s.pool.QueryRow(
+		ctx,
+		`SELECT id::text, name, description, is_active, sort_order, created_at, updated_at
+		   FROM store.drug_categories
+		  WHERE id = $1`,
+		categoryID,
+	)
+
+	item, err := scanDrugCategory(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.DrugCategory{}, fmt.Errorf("%w: category not found", ErrNotFound)
+		}
+		return domain.DrugCategory{}, err
+	}
+
+	return item, nil
+}
+
+func (s *Service) getDrugGroupByID(ctx context.Context, groupID string) (domain.DrugGroup, error) {
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return domain.DrugGroup{}, fmt.Errorf("%w: group_id is required", ErrBadRequest)
+	}
+	if _, err := uuid.Parse(groupID); err != nil {
+		return domain.DrugGroup{}, fmt.Errorf("%w: invalid group_id", ErrBadRequest)
+	}
+
+	row := s.pool.QueryRow(
+		ctx,
+		`SELECT id::text, category_id::text, name, description, is_active, sort_order, created_at, updated_at
+		   FROM store.drug_groups
+		  WHERE id = $1`,
+		groupID,
+	)
+
+	item, err := scanDrugGroup(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.DrugGroup{}, fmt.Errorf("%w: group not found", ErrNotFound)
+		}
+		return domain.DrugGroup{}, err
+	}
+
+	return item, nil
 }
 
 func (s *Service) GetStoreInfo(ctx context.Context) (domain.StoreInfo, error) {
@@ -789,6 +1322,30 @@ func (s *Service) invalidateSettingsCache(ctx context.Context, keys []string, gr
 	}
 }
 
+func normalizeOptionalText(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
+
+func normalizeActor(actor string) any {
+	trimmed := strings.TrimSpace(actor)
+	if trimmed == "" {
+		return nil
+	}
+	return trimmed
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
 func mergeOptional(current *string, incoming *string) *string {
 	if incoming == nil {
 		return current
@@ -860,6 +1417,39 @@ func scanStoreInfo(row pgx.Row) (domain.StoreInfo, error) {
 		return domain.StoreInfo{}, err
 	}
 	return info, nil
+}
+
+func scanDrugCategory(row pgx.Row) (domain.DrugCategory, error) {
+	var item domain.DrugCategory
+	if err := row.Scan(
+		&item.ID,
+		&item.Name,
+		&item.Description,
+		&item.IsActive,
+		&item.SortOrder,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		return domain.DrugCategory{}, err
+	}
+	return item, nil
+}
+
+func scanDrugGroup(row pgx.Row) (domain.DrugGroup, error) {
+	var item domain.DrugGroup
+	if err := row.Scan(
+		&item.ID,
+		&item.CategoryID,
+		&item.Name,
+		&item.Description,
+		&item.IsActive,
+		&item.SortOrder,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		return domain.DrugGroup{}, err
+	}
+	return item, nil
 }
 
 func scanSetting(row pgx.Row) (domain.Setting, error) {

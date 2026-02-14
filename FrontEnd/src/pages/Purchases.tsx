@@ -250,6 +250,7 @@ const LABEL_WIDTH_MM = 50.8
 const LABEL_HEIGHT_MM = 25.4
 
 const sanitizeDigits = (value: string) => value.replace(/\D+/g, '')
+const normalizeBatchCode = (value: string) => value.trim().toUpperCase()
 const escapeHtml = (value: string) =>
   value
     .replace(/&/g, '&amp;')
@@ -285,22 +286,34 @@ const createOrderCode = (orders: PurchaseOrder[], date: string) => {
   return `PN${key}${String(sameDayCount + 1).padStart(3, '0')}`
 }
 
-const createLine = (date: string, index: number): LineItemForm => ({
-  id: `line-${Date.now()}-${index}`,
-  batchCode: `LO${toDateKey(date)}${String(index).padStart(3, '0')}`,
-  drugId: '',
-  lotNumber: '',
-  quantity: '',
-  mfgDate: '',
-  expDate: '',
-  price: '',
-  promoType: 'none',
-  promoBuyQty: '',
-  promoGetQty: '',
-  promoDiscountPercent: '',
-  barcode: '',
-  unitRetailPrices: [],
-})
+const createLine = (
+  date: string,
+  index: number,
+  existingBatchCodes: Set<string> = new Set(),
+): LineItemForm => {
+  let runningIndex = Math.max(1, index)
+  let batchCode = `LO${toDateKey(date)}${String(runningIndex).padStart(3, '0')}`
+  while (existingBatchCodes.has(normalizeBatchCode(batchCode))) {
+    runningIndex += 1
+    batchCode = `LO${toDateKey(date)}${String(runningIndex).padStart(3, '0')}`
+  }
+  return {
+    id: `line-${Date.now()}-${runningIndex}`,
+    batchCode,
+    drugId: '',
+    lotNumber: '',
+    quantity: '',
+    mfgDate: '',
+    expDate: '',
+    price: '',
+    promoType: 'none',
+    promoBuyQty: '',
+    promoGetQty: '',
+    promoDiscountPercent: '',
+    barcode: '',
+    unitRetailPrices: [],
+  }
+}
 
 const createEmptyOrder = (
   orders: PurchaseOrder[],
@@ -642,7 +655,7 @@ const buildInventoryPayloadFromForm = (order: OrderFormState): InventoryCreateRe
   note: order.note.trim() || null,
   lines: order.lines.map((line) => ({
     drug_id: line.drugId || undefined,
-    batch_code: line.batchCode.trim() || undefined,
+    batch_code: normalizeBatchCode(line.batchCode) || undefined,
     lot_number: line.lotNumber.trim(),
     quantity: Math.max(1, Math.floor(parseNumber(line.quantity))),
     mfg_date: line.mfgDate,
@@ -1122,7 +1135,14 @@ export function Purchases() {
   const addLine = () => {
     setForm((prev) => ({
       ...prev,
-      lines: [...prev.lines, createLine(prev.date || todayISO(), prev.lines.length + 1)],
+      lines: [
+        ...prev.lines,
+        createLine(
+          prev.date || todayISO(),
+          prev.lines.length + 1,
+          new Set(prev.lines.map((line) => normalizeBatchCode(line.batchCode))),
+        ),
+      ],
     }))
   }
 

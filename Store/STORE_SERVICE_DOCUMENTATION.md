@@ -137,6 +137,13 @@ Neu dung token hop le nhung khong phai owner:
 | PUT | `/api/v1/store/settings` | Owner |
 | POST | `/api/v1/store/settings/reset` | Owner |
 | POST | `/api/v1/store/settings/reset/{key}` | Owner |
+| GET | `/api/v1/store/drug-categories?include_inactive=&search=` | Public |
+| POST | `/api/v1/store/drug-categories` | Owner |
+| PUT | `/api/v1/store/drug-categories/{categoryID}` | Owner |
+| DELETE | `/api/v1/store/drug-categories/{categoryID}` | Owner |
+| POST | `/api/v1/store/drug-groups` | Owner |
+| PUT | `/api/v1/store/drug-groups/{groupID}` | Owner |
+| DELETE | `/api/v1/store/drug-groups/{groupID}` | Owner |
 | GET | `/api/v1/store/uploads/{filename}` | Public |
 
 ## 7) API details (logic + request + response)

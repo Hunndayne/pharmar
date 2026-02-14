@@ -43,6 +43,64 @@ export type StoreSettingItem = {
 
 export type StoreSettingsMap = Record<string, unknown>
 
+export type StoreDrugGroup = {
+  id: string
+  category_id: string
+  name: string
+  description: string | null
+  is_active: boolean
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+export type StoreDrugCategory = {
+  id: string
+  name: string
+  description: string | null
+  is_active: boolean
+  sort_order: number
+  created_at: string
+  updated_at: string
+  groups: StoreDrugGroup[]
+}
+
+export type ListDrugCategoriesResponse = {
+  items: StoreDrugCategory[]
+  total_categories: number
+  total_groups: number
+}
+
+export type CreateDrugCategoryPayload = {
+  name: string
+  description?: string | null
+  is_active?: boolean
+  sort_order?: number
+}
+
+export type UpdateDrugCategoryPayload = {
+  name?: string
+  description?: string | null
+  is_active?: boolean
+  sort_order?: number
+}
+
+export type CreateDrugGroupPayload = {
+  category_id: string
+  name: string
+  description?: string | null
+  is_active?: boolean
+  sort_order?: number
+}
+
+export type UpdateDrugGroupPayload = {
+  category_id?: string
+  name?: string
+  description?: string | null
+  is_active?: boolean
+  sort_order?: number
+}
+
 const sanitizePrefix = (value: string) => {
   const trimmed = value.trim()
   if (!trimmed) return ''
@@ -178,5 +236,61 @@ export const storeApi = {
       { method: 'POST' },
       token,
     ),
-}
 
+  listDrugCategories: (params?: { include_inactive?: boolean; search?: string }) =>
+    requestStoreJson<ListDrugCategoriesResponse>('/drug-categories', { method: 'GET' }, undefined, params),
+
+  createDrugCategory: (token: string, payload: CreateDrugCategoryPayload) =>
+    requestStoreJson<{ message: string; data: StoreDrugCategory }>(
+      '/drug-categories',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+      token,
+    ),
+
+  updateDrugCategory: (token: string, categoryId: string, payload: UpdateDrugCategoryPayload) =>
+    requestStoreJson<{ message: string; data: StoreDrugCategory }>(
+      `/drug-categories/${encodeURIComponent(categoryId)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      },
+      token,
+    ),
+
+  deleteDrugCategory: (token: string, categoryId: string) =>
+    requestStoreJson<{ message: string; id: string }>(
+      `/drug-categories/${encodeURIComponent(categoryId)}`,
+      { method: 'DELETE' },
+      token,
+    ),
+
+  createDrugGroup: (token: string, payload: CreateDrugGroupPayload) =>
+    requestStoreJson<{ message: string; data: StoreDrugGroup }>(
+      '/drug-groups',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+      token,
+    ),
+
+  updateDrugGroup: (token: string, groupId: string, payload: UpdateDrugGroupPayload) =>
+    requestStoreJson<{ message: string; data: StoreDrugGroup }>(
+      `/drug-groups/${encodeURIComponent(groupId)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      },
+      token,
+    ),
+
+  deleteDrugGroup: (token: string, groupId: string) =>
+    requestStoreJson<{ message: string; id: string }>(
+      `/drug-groups/${encodeURIComponent(groupId)}`,
+      { method: 'DELETE' },
+      token,
+    ),
+}

@@ -23,6 +23,7 @@ export const navItems: NavItem[] = [
     label: 'Cửa hàng',
     children: [
       { type: 'item', label: 'Thông tin cửa hàng', path: '/cua-hang/cai-dat' },
+      { type: 'item', label: 'Loại & nhóm thuốc', path: '/cua-hang/nhom-thuoc' },
       { type: 'item', label: 'Nhà sản xuất', path: '/nha-san-xuat' },
       { type: 'item', label: 'Nhà phân phối', path: '/nha-phan-phoi' },
       { type: 'item', label: 'Lịch sử bán hàng', path: '/lich-su-ban-hang' },
