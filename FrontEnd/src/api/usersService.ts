@@ -15,7 +15,7 @@ export type UserProfile = {
 
 export type AuthToken = {
   access_token: string
-  refresh_token: string
+  refresh_token: string | null
   token_type: string
 }
 
@@ -34,10 +34,35 @@ export type CreateUserPayload = {
   is_active?: boolean
 }
 
+export type UpdateUserPayload = {
+  full_name?: string | null
+  email?: string | null
+  phone?: string | null
+  role?: UserRole
+  is_active?: boolean
+}
+
 type ListUsersParams = {
   search?: string
   role?: UserRole
   is_active?: boolean
+}
+
+type ListLoginHistoryParams = {
+  username?: string
+  user_id?: number
+  success?: boolean
+  limit?: number
+}
+
+export type LoginHistoryRecord = {
+  id: number
+  user_id: number | null
+  username: string | null
+  ip_address: string | null
+  user_agent: string | null
+  success: boolean
+  created_at: string
 }
 
 export class ApiError extends Error {
@@ -137,7 +162,7 @@ export const usersApi = {
 
   me: (token: string) => requestJson<UserProfile>('/auth/me', { method: 'GET' }, token),
 
-  logout: (token: string, refreshToken?: string) =>
+  logout: (token: string, refreshToken?: string | null) =>
     requestJson<void>(
       '/auth/logout',
       {
@@ -156,6 +181,9 @@ export const usersApi = {
   listUsers: (token: string, params?: ListUsersParams) =>
     requestJson<UserProfile[]>('/users', { method: 'GET' }, token, params),
 
+  getUserById: (token: string, userId: number) =>
+    requestJson<UserProfile>(`/users/${userId}`, { method: 'GET' }, token),
+
   createUser: (token: string, payload: CreateUserPayload) =>
     requestJson<UserProfile>(
       '/users',
@@ -166,7 +194,7 @@ export const usersApi = {
       token,
     ),
 
-  updateUser: (token: string, userId: number, payload: Partial<CreateUserPayload>) =>
+  updateUser: (token: string, userId: number, payload: UpdateUserPayload) =>
     requestJson<UserProfile>(
       `/users/${userId}`,
       {
@@ -194,4 +222,7 @@ export const usersApi = {
 
   deleteUser: (token: string, userId: number) =>
     requestJson<void>(`/users/${userId}`, { method: 'DELETE' }, token),
+
+  listLoginHistory: (token: string, params?: ListLoginHistoryParams) =>
+    requestJson<LoginHistoryRecord[]>('/users/login-history', { method: 'GET' }, token, params),
 }

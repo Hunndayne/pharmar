@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     SALE_SERVICE_URL: str = "http://sale-service:8003"
     INVENTORY_SERVICE_URL: str = "http://inventory-service:8002"
     REPORT_SERVICE_URL: str = "http://report-service:8004"
+    STORE_SERVICE_URL: str = "http://store-service:8005"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -39,6 +40,7 @@ SERVICE_URLS: dict[str, str] = {
     "sale": settings.SALE_SERVICE_URL,
     "inventory": settings.INVENTORY_SERVICE_URL,
     "report": settings.REPORT_SERVICE_URL,
+    "store": settings.STORE_SERVICE_URL,
 }
 
 

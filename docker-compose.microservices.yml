@@ -17,6 +17,23 @@
       timeout: 5s
       retries: 10
 
+  store-db:
+    image: postgres:16-alpine
+    container_name: pharmar-store-db
+    environment:
+      POSTGRES_DB: pharmar_store
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - store_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pharmar_store"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   redis:
     image: redis:7-alpine
     container_name: pharmar-redis
@@ -90,6 +107,29 @@
         condition: service_started
     restart: unless-stopped
 
+  store-service:
+    build:
+      context: ./Store
+      dockerfile: dockerfile
+    container_name: pharmar-store-service
+    environment:
+      APP_PORT: 8005
+      DATABASE_URL: postgres://postgres:postgres@store-db:5432/pharmar_store?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      SETTINGS_CACHE_TTL_SECONDS: 300
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      LOGO_UPLOAD_DIR: /app/uploads
+      DEFAULT_STORE_NAME: Nha thuoc Pharmar
+    ports:
+      - "8005:8005"
+    depends_on:
+      store-db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./FrontEnd
@@ -114,6 +154,7 @@
       SALE_SERVICE_URL: http://sale-service:8003
       INVENTORY_SERVICE_URL: http://inventory-service:8002
       REPORT_SERVICE_URL: http://report-service:8004
+      STORE_SERVICE_URL: http://store-service:8005
     ports:
       - "8000:8000"
     depends_on:
@@ -125,7 +166,10 @@
         condition: service_started
       report-service:
         condition: service_started
+      store-service:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
   auth_db_data:
+  store_db_data:

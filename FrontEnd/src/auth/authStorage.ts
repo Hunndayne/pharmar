@@ -3,7 +3,7 @@ export const AUTH_STORAGE_KEY = 'pharmar_auth_v1'
 export type StoredAuth = {
   token: {
     access_token: string
-    refresh_token: string
+    refresh_token: string | null
     token_type: string
   } | null
   user: {

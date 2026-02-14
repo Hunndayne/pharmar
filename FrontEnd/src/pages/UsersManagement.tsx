@@ -1,8 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ApiError, type UserProfile, type UserRole, usersApi } from '../api/usersService'
+﻿import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  ApiError,
+  type LoginHistoryRecord,
+  type UserProfile,
+  type UserRole,
+  usersApi,
+} from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 
 type ActiveFilter = 'all' | 'active' | 'inactive'
+type HistorySuccessFilter = 'all' | 'success' | 'failed'
 
 type CreateForm = {
   username: string
@@ -12,6 +19,20 @@ type CreateForm = {
   phone: string
   role: UserRole
   isActive: boolean
+}
+
+type UpdateForm = {
+  fullName: string
+  email: string
+  phone: string
+  role: UserRole
+  isActive: boolean
+}
+
+type HistoryFilters = {
+  username: string
+  success: HistorySuccessFilter
+  limit: number
 }
 
 const emptyCreateForm: CreateForm = {
@@ -24,12 +45,34 @@ const emptyCreateForm: CreateForm = {
   isActive: true,
 }
 
+const emptyUpdateForm: UpdateForm = {
+  fullName: '',
+  email: '',
+  phone: '',
+  role: 'staff',
+  isActive: true,
+}
+
+const defaultHistoryFilters: HistoryFilters = {
+  username: '',
+  success: 'all',
+  limit: 50,
+}
+
 const formatDateTime = (value: string | null) => {
   if (!value) return '-'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString('vi-VN')
 }
+
+const mapUserToUpdateForm = (user: UserProfile): UpdateForm => ({
+  fullName: user.full_name ?? '',
+  email: user.email ?? '',
+  phone: user.phone ?? '',
+  role: user.role,
+  isActive: user.is_active,
+})
 
 export function UsersManagement() {
   const { user, token } = useAuth()
@@ -48,10 +91,23 @@ export function UsersManagement() {
   const [createSubmitting, setCreateSubmitting] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
 
+  const [editOpen, setEditOpen] = useState(false)
+  const [editTargetId, setEditTargetId] = useState<number | null>(null)
+  const [editForm, setEditForm] = useState<UpdateForm>(emptyUpdateForm)
+  const [editLoading, setEditLoading] = useState(false)
+  const [editSubmitting, setEditSubmitting] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+
   const [resetTarget, setResetTarget] = useState<UserProfile | null>(null)
   const [newPassword, setNewPassword] = useState('')
   const [resetSubmitting, setResetSubmitting] = useState(false)
   const [resetError, setResetError] = useState<string | null>(null)
+
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyRows, setHistoryRows] = useState<LoginHistoryRecord[]>([])
+  const [historyFilters, setHistoryFilters] = useState<HistoryFilters>(defaultHistoryFilters)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
 
   const loadUsers = useCallback(async () => {
     if (!accessToken) return
@@ -71,6 +127,28 @@ export function UsersManagement() {
       setLoading(false)
     }
   }, [accessToken, search, roleFilter, activeFilter])
+
+  const loadHistory = useCallback(async () => {
+    if (!accessToken) return
+    setHistoryLoading(true)
+    setHistoryError(null)
+    try {
+      const records = await usersApi.listLoginHistory(accessToken, {
+        username: historyFilters.username.trim() || undefined,
+        success:
+          historyFilters.success === 'all'
+            ? undefined
+            : historyFilters.success === 'success',
+        limit: historyFilters.limit,
+      })
+      setHistoryRows(records)
+    } catch (historyLoadError) {
+      if (historyLoadError instanceof ApiError) setHistoryError(historyLoadError.message)
+      else setHistoryError('Không thể tải lịch sử đăng nhập.')
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [accessToken, historyFilters])
 
   useEffect(() => {
     void loadUsers()
@@ -114,6 +192,53 @@ export function UsersManagement() {
       else setCreateError('Không thể tạo tài khoản mới.')
     } finally {
       setCreateSubmitting(false)
+    }
+  }
+
+  const openEditModal = async (target: UserProfile) => {
+    if (!accessToken) return
+    setEditOpen(true)
+    setEditTargetId(target.id)
+    setEditForm(mapUserToUpdateForm(target))
+    setEditLoading(true)
+    setEditError(null)
+
+    try {
+      const detail = await usersApi.getUserById(accessToken, target.id)
+      setEditForm(mapUserToUpdateForm(detail))
+    } catch (detailError) {
+      if (detailError instanceof ApiError) setEditError(detailError.message)
+      else setEditError('Không thể tải chi tiết tài khoản.')
+    } finally {
+      setEditLoading(false)
+    }
+  }
+
+  const handleUpdateUser = async () => {
+    if (!accessToken || editTargetId == null) return
+    if (!editForm.fullName.trim()) {
+      setEditError('Họ tên là bắt buộc.')
+      return
+    }
+
+    setEditSubmitting(true)
+    setEditError(null)
+    try {
+      await usersApi.updateUser(accessToken, editTargetId, {
+        full_name: editForm.fullName.trim(),
+        email: editForm.email.trim() || null,
+        phone: editForm.phone.trim() || null,
+        role: editForm.role,
+        is_active: editForm.isActive,
+      })
+      setEditOpen(false)
+      setEditTargetId(null)
+      await loadUsers()
+    } catch (updateError) {
+      if (updateError instanceof ApiError) setEditError(updateError.message)
+      else setEditError('Không thể cập nhật tài khoản.')
+    } finally {
+      setEditSubmitting(false)
     }
   }
 
@@ -161,6 +286,11 @@ export function UsersManagement() {
     }
   }
 
+  const openHistoryModal = () => {
+    setHistoryOpen(true)
+    void loadHistory()
+  }
+
   return (
     <div className="space-y-6">
       <header className="flex flex-col gap-4 tablet:flex-row tablet:items-center tablet:justify-between">
@@ -169,13 +299,22 @@ export function UsersManagement() {
           <h2 className="mt-2 text-3xl font-semibold text-ink-900">Quản lý tài khoản</h2>
           <p className="mt-2 text-sm text-ink-600">Chỉ owner/admin mới có quyền truy cập trang này.</p>
         </div>
-        <button
-          type="button"
-          onClick={() => setCreateOpen(true)}
-          className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift"
-        >
-          Thêm tài khoản
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={openHistoryModal}
+            className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900"
+          >
+            Lịch sử đăng nhập
+          </button>
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift"
+          >
+            Thêm tài khoản
+          </button>
+        </div>
       </header>
 
       <section className="grid gap-4 sm:grid-cols-3">
@@ -229,7 +368,7 @@ export function UsersManagement() {
 
       <section className="overflow-hidden rounded-3xl border border-white/60 bg-white/70">
         <div className="overflow-x-auto">
-          <table className="min-w-[980px] w-full text-left text-sm">
+          <table className="min-w-[1100px] w-full text-left text-sm">
             <thead className="bg-white/70 text-xs uppercase tracking-[0.25em] text-ink-600">
               <tr>
                 <th className="px-6 py-4">Username</th>
@@ -270,13 +409,36 @@ export function UsersManagement() {
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex flex-wrap gap-2">
-                          <button type="button" onClick={() => void handleToggleLock(item)} className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900">
+                          <button
+                            type="button"
+                            onClick={() => void openEditModal(item)}
+                            className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900"
+                          >
+                            Sửa
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleToggleLock(item)}
+                            className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900"
+                          >
                             {item.is_active ? 'Khóa' : 'Mở khóa'}
                           </button>
-                          <button type="button" onClick={() => { setResetTarget(item); setNewPassword(''); setResetError(null) }} className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setResetTarget(item)
+                              setNewPassword('')
+                              setResetError(null)
+                            }}
+                            className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900"
+                          >
                             Reset mật khẩu
                           </button>
-                          <button type="button" onClick={() => void handleDelete(item)} className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500">
+                          <button
+                            type="button"
+                            onClick={() => void handleDelete(item)}
+                            className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500"
+                          >
                             Xóa
                           </button>
                         </div>
@@ -318,6 +480,139 @@ export function UsersManagement() {
               </button>
               <button type="button" onClick={() => setCreateOpen(false)} className="rounded-full border border-ink-900/10 bg-white px-5 py-2 text-sm font-semibold text-ink-900">
                 Hủy
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {editOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4">
+          <div className="flex w-full max-w-2xl flex-col rounded-3xl bg-white shadow-lift">
+            <div className="border-b border-ink-900/10 px-6 py-5">
+              <h3 className="text-xl font-semibold text-ink-900">Cập nhật tài khoản</h3>
+            </div>
+            <div className="grid gap-4 px-6 py-5 md:grid-cols-2">
+              {editLoading ? <p className="md:col-span-2 text-sm text-ink-600">Đang tải chi tiết...</p> : null}
+              <input placeholder="Họ và tên *" value={editForm.fullName} onChange={(event) => setEditForm((prev) => ({ ...prev, fullName: event.target.value }))} className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm" disabled={editLoading} />
+              <input placeholder="Email" value={editForm.email} onChange={(event) => setEditForm((prev) => ({ ...prev, email: event.target.value }))} className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm" disabled={editLoading} />
+              <input placeholder="Số điện thoại" value={editForm.phone} onChange={(event) => setEditForm((prev) => ({ ...prev, phone: event.target.value }))} className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm" disabled={editLoading} />
+              <select value={editForm.role} onChange={(event) => setEditForm((prev) => ({ ...prev, role: event.target.value as UserRole }))} className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm" disabled={editLoading || editTargetId === currentUserId}>
+                <option value="staff">Staff</option>
+                <option value="manager">Manager</option>
+                <option value="owner">Owner</option>
+              </select>
+              <label className="md:col-span-2 flex items-center gap-2 text-sm text-ink-700">
+                <input type="checkbox" checked={editForm.isActive} onChange={(event) => setEditForm((prev) => ({ ...prev, isActive: event.target.checked }))} disabled={editLoading || editTargetId === currentUserId} />
+                Trạng thái hoạt động
+              </label>
+              {editError ? <p className="md:col-span-2 text-sm text-coral-500">{editError}</p> : null}
+            </div>
+            <div className="flex gap-3 border-t border-ink-900/10 px-6 py-4">
+              <button type="button" onClick={() => void handleUpdateUser()} disabled={editSubmitting || editLoading} className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                {editSubmitting ? 'Đang cập nhật...' : 'Lưu thay đổi'}
+              </button>
+              <button type="button" onClick={() => setEditOpen(false)} className="rounded-full border border-ink-900/10 bg-white px-5 py-2 text-sm font-semibold text-ink-900">
+                Hủy
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {historyOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4">
+          <div className="flex w-full max-w-6xl flex-col overflow-hidden rounded-3xl bg-white shadow-lift">
+            <div className="border-b border-ink-900/10 px-6 py-5">
+              <h3 className="text-xl font-semibold text-ink-900">Lịch sử đăng nhập</h3>
+            </div>
+            <div className="space-y-4 px-6 py-5">
+              <div className="grid gap-3 md:grid-cols-[1.4fr,1fr,1fr,auto]">
+                <input
+                  value={historyFilters.username}
+                  onChange={(event) => setHistoryFilters((prev) => ({ ...prev, username: event.target.value }))}
+                  placeholder="Lọc theo username"
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+                />
+                <select
+                  value={historyFilters.success}
+                  onChange={(event) => setHistoryFilters((prev) => ({ ...prev, success: event.target.value as HistorySuccessFilter }))}
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+                >
+                  <option value="all">Tất cả</option>
+                  <option value="success">Thành công</option>
+                  <option value="failed">Thất bại</option>
+                </select>
+                <input
+                  type="number"
+                  min={1}
+                  max={500}
+                  value={historyFilters.limit}
+                  onChange={(event) =>
+                    setHistoryFilters((prev) => ({
+                      ...prev,
+                      limit: Number(event.target.value) > 0 ? Number(event.target.value) : 1,
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={() => void loadHistory()}
+                  className="rounded-2xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white"
+                >
+                  Lọc
+                </button>
+              </div>
+
+              {historyError ? <p className="text-sm text-coral-500">{historyError}</p> : null}
+
+              <div className="max-h-[55vh] overflow-auto rounded-2xl border border-ink-900/10">
+                <table className="min-w-[1050px] w-full text-left text-sm">
+                  <thead className="bg-fog-50 text-xs uppercase tracking-[0.2em] text-ink-600">
+                    <tr>
+                      <th className="px-4 py-3">Thời gian</th>
+                      <th className="px-4 py-3">Username</th>
+                      <th className="px-4 py-3">User ID</th>
+                      <th className="px-4 py-3">IP</th>
+                      <th className="px-4 py-3">User Agent</th>
+                      <th className="px-4 py-3">Kết quả</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-ink-900/5">
+                    {historyLoading ? (
+                      <tr>
+                        <td className="px-4 py-4 text-ink-600" colSpan={6}>Đang tải lịch sử...</td>
+                      </tr>
+                    ) : null}
+                    {!historyLoading && historyRows.length === 0 ? (
+                      <tr>
+                        <td className="px-4 py-4 text-ink-600" colSpan={6}>Không có dữ liệu.</td>
+                      </tr>
+                    ) : null}
+                    {!historyLoading
+                      ? historyRows.map((row) => (
+                          <tr key={row.id} className="hover:bg-fog-50">
+                            <td className="px-4 py-3 text-ink-900">{formatDateTime(row.created_at)}</td>
+                            <td className="px-4 py-3 text-ink-900">{row.username ?? '-'}</td>
+                            <td className="px-4 py-3 text-ink-700">{row.user_id ?? '-'}</td>
+                            <td className="px-4 py-3 text-ink-700">{row.ip_address ?? '-'}</td>
+                            <td className="px-4 py-3 text-ink-700">{row.user_agent ?? '-'}</td>
+                            <td className="px-4 py-3">
+                              <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${row.success ? 'bg-brand-500/15 text-brand-600 border border-brand-500/30' : 'bg-coral-500/10 text-coral-500 border border-coral-500/30'}`}>
+                                {row.success ? 'Thành công' : 'Thất bại'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))
+                      : null}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="flex gap-3 border-t border-ink-900/10 px-6 py-4">
+              <button type="button" onClick={() => setHistoryOpen(false)} className="rounded-full border border-ink-900/10 bg-white px-5 py-2 text-sm font-semibold text-ink-900">
+                Đóng
               </button>
             </div>
           </div>

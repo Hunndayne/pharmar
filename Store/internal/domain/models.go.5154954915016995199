@@ -1,0 +1,53 @@
+package domain
+
+import "time"
+
+type StoreInfo struct {
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	Address       *string    `json:"address"`
+	Phone         *string    `json:"phone"`
+	Email         *string    `json:"email"`
+	TaxCode       *string    `json:"tax_code"`
+	LicenseNumber *string    `json:"license_number"`
+	OwnerName     *string    `json:"owner_name"`
+	LogoURL       *string    `json:"logo_url"`
+	BankAccount   *string    `json:"bank_account"`
+	BankName      *string    `json:"bank_name"`
+	BankBranch    *string    `json:"bank_branch"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+type UpdateStoreInfoRequest struct {
+	Name          *string `json:"name"`
+	Address       *string `json:"address"`
+	Phone         *string `json:"phone"`
+	Email         *string `json:"email"`
+	TaxCode       *string `json:"tax_code"`
+	LicenseNumber *string `json:"license_number"`
+	OwnerName     *string `json:"owner_name"`
+	BankAccount   *string `json:"bank_account"`
+	BankName      *string `json:"bank_name"`
+	BankBranch    *string `json:"bank_branch"`
+}
+
+type Setting struct {
+	Key         string    `json:"key"`
+	Value       any       `json:"value"`
+	GroupName   string    `json:"group_name"`
+	DataType    string    `json:"data_type"`
+	Description string    `json:"description"`
+	IsPublic    bool      `json:"is_public"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	UpdatedBy   *string   `json:"updated_by"`
+}
+
+type DefaultSetting struct {
+	Key         string
+	Value       any
+	GroupName   string
+	DataType    string
+	Description string
+	IsPublic    bool
+}

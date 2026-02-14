@@ -1,0 +1,9 @@
+.git
+.gitignore
+*.md
+*.log
+tmp
+dist
+.gocache
+.gopath
+uploads

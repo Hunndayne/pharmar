@@ -42,6 +42,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })
   }, [])
 
+  const tryRefreshToken = useCallback(async (currentToken: AuthToken | null) => {
+    if (!currentToken?.refresh_token) return null
+    const refreshed = await usersApi.refresh(currentToken.refresh_token)
+    return {
+      ...refreshed,
+      refresh_token: refreshed.refresh_token ?? currentToken.refresh_token,
+    }
+  }, [])
+
   useEffect(() => {
     const bootstrap = async () => {
       try {
@@ -51,8 +60,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return
         }
         setToken(saved.token)
-        const me = await usersApi.me(saved.token.access_token)
-        persistAuth(me, saved.token)
+        try {
+          const me = await usersApi.me(saved.token.access_token)
+          persistAuth(me, saved.token)
+        } catch {
+          const refreshed = await tryRefreshToken(saved.token)
+          if (!refreshed) {
+            persistAuth(null, null)
+            return
+          }
+          const me = await usersApi.me(refreshed.access_token)
+          persistAuth(me, refreshed)
+        }
       } catch {
         persistAuth(null, null)
       } finally {
@@ -60,7 +79,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     }
     void bootstrap()
-  }, [persistAuth])
+  }, [persistAuth, tryRefreshToken])
 
   const login = useCallback(
     async ({ username, password }: LoginPayload) => {
@@ -84,9 +103,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const refreshMe = useCallback(async () => {
     if (!token?.access_token) return
-    const me = await usersApi.me(token.access_token)
-    persistAuth(me, token)
-  }, [persistAuth, token])
+    try {
+      const me = await usersApi.me(token.access_token)
+      persistAuth(me, token)
+      return
+    } catch {
+      const refreshed = await tryRefreshToken(token)
+      if (!refreshed) {
+        persistAuth(null, null)
+        return
+      }
+      const me = await usersApi.me(refreshed.access_token)
+      persistAuth(me, refreshed)
+    }
+  }, [persistAuth, token, tryRefreshToken])
 
   const value = useMemo<AuthContextValue>(
     () => ({ user, token, loading, login, logout, refreshMe }),
