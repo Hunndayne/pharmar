@@ -23,7 +23,7 @@ export function Sidebar({
   canManageUsers,
 }: SidebarProps) {
   return (
-    <aside className="sticky top-0 hidden h-screen w-72 flex-col border-r border-ink-900/5 bg-fog-50 px-6 py-8 lg:flex">
+    <aside className="fixed inset-y-0 left-0 z-40 hidden h-screen w-72 flex-col overflow-y-auto border-r border-ink-900/5 bg-fog-50 px-6 py-8 lg:flex">
       <div className="space-y-10">
         <div>
           <p className="text-xs uppercase tracking-[0.35em] text-ink-600">PHARMAR</p>
