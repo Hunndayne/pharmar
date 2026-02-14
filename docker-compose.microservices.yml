@@ -18,6 +18,20 @@
       timeout: 5s
       retries: 10
 
+  db-bootstrap:
+    image: postgres:16-alpine
+    container_name: pharmar-db-bootstrap
+    environment:
+      PGPASSWORD: postgres
+    command: >
+      sh -c "psql -h postgres -U postgres -d postgres -f /scripts/01-create-databases.sql"
+    volumes:
+      - ./Database/init/01-create-databases.sql:/scripts/01-create-databases.sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   redis:
     image: redis:7-alpine
     container_name: pharmar-redis
@@ -40,6 +54,8 @@
     depends_on:
       postgres:
         condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   inventory-service:
@@ -110,6 +126,8 @@
     depends_on:
       postgres:
         condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
       redis:
         condition: service_started
     restart: unless-stopped
@@ -130,6 +148,8 @@
     depends_on:
       postgres:
         condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
       inventory-service:
         condition: service_started
     restart: unless-stopped
@@ -153,6 +173,8 @@
     depends_on:
       postgres:
         condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
       store-service:
         condition: service_started
     restart: unless-stopped
