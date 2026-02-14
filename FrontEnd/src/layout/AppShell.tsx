@@ -12,6 +12,7 @@ const titleByPath: Record<string, string> = {
   '/thuoc': 'Danh mục thuốc',
   '/nhom-thuoc': 'Nhóm thuốc',
   '/cua-hang': 'Cửa hàng',
+  '/cua-hang/cai-dat': 'Thông tin cửa hàng',
   '/nha-san-xuat': 'Nhà sản xuất',
   '/nha-phan-phoi': 'Nhà phân phối',
   '/nhap-hang': 'Nhập hàng',
@@ -21,6 +22,7 @@ const titleByPath: Record<string, string> = {
   '/khach-hang': 'Khách hàng',
   '/khuyen-mai': 'Khuyến mãi',
   '/bao-cao': 'Báo cáo',
+  '/he-thong/suc-khoe-dich-vu': 'Sức khỏe dịch vụ',
   '/quan-ly-tai-khoan': 'Quản lý tài khoản',
   '/cai-dat': 'Cài đặt người dùng',
 }
@@ -55,6 +57,10 @@ export function AppShell() {
         onOpenUsersManagement={() => {
           setSystemMenuOpen(false)
           navigate('/quan-ly-tai-khoan')
+        }}
+        onOpenServicesHealth={() => {
+          setSystemMenuOpen(false)
+          navigate('/he-thong/suc-khoe-dich-vu')
         }}
         onLogout={() => {
           setSystemMenuOpen(false)

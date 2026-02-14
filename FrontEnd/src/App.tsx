@@ -17,6 +17,8 @@ import { Promotions } from './pages/Promotions'
 import { Reports } from './pages/Reports'
 import { UsersManagement } from './pages/UsersManagement'
 import { UserSettings } from './pages/UserSettings'
+import { StoreSettings } from './pages/StoreSettings'
+import { SystemHealth } from './pages/SystemHealth'
 import { Login } from './pages/Login'
 import { NotFound } from './pages/NotFound'
 
@@ -31,6 +33,7 @@ function App() {
           <Route path="/thuoc" element={<DrugCatalog />} />
           <Route path="/nhom-thuoc" element={<DrugGroups />} />
           <Route path="/cua-hang" element={<StoreHub />} />
+          <Route path="/cua-hang/cai-dat" element={<StoreSettings />} />
           <Route path="/nha-san-xuat" element={<Manufacturers />} />
           <Route path="/nha-phan-phoi" element={<Distributors />} />
           <Route path="/nhap-hang" element={<Purchases />} />
@@ -41,6 +44,7 @@ function App() {
           <Route path="/khuyen-mai" element={<Promotions />} />
           <Route path="/bao-cao" element={<Reports />} />
           <Route path="/cai-dat" element={<UserSettings />} />
+          <Route path="/he-thong/suc-khoe-dich-vu" element={<SystemHealth />} />
 
           <Route element={<RequireOwnerOrAdmin />}>
             <Route path="/quan-ly-tai-khoan" element={<UsersManagement />} />

@@ -31,6 +31,7 @@ type UpdateForm = {
 
 type HistoryFilters = {
   username: string
+  userId: string
   success: HistorySuccessFilter
   limit: number
 }
@@ -55,6 +56,7 @@ const emptyUpdateForm: UpdateForm = {
 
 const defaultHistoryFilters: HistoryFilters = {
   username: '',
+  userId: '',
   success: 'all',
   limit: 50,
 }
@@ -135,6 +137,12 @@ export function UsersManagement() {
     try {
       const records = await usersApi.listLoginHistory(accessToken, {
         username: historyFilters.username.trim() || undefined,
+        user_id: (() => {
+          const raw = historyFilters.userId.trim()
+          if (!raw) return undefined
+          const parsed = Number(raw)
+          return Number.isFinite(parsed) ? parsed : undefined
+        })(),
         success:
           historyFilters.success === 'all'
             ? undefined
@@ -527,11 +535,19 @@ export function UsersManagement() {
               <h3 className="text-xl font-semibold text-ink-900">Lịch sử đăng nhập</h3>
             </div>
             <div className="space-y-4 px-6 py-5">
-              <div className="grid gap-3 md:grid-cols-[1.4fr,1fr,1fr,auto]">
+              <div className="grid gap-3 md:grid-cols-[1.2fr,1fr,1fr,1fr,auto]">
                 <input
                   value={historyFilters.username}
                   onChange={(event) => setHistoryFilters((prev) => ({ ...prev, username: event.target.value }))}
                   placeholder="Lọc theo username"
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+                />
+                <input
+                  type="number"
+                  min={1}
+                  value={historyFilters.userId}
+                  onChange={(event) => setHistoryFilters((prev) => ({ ...prev, userId: event.target.value }))}
+                  placeholder="Lọc theo user id"
                   className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
                 />
                 <select

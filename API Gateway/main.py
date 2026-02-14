@@ -1,3 +1,6 @@
+import asyncio
+from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any
 
 import httpx
@@ -15,6 +18,7 @@ class Settings(BaseSettings):
     INVENTORY_SERVICE_URL: str = "http://inventory-service:8002"
     REPORT_SERVICE_URL: str = "http://report-service:8004"
     STORE_SERVICE_URL: str = "http://store-service:8005"
+    CATALOG_SERVICE_URL: str = "http://catalog-service:8006"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -41,6 +45,16 @@ SERVICE_URLS: dict[str, str] = {
     "inventory": settings.INVENTORY_SERVICE_URL,
     "report": settings.REPORT_SERVICE_URL,
     "store": settings.STORE_SERVICE_URL,
+    "catalog": settings.CATALOG_SERVICE_URL,
+}
+
+HEALTH_TARGETS: dict[str, str] = {
+    "users": settings.AUTH_SERVICE_URL,
+    "inventory": settings.INVENTORY_SERVICE_URL,
+    "sale": settings.SALE_SERVICE_URL,
+    "report": settings.REPORT_SERVICE_URL,
+    "store": settings.STORE_SERVICE_URL,
+    "catalog": settings.CATALOG_SERVICE_URL,
 }
 
 
@@ -52,6 +66,70 @@ async def startup_event() -> None:
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
     await app.state.http_client.aclose()
+
+
+async def _check_service_health(name: str, base_url: str) -> dict[str, Any]:
+    url = f"{base_url.rstrip('/')}/health"
+    started_at = perf_counter()
+
+    try:
+        response = await app.state.http_client.get(url)
+        latency_ms = round((perf_counter() - started_at) * 1000, 2)
+        payload: dict[str, Any] = {}
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+
+        upstream_status = str(payload.get("status", "")).lower()
+        is_up = response.status_code == 200 and upstream_status in {"ok", "running"}
+        return {
+            "name": name,
+            "url": url,
+            "status": "up" if is_up else "degraded",
+            "http_status": response.status_code,
+            "latency_ms": latency_ms,
+            "detail": None if is_up else (payload.get("detail") or payload.get("message") or "Unexpected response"),
+            "upstream": payload or None,
+        }
+    except httpx.RequestError as exc:
+        latency_ms = round((perf_counter() - started_at) * 1000, 2)
+        return {
+            "name": name,
+            "url": url,
+            "status": "down",
+            "http_status": None,
+            "latency_ms": latency_ms,
+            "detail": str(exc),
+            "upstream": None,
+        }
+
+
+@app.get("/api/v1/system/health")
+async def services_health() -> dict[str, Any]:
+    checks = await asyncio.gather(
+        *[_check_service_health(name, service_url) for name, service_url in HEALTH_TARGETS.items()]
+    )
+    down_count = sum(1 for item in checks if item["status"] == "down")
+    degraded_count = sum(1 for item in checks if item["status"] == "degraded")
+
+    overall = "up"
+    if down_count:
+        overall = "down"
+    elif degraded_count:
+        overall = "degraded"
+
+    return {
+        "status": overall,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "services": checks,
+        "summary": {
+            "total": len(checks),
+            "up": sum(1 for item in checks if item["status"] == "up"),
+            "degraded": degraded_count,
+            "down": down_count,
+        },
+    }
 
 
 @app.api_route(

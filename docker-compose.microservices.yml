@@ -1,7 +1,7 @@
 ﻿services:
-  auth-db:
+  postgres:
     image: postgres:16-alpine
-    container_name: pharmar-auth-db
+    container_name: pharmar-postgres
     environment:
       POSTGRES_DB: pharmar_auth
       POSTGRES_USER: postgres
@@ -9,27 +9,11 @@
     ports:
       - "5432:5432"
     volumes:
-      - auth_db_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
+      - ./Database/init/01-create-databases.sql:/docker-entrypoint-initdb.d/00-create-databases.sql:ro
       - ./Users/Database/Auth.sql:/docker-entrypoint-initdb.d/01-auth.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d pharmar_auth"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  store-db:
-    image: postgres:16-alpine
-    container_name: pharmar-store-db
-    environment:
-      POSTGRES_DB: pharmar_store
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5433:5432"
-    volumes:
-      - store_db_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d pharmar_store"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -46,7 +30,7 @@
       dockerfile: dockerfile
     container_name: pharmar-users-service
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@auth-db:5432/pharmar_auth
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/pharmar_auth
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
@@ -54,7 +38,7 @@
     ports:
       - "8001:8001"
     depends_on:
-      auth-db:
+      postgres:
         condition: service_healthy
     restart: unless-stopped
 
@@ -114,7 +98,7 @@
     container_name: pharmar-store-service
     environment:
       APP_PORT: 8005
-      DATABASE_URL: postgres://postgres:postgres@store-db:5432/pharmar_store?sslmode=disable
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/pharmar_store?sslmode=disable
       REDIS_URL: redis://redis:6379/0
       SETTINGS_CACHE_TTL_SECONDS: 300
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
@@ -124,9 +108,29 @@
     ports:
       - "8005:8005"
     depends_on:
-      store-db:
+      postgres:
         condition: service_healthy
       redis:
+        condition: service_started
+    restart: unless-stopped
+
+  catalog-service:
+    build:
+      context: ./Catalog Service
+      dockerfile: dockerfile
+    container_name: pharmar-catalog-service
+    environment:
+      APP_PORT: 8006
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/pharmar_catalog
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      INVENTORY_SERVICE_URL: http://inventory-service:8002
+    ports:
+      - "8006:8006"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      inventory-service:
         condition: service_started
     restart: unless-stopped
 
@@ -155,6 +159,7 @@
       INVENTORY_SERVICE_URL: http://inventory-service:8002
       REPORT_SERVICE_URL: http://report-service:8004
       STORE_SERVICE_URL: http://store-service:8005
+      CATALOG_SERVICE_URL: http://catalog-service:8006
     ports:
       - "8000:8000"
     depends_on:
@@ -168,8 +173,9 @@
         condition: service_started
       store-service:
         condition: service_started
+      catalog-service:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
-  auth_db_data:
-  store_db_data:
+  postgres_data:

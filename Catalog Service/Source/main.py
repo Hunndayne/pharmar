@@ -1,0 +1,64 @@
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+
+from Routers.MasterData import router as master_data_router
+from Routers.Products import router as products_router
+
+from .core.config import get_settings
+from .db import models  # noqa: F401
+from .db.base import Base
+from .db.models import SCHEMA_NAME
+from .db.session import engine
+
+
+settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    async with engine.begin() as connection:
+        await connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_NAME}"))
+        await connection.run_sync(Base.metadata.create_all)
+        await connection.execute(
+            text(
+                f"""
+                CREATE INDEX IF NOT EXISTS idx_products_name
+                ON {SCHEMA_NAME}.products USING gin(to_tsvector('simple', name))
+                """
+            )
+        )
+
+    yield
+    await engine.dispose()
+
+
+app = FastAPI(
+    title=settings.APP_NAME,
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(master_data_router, prefix="/api/v1")
+app.include_router(products_router, prefix="/api/v1")
+
+
+@app.get("/", tags=["system"])
+async def root() -> dict[str, str]:
+    return {"service": "catalog", "status": "running"}
+
+
+@app.get("/health", tags=["system"])
+async def health() -> dict[str, str]:
+    return {"service": "catalog", "status": "ok"}
+

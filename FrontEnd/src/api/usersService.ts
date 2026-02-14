@@ -42,6 +42,11 @@ export type UpdateUserPayload = {
   is_active?: boolean
 }
 
+export type ChangePasswordPayload = {
+  current_password: string
+  new_password: string
+}
+
 type ListUsersParams = {
   search?: string
   role?: UserRole
@@ -177,6 +182,16 @@ export const usersApi = {
       method: 'POST',
       body: JSON.stringify({ refresh_token: refreshToken }),
     }),
+
+  changePassword: (token: string, payload: ChangePasswordPayload) =>
+    requestJson<{ message: string }>(
+      '/auth/change-password',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+      token,
+    ),
 
   listUsers: (token: string, params?: ListUsersParams) =>
     requestJson<UserProfile[]>('/users', { method: 'GET' }, token, params),

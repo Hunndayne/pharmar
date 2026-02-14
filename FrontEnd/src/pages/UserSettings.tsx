@@ -1,41 +1,33 @@
 import { useState, type FormEvent } from 'react'
-import { ApiError, buildUsersApiUrl } from '../api/usersService'
+import { ApiError, usersApi } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 
 export function UserSettings() {
   const { user, token } = useAuth()
+
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
-  const onSubmit = async (event: FormEvent) => {
+  const onSubmitPassword = async (event: FormEvent) => {
     event.preventDefault()
     if (!token?.access_token) return
+
     if (!currentPassword || newPassword.length < 6) {
       setError('Mật khẩu mới cần ít nhất 6 ký tự.')
       return
     }
+
     setSubmitting(true)
     setError(null)
     setMessage(null)
+
     try {
-      await fetch(buildUsersApiUrl('/auth/change-password'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token.access_token}`,
-        },
-        body: JSON.stringify({
-          current_password: currentPassword,
-          new_password: newPassword,
-        }),
-      }).then(async (response) => {
-        if (!response.ok) {
-          const data = await response.json().catch(() => ({}))
-          throw new ApiError(data?.detail ?? 'Không thể đổi mật khẩu.', response.status)
-        }
+      await usersApi.changePassword(token.access_token, {
+        current_password: currentPassword,
+        new_password: newPassword,
       })
       setCurrentPassword('')
       setNewPassword('')
@@ -56,7 +48,7 @@ export function UserSettings() {
       </header>
 
       <section className="glass-card rounded-3xl p-6">
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <div className="rounded-2xl border border-ink-900/10 bg-white/70 p-4">
             <p className="text-xs uppercase tracking-[0.25em] text-ink-500">Username</p>
             <p className="mt-2 text-lg font-semibold text-ink-900">{user?.username ?? '-'}</p>
@@ -65,12 +57,20 @@ export function UserSettings() {
             <p className="text-xs uppercase tracking-[0.25em] text-ink-500">Vai trò</p>
             <p className="mt-2 text-lg font-semibold text-ink-900">{user?.role ?? '-'}</p>
           </div>
+          <div className="rounded-2xl border border-ink-900/10 bg-white/70 p-4">
+            <p className="text-xs uppercase tracking-[0.25em] text-ink-500">Họ tên</p>
+            <p className="mt-2 text-lg font-semibold text-ink-900">{user?.full_name ?? '-'}</p>
+          </div>
+          <div className="rounded-2xl border border-ink-900/10 bg-white/70 p-4">
+            <p className="text-xs uppercase tracking-[0.25em] text-ink-500">Liên hệ</p>
+            <p className="mt-2 text-lg font-semibold text-ink-900">{user?.email ?? user?.phone ?? '-'}</p>
+          </div>
         </div>
       </section>
 
       <section className="glass-card rounded-3xl p-6">
         <h3 className="text-xl font-semibold text-ink-900">Đổi mật khẩu</h3>
-        <form onSubmit={onSubmit} className="mt-4 grid gap-4 md:max-w-xl">
+        <form onSubmit={onSubmitPassword} className="mt-4 grid gap-4 md:max-w-xl">
           <label className="space-y-2 text-sm text-ink-700">
             <span>Mật khẩu hiện tại</span>
             <input

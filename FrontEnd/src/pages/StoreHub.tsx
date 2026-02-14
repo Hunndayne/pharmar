@@ -2,6 +2,11 @@ import { Link } from 'react-router-dom'
 
 const storeModules = [
   {
+    title: 'Thông tin cửa hàng',
+    description: 'Cập nhật hồ sơ nhà thuốc, logo, và cấu hình vận hành từ Store Service.',
+    path: '/cua-hang/cai-dat',
+  },
+  {
     title: 'Nhà sản xuất',
     description: 'Quản lý danh sách công ty sản xuất và thông tin liên hệ.',
     path: '/nha-san-xuat',
@@ -35,7 +40,7 @@ export function StoreHub() {
         <p className="text-xs uppercase tracking-[0.35em] text-ink-600">Cửa hàng</p>
         <h2 className="mt-2 text-3xl font-semibold text-ink-900">Quản lý vận hành cửa hàng</h2>
         <p className="mt-2 text-sm text-ink-600">
-          Tập trung các trang nghiệp vụ liên quan đến đối tác, khách hàng và giao dịch bán hàng.
+          Tập trung các trang nghiệp vụ liên quan đến cấu hình cửa hàng, đối tác, khách hàng và bán hàng.
         </p>
       </header>
 

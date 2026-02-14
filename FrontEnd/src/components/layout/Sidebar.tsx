@@ -7,6 +7,7 @@ type SidebarProps = {
   onToggleMenu: () => void
   onOpenSettings: () => void
   onOpenUsersManagement: () => void
+  onOpenServicesHealth: () => void
   onLogout: () => void
   canManageUsers: boolean
 }
@@ -17,6 +18,7 @@ export function Sidebar({
   onToggleMenu,
   onOpenSettings,
   onOpenUsersManagement,
+  onOpenServicesHealth,
   onLogout,
   canManageUsers,
 }: SidebarProps) {
@@ -37,11 +39,18 @@ export function Sidebar({
           onClick={onToggleMenu}
           className="w-full rounded-full px-4 py-2.5 text-left text-[15px] font-semibold text-ink-700 hover:bg-white/70 hover:text-ink-900"
         >
-          Hệ thống
+          Tài khoản
         </button>
 
         {menuOpen ? (
           <div className="absolute bottom-[calc(100%+8px)] left-0 z-30 w-full overflow-hidden rounded-2xl border border-ink-900/10 bg-white py-1 shadow-lift">
+            <button
+              type="button"
+              onClick={onOpenServicesHealth}
+              className="w-full px-4 py-2 text-left text-sm text-ink-800 hover:bg-fog-50"
+            >
+              Sức khỏe dịch vụ
+            </button>
             <button
               type="button"
               onClick={onOpenSettings}
