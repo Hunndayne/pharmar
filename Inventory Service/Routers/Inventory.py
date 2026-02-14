@@ -191,6 +191,79 @@ def resolve_drug(drug_id: str | None = None, drug_code_or_sku: str | None = None
     raise HTTPException(status_code=404, detail=f"Drug not found for '{drug_id or drug_code_or_sku}'")
 
 
+def register_provisional_drug_from_line(line: Any) -> dict[str, Any]:
+    raw_code = normalize_code((line.drug_code or line.drug_id or "").strip())
+    if not raw_code:
+        raise HTTPException(status_code=404, detail="Drug code is required to register new drug")
+
+    preferred_id = (line.drug_id or "").strip()
+    drug_id = preferred_id if preferred_id and preferred_id not in runtime_state.drugs else raw_code
+    if drug_id in runtime_state.drugs:
+        return runtime_state.drugs[drug_id]
+
+    units: list[dict[str, Any]] = []
+    unit_prices: list[dict[str, Any]] = []
+    used_unit_ids: set[str] = set()
+
+    for index, unit_price in enumerate(getattr(line, "unit_prices", []) or []):
+        candidate_unit_id = normalize_code(unit_price.unit_id or "") or f"{raw_code}-U{index + 1}"
+        while candidate_unit_id in used_unit_ids:
+            candidate_unit_id = f"{candidate_unit_id}-{index + 1}"
+        used_unit_ids.add(candidate_unit_id)
+
+        conversion = max(1, int(unit_price.conversion))
+        units.append(
+            {
+                "id": candidate_unit_id,
+                "name": unit_price.unit_name.strip() or f"Don vi {index + 1}",
+                "conversion": conversion,
+                "barcode": "",
+            }
+        )
+        unit_prices.append(
+            {
+                "unit_id": candidate_unit_id,
+                "price": float(unit_price.price),
+            }
+        )
+
+    if not units:
+        fallback_unit_id = f"{raw_code}-U1"
+        units = [{"id": fallback_unit_id, "name": "Don vi", "conversion": 1, "barcode": ""}]
+        unit_prices = [{"unit_id": fallback_unit_id, "price": float(line.import_price)}]
+
+    if line.barcode:
+        units[0]["barcode"] = line.barcode.strip()
+
+    highest_unit = max(units, key=lambda item: item["conversion"])
+    sku_aliases = [raw_code]
+    if preferred_id and normalize_key(preferred_id) != normalize_key(raw_code):
+        sku_aliases.append(preferred_id)
+
+    drug = {
+        "id": drug_id,
+        "code": raw_code,
+        "name": raw_code,
+        "group": "Khac",
+        "base_unit": highest_unit["name"],
+        "reorder_level": 0,
+        "units": units,
+        "unit_prices": unit_prices,
+        "sku_aliases": sku_aliases,
+    }
+    runtime_state.drugs[drug_id] = drug
+    return drug
+
+
+def resolve_or_register_drug(line: Any) -> dict[str, Any]:
+    try:
+        return resolve_drug(drug_id=line.drug_id, drug_code_or_sku=line.drug_code)
+    except HTTPException as exc:
+        if exc.status_code != 404 or not line.drug_code:
+            raise
+        return register_provisional_drug_from_line(line)
+
+
 def get_batch_or_404(batch_id: str) -> dict[str, Any]:
     batch = runtime_state.batches.get(batch_id)
     if batch is None:
@@ -651,7 +724,7 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
         total = 0.0
 
         for line in payload.lines:
-            drug = resolve_drug(drug_id=line.drug_id, drug_code_or_sku=line.drug_code)
+            drug = resolve_or_register_drug(line)
 
             if line.batch_code:
                 batch_code = normalize_code(line.batch_code)
@@ -804,7 +877,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                 if batch is None:
                     raise HTTPException(status_code=409, detail="Receipt has missing batch")
 
-                drug = resolve_drug(drug_id=line.drug_id, drug_code_or_sku=line.drug_code)
+                drug = resolve_or_register_drug(line)
                 if drug["id"] != existing_line["drug_id"]:
                     raise HTTPException(
                         status_code=409,
@@ -897,7 +970,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
         total = 0.0
 
         for line in payload.lines:
-            drug = resolve_drug(drug_id=line.drug_id, drug_code_or_sku=line.drug_code)
+            drug = resolve_or_register_drug(line)
 
             if line.batch_code:
                 batch_code = normalize_code(line.batch_code)

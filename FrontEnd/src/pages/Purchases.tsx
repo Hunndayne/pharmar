@@ -2,6 +2,11 @@
 import Quagga from '@ericblade/quagga2'
 import QRCode from 'qrcode'
 import {
+  catalogApi,
+  type ProductDetailItem,
+  type SupplierItem as CatalogSupplierItem,
+} from '../api/catalogService'
+import {
   inventoryApi,
   type InventoryCreateReceiptPayload,
   type InventoryMetaDrug,
@@ -457,6 +462,8 @@ const parsePromoNote = (note: string | null | undefined) => {
   }
 }
 
+const normalizeLookupKey = (value: string) => value.trim().toLocaleLowerCase('vi-VN')
+
 const mapMetaDrugToUiDrug = (drug: InventoryMetaDrug): Drug => {
   const sortedUnits = drug.units.slice().sort((a, b) => b.conversion - a.conversion)
   return {
@@ -488,13 +495,134 @@ const buildDefaultPricesFromMeta = (drugs: InventoryMetaDrug[]) => {
   return result
 }
 
-const mapMetaSupplierToUiSupplier = (supplier: InventoryMetaSupplier): Supplier => ({
-  id: supplier.id,
-  name: supplier.name,
-  contactName: supplier.contact_name,
-  phone: supplier.phone,
-  address: supplier.address,
-})
+const mapCatalogProductToUiDrug = (product: ProductDetailItem): Drug => {
+  const activeUnits = product.units
+    .filter((unit) => unit.is_active)
+    .sort((a, b) => b.conversion_rate - a.conversion_rate)
+
+  return {
+    id: product.id,
+    code: product.code,
+    name: product.name,
+    regNo: product.registration_number ?? '',
+    group: product.group?.name ?? '',
+    maker: product.manufacturer?.name ?? '',
+    barcode: product.barcode ?? activeUnits[0]?.barcode ?? '',
+    units: activeUnits.map((unit) => ({
+      id: unit.id,
+      name: unit.unit_name,
+      conversion: Math.max(1, unit.conversion_rate),
+      barcode: unit.barcode ?? '',
+    })),
+  }
+}
+
+const mergeMetaDrugsWithCatalog = (
+  inventoryDrugs: InventoryMetaDrug[],
+  catalogProducts: ProductDetailItem[],
+): Drug[] => {
+  const catalogByCode = new Map(
+    catalogProducts.map((product) => [normalizeLookupKey(product.code), product]),
+  )
+  const matchedCatalogCodes = new Set<string>()
+
+  const mergedInventoryDrugs = inventoryDrugs
+    .map((metaDrug) => {
+      const baseDrug = mapMetaDrugToUiDrug(metaDrug)
+      const matchedCatalog = catalogByCode.get(normalizeLookupKey(metaDrug.code))
+      if (!matchedCatalog) return baseDrug
+      matchedCatalogCodes.add(normalizeLookupKey(matchedCatalog.code))
+
+      const catalogUnits = matchedCatalog.units.filter((unit) => unit.is_active)
+      const catalogUnitByName = new Map(
+        catalogUnits.map((unit) => [normalizeLookupKey(unit.unit_name), unit]),
+      )
+      const catalogUnitByConversion = new Map(
+        catalogUnits.map((unit) => [Math.max(1, unit.conversion_rate), unit]),
+      )
+
+      const mergedUnits = baseDrug.units
+        .map((unit) => {
+          const byConversion = catalogUnitByConversion.get(unit.conversion)
+          const byName = catalogUnitByName.get(normalizeLookupKey(unit.name))
+          const matched = byConversion ?? byName
+          return {
+            ...unit,
+            name: matched?.unit_name ?? unit.name,
+            barcode: matched?.barcode ?? unit.barcode,
+          }
+        })
+        .sort((a, b) => b.conversion - a.conversion)
+
+      return {
+        ...baseDrug,
+        name: matchedCatalog.name,
+        regNo: matchedCatalog.registration_number ?? '',
+        group: matchedCatalog.group?.name ?? baseDrug.group,
+        maker: matchedCatalog.manufacturer?.name ?? '',
+        barcode: matchedCatalog.barcode ?? mergedUnits[0]?.barcode ?? baseDrug.barcode,
+        units: mergedUnits,
+      }
+    })
+
+  const catalogOnlyDrugs = catalogProducts
+    .filter((product) => !matchedCatalogCodes.has(normalizeLookupKey(product.code)))
+    .map(mapCatalogProductToUiDrug)
+
+  return [...mergedInventoryDrugs, ...catalogOnlyDrugs]
+    .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN'))
+}
+
+const buildDefaultPricesFromCatalog = (
+  products: ProductDetailItem[],
+): Record<string, Record<string, string>> => {
+  const result: Record<string, Record<string, string>> = {}
+  products.forEach((product) => {
+    const priceMap: Record<string, string> = {}
+    product.units
+      .filter((unit) => unit.is_active)
+      .forEach((unit) => {
+        const parsedPrice = Number(unit.selling_price ?? 0)
+        priceMap[unit.id] = Number.isFinite(parsedPrice) ? String(parsedPrice) : ''
+      })
+    result[product.id] = priceMap
+  })
+  return result
+}
+
+const mergeMetaSuppliersWithCatalog = (
+  inventorySuppliers: InventoryMetaSupplier[],
+  catalogSuppliers: CatalogSupplierItem[],
+): Supplier[] => {
+  const catalogByName = new Map(
+    catalogSuppliers.map((supplier) => [normalizeLookupKey(supplier.name), supplier]),
+  )
+
+  return inventorySuppliers
+    .map(mapMetaSupplierToUiSupplier)
+    .map((supplier) => {
+      const matchedCatalog = catalogByName.get(normalizeLookupKey(supplier.name))
+      if (!matchedCatalog) return supplier
+      return {
+        ...supplier,
+        name: matchedCatalog.name,
+        contactName: matchedCatalog.contact_person ?? supplier.contactName,
+        phone: matchedCatalog.phone ?? supplier.phone,
+        address: matchedCatalog.address ?? supplier.address,
+      }
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN'))
+}
+
+function mapMetaSupplierToUiSupplier(supplier: InventoryMetaSupplier): Supplier {
+  return {
+    id: supplier.id,
+    name: supplier.name,
+    contactName: supplier.contact_name,
+    phone: supplier.phone,
+    address: supplier.address,
+  }
+}
 
 const defaultReceiptLineExtra = (
   unitRetailPrices: LineRetailPrice[],
@@ -537,6 +665,11 @@ const mapInventoryReceiptLineToFormLine = (
   defaults: Record<string, Record<string, string>>,
   extraByBatchCode: Record<string, ReceiptLineExtra>,
 ): LineItemForm => {
+  const matchedDrug =
+    drugs.find((item) => item.id === line.drug_id) ??
+    drugs.find((item) => normalizeLookupKey(item.code) === normalizeLookupKey(line.drug_code))
+  const resolvedDrugId = matchedDrug?.id ?? line.drug_id
+
   const promoFromApi = line.promo_type
     ? {
         promoType: line.promo_type as PromoType,
@@ -549,7 +682,7 @@ const mapInventoryReceiptLineToFormLine = (
     : parsePromoNote(line.promo_note)
   const apiRetailPrices = mapInventoryLineUnitPricesToRetail(line.unit_prices)
   const fallbackRetailPrices = buildLineRetailPrices(
-    line.drug_id,
+    resolvedDrugId,
     apiRetailPrices.length ? apiRetailPrices : undefined,
     drugs,
     defaults,
@@ -561,19 +694,19 @@ const mapInventoryReceiptLineToFormLine = (
   const mergedExtra = normalizeReceiptLineExtra(storedExtra, fallbackExtra)
 
   const lineRetailPrices = buildLineRetailPrices(
-    line.drug_id,
+    resolvedDrugId,
     mergedExtra.unitRetailPrices,
     drugs,
     defaults,
   )
 
-  const drug = drugs.find((item) => item.id === line.drug_id)
+  const drug = matchedDrug
   const fallbackBarcode = drug?.barcode ?? ''
 
   return {
     id: line.id,
     batchCode: line.batch_code,
-    drugId: line.drug_id,
+    drugId: resolvedDrugId,
     lotNumber: line.lot_number,
     quantity: String(line.quantity),
     mfgDate: line.mfg_date,
@@ -646,15 +779,21 @@ const buildReceiptExtraFromOrder = (order: OrderFormState): ReceiptExtra => ({
   }, {}),
 })
 
-const buildInventoryPayloadFromForm = (order: OrderFormState): InventoryCreateReceiptPayload => ({
+const buildInventoryPayloadFromForm = (
+  order: OrderFormState,
+  drugMap: Map<string, Drug>,
+): InventoryCreateReceiptPayload => ({
   receipt_date: order.date,
   supplier_id: order.supplierId,
   shipping_carrier: order.shippingCarrier.trim(),
   payment_status: paymentStatusToApi(order.paymentStatus),
   payment_method: paymentMethodToApi(order.paymentMethod),
   note: order.note.trim() || null,
-  lines: order.lines.map((line) => ({
-    drug_id: line.drugId || undefined,
+  lines: order.lines.map((line) => {
+    const selectedDrug = drugMap.get(line.drugId)
+    return {
+      drug_id: line.drugId || undefined,
+      drug_code: selectedDrug?.code || undefined,
     batch_code: normalizeBatchCode(line.batchCode) || undefined,
     lot_number: line.lotNumber.trim(),
     quantity: Math.max(1, Math.floor(parseNumber(line.quantity))),
@@ -682,7 +821,8 @@ const buildInventoryPayloadFromForm = (order: OrderFormState): InventoryCreateRe
       price: Math.max(0, parseNumber(unitPrice.price)),
     })),
     promo_note: toPromoNote(line),
-  })),
+    }
+  }),
 })
 
 // ============================================================
@@ -864,13 +1004,66 @@ export function Purchases() {
           inventoryApi.listImportReceipts(),
         ])
 
-        const nextSupplierOptions =
-          apiSuppliers.length > 0 ? apiSuppliers.map(mapMetaSupplierToUiSupplier) : suppliers
-        const nextDrugOptions =
-          apiDrugs.length > 0 ? apiDrugs.map(mapMetaDrugToUiDrug) : drugCatalog
+        let catalogProducts: ProductDetailItem[] = []
+        let catalogSuppliers: CatalogSupplierItem[] = []
+
+        if (accessToken) {
+          try {
+            const fetchAllCatalogProducts = async () => {
+              const allProducts: Array<{ id: string }> = []
+              let currentPage = 1
+              let totalPages = 1
+
+              while (currentPage <= totalPages) {
+                const pageResponse = await catalogApi.listProducts(accessToken, {
+                  page: currentPage,
+                  size: 200,
+                })
+                allProducts.push(...pageResponse.items.map((item) => ({ id: item.id })))
+                totalPages = Math.max(1, pageResponse.pages)
+                currentPage += 1
+              }
+
+              return Promise.all(
+                allProducts.map((item) => catalogApi.getProduct(accessToken, item.id)),
+              )
+            }
+
+            const [productDetails, supplierPage] = await Promise.all([
+              fetchAllCatalogProducts(),
+              catalogApi.listSuppliers(accessToken, { is_active: true, page: 1, size: 200 }),
+            ])
+
+            catalogProducts = productDetails
+            catalogSuppliers = supplierPage.items
+          } catch (catalogError) {
+            console.warn('Cannot merge purchases metadata from catalog service:', catalogError)
+          }
+        }
+
+        const nextSupplierOptions = apiSuppliers.length
+          ? (catalogSuppliers.length
+              ? mergeMetaSuppliersWithCatalog(apiSuppliers, catalogSuppliers)
+              : apiSuppliers
+                  .map(mapMetaSupplierToUiSupplier)
+                  .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN')))
+          : []
+
+        const nextDrugOptions = apiDrugs.length
+          ? (catalogProducts.length
+              ? mergeMetaDrugsWithCatalog(apiDrugs, catalogProducts)
+              : apiDrugs
+                  .map(mapMetaDrugToUiDrug)
+                  .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN')))
+          : catalogProducts
+              .map(mapCatalogProductToUiDrug)
+              .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN'))
+
         const nextDefaultRetailPrices = apiDrugs.length
           ? buildDefaultPricesFromMeta(apiDrugs)
-          : defaultRetailPricesByDrug
+          : catalogProducts.length
+              ? buildDefaultPricesFromCatalog(catalogProducts)
+              : {}
         const extras = extrasOverride ?? receiptExtrasRef.current
 
         const nextOrders = apiReceipts.map((receipt) =>
@@ -906,7 +1099,9 @@ export function Purchases() {
 
         setApiMismatchNotice(
           hasStructuredFields
-            ? null
+            ? (!apiDrugs.length && catalogProducts.length
+                ? 'Danh mục thuốc nhập đang đọc từ Catalog. Một số thuốc có thể chưa đồng bộ mã nội bộ của kho.'
+                : null)
             : 'API chưa trả đủ trường mở rộng cho trang nhập hàng. Hệ thống đang fallback bằng dữ liệu cục bộ để không mất dữ liệu thao tác.',
         )
       } catch (error) {
@@ -915,7 +1110,7 @@ export function Purchases() {
         setLoadingOrders(false)
       }
     },
-    [getApiErrorMessage],
+    [accessToken, getApiErrorMessage],
   )
 
   useEffect(() => {
@@ -1211,7 +1406,7 @@ export function Purchases() {
     const isCreating = !editingId
     setSavingOrder(true)
     try {
-      const payload = buildInventoryPayloadFromForm(form)
+      const payload = buildInventoryPayloadFromForm(form, drugMap)
       const receipt = editingId
         ? await inventoryApi.updateImportReceipt(accessToken, editingId, payload)
         : await inventoryApi.createImportReceipt(accessToken, payload)
@@ -1480,6 +1675,7 @@ export function Purchases() {
             const nextLine = { ...line, barcode: text }
             if (match) {
               nextLine.drugId = match
+              nextLine.unitRetailPrices = buildRetailPrices(match, line.unitRetailPrices)
             }
             return nextLine
           }),
@@ -1488,7 +1684,7 @@ export function Purchases() {
       setScanOpen(false)
       setScanMessage('Đã quét thành công.')
     },
-    [barcodeIndex]
+    [barcodeIndex, buildRetailPrices]
   )
 
   const handleScanCandidate = useCallback(

@@ -7,6 +7,7 @@ import {
   type ProductDetailItem,
   type ProductUnitItem,
 } from '../api/catalogService'
+import { storeApi } from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
@@ -342,6 +343,8 @@ const buildDesiredUnits = (form: FormState): DesiredUnit[] => {
   return result
 }
 
+const normalizeGroupKey = (value: string) => value.trim().toLocaleLowerCase('vi-VN')
+
 // ============================================================
 // Barcode Scanning Engine (Quagga2)
 //
@@ -495,11 +498,69 @@ export function DrugCatalog() {
         fetchAllProducts(),
       ])
 
+      let resolvedGroups = groupPage.items
+
+      try {
+        const storeCategoryPage = await storeApi.listDrugCategories({
+          include_inactive: false,
+        })
+
+        const catalogGroupByKey = new Map(
+          resolvedGroups.map((group) => [normalizeGroupKey(group.name), group]),
+        )
+
+        const storeGroupEntries: Array<[string, string]> = storeCategoryPage.items
+          .flatMap((category) => category.groups)
+          .filter((group) => group.is_active)
+          .map((group): [string, string] => [normalizeGroupKey(group.name), group.name.trim()])
+          .filter((entry): entry is [string, string] => Boolean(entry[0]))
+
+        const uniqueStoreGroupNames = Array.from(
+          new Map<string, string>(storeGroupEntries).values(),
+        )
+
+        if (canManage && uniqueStoreGroupNames.length > 0) {
+          let hasSyncedNewGroup = false
+          for (const groupName of uniqueStoreGroupNames) {
+            const groupKey = normalizeGroupKey(groupName)
+            if (catalogGroupByKey.has(groupKey)) continue
+            try {
+              const createdGroup = await catalogApi.createDrugGroup(accessToken, {
+                name: groupName,
+                description: null,
+                is_active: true,
+              })
+              catalogGroupByKey.set(groupKey, createdGroup)
+              hasSyncedNewGroup = true
+            } catch (syncError) {
+              if (!(syncError instanceof ApiError) || syncError.status >= 500) {
+                throw syncError
+              }
+            }
+          }
+
+          if (hasSyncedNewGroup) {
+            const refreshedGroups = await catalogApi.listDrugGroups(accessToken, {
+              is_active: true,
+              page: 1,
+              size: 200,
+            })
+            resolvedGroups = refreshedGroups.items
+          }
+        }
+      } catch (syncError) {
+        console.warn('Skip syncing drug groups from store service:', syncError)
+      }
+
       const details = await Promise.all(
         products.map((item) => catalogApi.getProduct(accessToken, item.id)),
       )
 
-      setGroupOptions(groupPage.items)
+      setGroupOptions(
+        resolvedGroups
+          .slice()
+          .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN')),
+      )
       setMakerOptions(manufacturerPage.items)
       setDrugs(details.map(mapProductDetailToDrug))
     } catch (error) {
@@ -507,7 +568,7 @@ export function DrugCatalog() {
     } finally {
       setLoading(false)
     }
-  }, [accessToken, getApiErrorMessage])
+  }, [accessToken, canManage, getApiErrorMessage])
 
   useEffect(() => {
     void loadCatalogData()
