@@ -20,7 +20,51 @@ export type ManufacturerItem = {
   updated_at: string
 }
 
+export type SupplierItem = {
+  id: string
+  code: string
+  name: string
+  address: string | null
+  phone: string
+  email: string | null
+  tax_code: string | null
+  contact_person: string | null
+  current_debt: string | number
+  is_active: boolean
+  note: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type SupplierDebtHistoryItem = {
+  id: string
+  supplier_id: string
+  type: string
+  amount: string | number
+  balance_after: string | number
+  reference_type: string | null
+  reference_id: string | null
+  note: string | null
+  created_by: string | null
+  created_at: string
+}
+
+export type SupplierDebtResponse = {
+  supplier_id: string
+  supplier_code: string
+  supplier_name: string
+  current_debt: string | number
+  history: CatalogPageResponse<SupplierDebtHistoryItem>
+}
+
 type ListManufacturersParams = {
+  search?: string
+  is_active?: boolean
+  page?: number
+  size?: number
+}
+
+type ListSuppliersParams = {
   search?: string
   is_active?: boolean
   page?: number
@@ -43,6 +87,37 @@ type ManufacturerUpdatePayload = {
   address?: string | null
   phone?: string | null
   is_active?: boolean
+}
+
+type SupplierCreatePayload = {
+  code?: string | null
+  name: string
+  address?: string | null
+  phone: string
+  email?: string | null
+  tax_code?: string | null
+  contact_person?: string | null
+  current_debt?: string | number
+  is_active?: boolean
+  note?: string | null
+}
+
+type SupplierUpdatePayload = {
+  code?: string | null
+  name?: string
+  address?: string | null
+  phone?: string
+  email?: string | null
+  tax_code?: string | null
+  contact_person?: string | null
+  is_active?: boolean
+  note?: string | null
+}
+
+type SupplierDebtPaymentPayload = {
+  amount: string | number
+  note?: string | null
+  reference_id?: string | null
 }
 
 const requestCatalogJson = async <T>(
@@ -69,7 +144,9 @@ const requestCatalogJson = async <T>(
       ? payload.detail
           .map((item: { msg?: string; loc?: (string | number)[] }) => {
             const loc = Array.isArray(item?.loc) ? item.loc.join('.') : ''
-            return loc ? `${loc}: ${item?.msg ?? 'Du lieu khong hop le'}` : (item?.msg ?? 'Du lieu khong hop le')
+            return loc
+              ? `${loc}: ${item?.msg ?? 'D\u1eef li\u1ec7u kh\u00f4ng h\u1ee3p l\u1ec7'}`
+              : (item?.msg ?? 'D\u1eef li\u1ec7u kh\u00f4ng h\u1ee3p l\u1ec7')
           })
           .join('; ')
       : undefined
@@ -77,7 +154,7 @@ const requestCatalogJson = async <T>(
       detailMessage ??
       payload?.detail ??
       payload?.message ??
-      `Yeu cau that bai (${response.status})`
+      `Y\u00eau c\u1ea7u th\u1ea5t b\u1ea1i (${response.status})`
     throw new ApiError(detail, response.status)
   }
 
@@ -125,5 +202,65 @@ export const catalogApi = {
       `/catalog/manufacturers/${manufacturerId}`,
       token,
       { method: 'DELETE' },
+    ),
+
+  listSuppliers: (token: string, params?: ListSuppliersParams) =>
+    requestCatalogJson<CatalogPageResponse<SupplierItem>>(
+      '/catalog/suppliers',
+      token,
+      { method: 'GET' },
+      params,
+    ),
+
+  getSupplier: (token: string, supplierId: string) =>
+    requestCatalogJson<SupplierItem>(
+      `/catalog/suppliers/${supplierId}`,
+      token,
+      { method: 'GET' },
+    ),
+
+  createSupplier: (token: string, payload: SupplierCreatePayload) =>
+    requestCatalogJson<SupplierItem>(
+      '/catalog/suppliers',
+      token,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  updateSupplier: (token: string, supplierId: string, payload: SupplierUpdatePayload) =>
+    requestCatalogJson<SupplierItem>(
+      `/catalog/suppliers/${supplierId}`,
+      token,
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  deleteSupplier: (token: string, supplierId: string) =>
+    requestCatalogJson<{ message: string }>(
+      `/catalog/suppliers/${supplierId}`,
+      token,
+      { method: 'DELETE' },
+    ),
+
+  getSupplierDebt: (token: string, supplierId: string, params?: { page?: number; size?: number }) =>
+    requestCatalogJson<SupplierDebtResponse>(
+      `/catalog/suppliers/${supplierId}/debt`,
+      token,
+      { method: 'GET' },
+      params,
+    ),
+
+  paySupplierDebt: (token: string, supplierId: string, payload: SupplierDebtPaymentPayload) =>
+    requestCatalogJson<{ message: string }>(
+      `/catalog/suppliers/${supplierId}/debt/payment`,
+      token,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
     ),
 }

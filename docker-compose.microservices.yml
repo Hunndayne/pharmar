@@ -134,6 +134,29 @@
         condition: service_started
     restart: unless-stopped
 
+  customer-service:
+    build:
+      context: ./Customer Service
+      dockerfile: dockerfile
+    container_name: pharmar-customer-service
+    environment:
+      APP_PORT: 8007
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/pharmar_customer
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      INTERNAL_API_KEY: ${CUSTOMER_INTERNAL_API_KEY:-change-this-internal-key}
+      STORE_SERVICE_URL: http://store-service:8005
+      ENABLE_POINTS_EXPIRY_JOB: ${ENABLE_POINTS_EXPIRY_JOB:-true}
+      POINTS_EXPIRY_JOB_INTERVAL_HOURS: ${POINTS_EXPIRY_JOB_INTERVAL_HOURS:-24}
+    ports:
+      - "8007:8007"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      store-service:
+        condition: service_started
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./FrontEnd
@@ -160,6 +183,7 @@
       REPORT_SERVICE_URL: http://report-service:8004
       STORE_SERVICE_URL: http://store-service:8005
       CATALOG_SERVICE_URL: http://catalog-service:8006
+      CUSTOMER_SERVICE_URL: http://customer-service:8007
     ports:
       - "8000:8000"
     depends_on:
@@ -174,6 +198,8 @@
       store-service:
         condition: service_started
       catalog-service:
+        condition: service_started
+      customer-service:
         condition: service_started
     restart: unless-stopped
 

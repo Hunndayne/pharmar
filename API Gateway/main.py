@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     REPORT_SERVICE_URL: str = "http://report-service:8004"
     STORE_SERVICE_URL: str = "http://store-service:8005"
     CATALOG_SERVICE_URL: str = "http://catalog-service:8006"
+    CUSTOMER_SERVICE_URL: str = "http://customer-service:8007"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -46,6 +47,7 @@ SERVICE_URLS: dict[str, str] = {
     "report": settings.REPORT_SERVICE_URL,
     "store": settings.STORE_SERVICE_URL,
     "catalog": settings.CATALOG_SERVICE_URL,
+    "customer": settings.CUSTOMER_SERVICE_URL,
 }
 
 HEALTH_TARGETS: dict[str, str] = {
@@ -55,6 +57,7 @@ HEALTH_TARGETS: dict[str, str] = {
     "report": settings.REPORT_SERVICE_URL,
     "store": settings.STORE_SERVICE_URL,
     "catalog": settings.CATALOG_SERVICE_URL,
+    "customer": settings.CUSTOMER_SERVICE_URL,
 }
 
 
