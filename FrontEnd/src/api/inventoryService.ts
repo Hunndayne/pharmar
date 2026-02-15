@@ -255,8 +255,8 @@ const requestInventoryJson = async <T>(
 }
 
 export const inventoryApi = {
-  getMetaSuppliers: () =>
-    requestInventoryJson<InventoryMetaSupplier[]>('/inventory/meta/suppliers', { method: 'GET' }),
+  getMetaSuppliers: (token?: string) =>
+    requestInventoryJson<InventoryMetaSupplier[]>('/inventory/meta/suppliers', { method: 'GET' }, token),
 
   getMetaDrugs: (token?: string) =>
     requestInventoryJson<InventoryMetaDrug[]>('/inventory/meta/drugs', { method: 'GET' }, token),

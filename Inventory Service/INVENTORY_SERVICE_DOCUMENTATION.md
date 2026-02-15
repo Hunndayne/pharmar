@@ -96,7 +96,7 @@ Request:
 ### 1) Health + metadata
 
 - `GET /health`: liveness check.
-- `GET /meta/drugs`, `GET /meta/suppliers`: return metadata from runtime state; drugs are auto-synced from Catalog service when token is provided.
+- `GET /meta/drugs`, `GET /meta/suppliers`: return metadata from runtime state; drugs và suppliers được auto-sync từ Catalog service khi có token.
 - `GET /events`: returns latest consumed `sale.created` events from Redis (keeps last 200).
 
 ### 2) Import receipts

@@ -58,6 +58,30 @@ async def lifespan(_: FastAPI):
                 """
             )
         )
+        await connection.execute(
+            text(
+                f"""
+                ALTER TABLE {SCHEMA_NAME}.promotion_usages
+                ADD COLUMN IF NOT EXISTS is_cancelled BOOLEAN NOT NULL DEFAULT false
+                """
+            )
+        )
+        await connection.execute(
+            text(
+                f"""
+                ALTER TABLE {SCHEMA_NAME}.promotion_usages
+                ADD COLUMN IF NOT EXISTS cancelled_reason TEXT
+                """
+            )
+        )
+        await connection.execute(
+            text(
+                f"""
+                ALTER TABLE {SCHEMA_NAME}.promotion_usages
+                ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ
+                """
+            )
+        )
 
     async with SessionLocal() as session:
         await ensure_default_tiers(session)

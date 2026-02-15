@@ -193,6 +193,14 @@ def get_supplier_or_404(supplier_id: str) -> dict[str, Any]:
     return supplier
 
 
+def build_supplier_contact(contact_name: str | None, phone: str | None) -> str:
+    left = (contact_name or "").strip()
+    right = (phone or "").strip()
+    if left and right:
+        return f"{left} - {right}"
+    return left or right
+
+
 def resolve_drug(drug_id: str | None = None, drug_code_or_sku: str | None = None) -> dict[str, Any]:
     if drug_id:
         by_id = runtime_state.drugs.get(drug_id)
@@ -388,15 +396,125 @@ async def sync_all_drugs_from_catalog(token: str) -> int:
         pages = _to_positive_int(listing.get("pages"), default=1)
         page += 1
 
-    runtime_state.catalog_last_sync_at = utc_now()
+    runtime_state.catalog_drugs_last_sync_at = utc_now()
     await save_runtime_state_safe()
     return upserted
+
+
+def upsert_supplier_from_catalog_item(
+    item: dict[str, Any],
+    target: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    target_map = target if target is not None else runtime_state.suppliers
+    supplier_id = str(item.get("id") or "").strip()
+    supplier_name = str(item.get("name") or "").strip()
+    if not supplier_id or not supplier_name:
+        return None
+
+    existing = target_map.get(supplier_id) or runtime_state.suppliers.get(supplier_id, {})
+    supplier = {
+        "id": supplier_id,
+        "code": str(item.get("code") or existing.get("code") or "").strip(),
+        "name": supplier_name,
+        "contact_name": str(item.get("contact_person") or existing.get("contact_name") or "").strip(),
+        "phone": str(item.get("phone") or existing.get("phone") or "").strip(),
+        "address": str(item.get("address") or existing.get("address") or "").strip(),
+        "email": str(item.get("email") or existing.get("email") or "").strip() or None,
+        "tax_code": str(item.get("tax_code") or existing.get("tax_code") or "").strip() or None,
+        "note": str(item.get("note") or existing.get("note") or "").strip() or None,
+        "is_active": bool(item.get("is_active", existing.get("is_active", True))),
+    }
+    target_map[supplier_id] = supplier
+    return supplier
+
+
+async def sync_supplier_from_catalog(token: str, supplier_id: str) -> dict[str, Any] | None:
+    payload = await fetch_catalog_json(f"/api/v1/catalog/suppliers/{supplier_id}", token)
+    if payload is None:
+        return None
+    return upsert_supplier_from_catalog_item(payload)
+
+
+async def sync_all_suppliers_from_catalog(token: str) -> int:
+    page = 1
+    pages = 1
+    upserted = 0
+    synced_suppliers: dict[str, dict[str, Any]] = {}
+    has_page = False
+
+    while page <= pages:
+        listing = await fetch_catalog_json(
+            "/api/v1/catalog/suppliers",
+            token,
+            {
+                "page": page,
+                "size": settings.CATALOG_SYNC_PAGE_SIZE,
+            },
+        )
+        if listing is None:
+            break
+        has_page = True
+
+        items = listing.get("items", [])
+        if not isinstance(items, list):
+            break
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if upsert_supplier_from_catalog_item(item, target=synced_suppliers) is not None:
+                upserted += 1
+
+        pages = _to_positive_int(listing.get("pages"), default=1)
+        page += 1
+
+    if has_page:
+        preserve_supplier_ids = {
+            str(receipt.get("supplier_id"))
+            for receipt in runtime_state.receipts.values()
+            if isinstance(receipt, dict) and receipt.get("supplier_id")
+        }
+        preserve_supplier_ids.update(
+            str(batch.get("supplier_id"))
+            for batch in runtime_state.batches.values()
+            if isinstance(batch, dict) and batch.get("supplier_id")
+        )
+        for supplier_id in preserve_supplier_ids:
+            if supplier_id in synced_suppliers:
+                continue
+            legacy = runtime_state.suppliers.get(supplier_id)
+            if legacy:
+                synced_suppliers[supplier_id] = legacy
+
+        runtime_state.suppliers = synced_suppliers
+
+    runtime_state.catalog_suppliers_last_sync_at = utc_now()
+    await save_runtime_state_safe()
+    return upserted
+
+
+async def maybe_sync_catalog_suppliers(token: str | None, force: bool = False) -> int:
+    if not token:
+        return 0
+    last_sync_at = getattr(
+        runtime_state,
+        "catalog_suppliers_last_sync_at",
+        datetime.fromtimestamp(0, tz=timezone.utc),
+    )
+    elapsed_seconds = (utc_now() - last_sync_at).total_seconds()
+    if not force and elapsed_seconds < settings.CATALOG_SYNC_TTL_SECONDS:
+        return 0
+    return await sync_all_suppliers_from_catalog(token)
 
 
 async def maybe_sync_catalog_drugs(token: str | None, force: bool = False) -> int:
     if not token:
         return 0
-    last_sync_at = getattr(runtime_state, "catalog_last_sync_at", datetime.fromtimestamp(0, tz=timezone.utc))
+    last_sync_at = getattr(
+        runtime_state,
+        "catalog_drugs_last_sync_at",
+        datetime.fromtimestamp(0, tz=timezone.utc),
+    )
     elapsed_seconds = (utc_now() - last_sync_at).total_seconds()
     if not force and elapsed_seconds < settings.CATALOG_SYNC_TTL_SECONDS:
         return 0
@@ -455,7 +573,9 @@ def save_runtime_state() -> None:
         "movements": runtime_state.movements,
         "reservations": runtime_state.reservations,
         "sale_events": runtime_state.sale_events,
-        "catalog_last_sync_at": runtime_state.catalog_last_sync_at,
+        "catalog_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
+        "catalog_drugs_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
+        "catalog_suppliers_last_sync_at": runtime_state.catalog_suppliers_last_sync_at,
     }
     tmp_path = path.with_suffix(f"{path.suffix}.tmp")
     tmp_path.write_text(
@@ -478,7 +598,9 @@ async def save_runtime_state_safe() -> None:
                 "movements": runtime_state.movements,
                 "reservations": runtime_state.reservations,
                 "sale_events": runtime_state.sale_events,
-                "catalog_last_sync_at": runtime_state.catalog_last_sync_at,
+                "catalog_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
+                "catalog_drugs_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
+                "catalog_suppliers_last_sync_at": runtime_state.catalog_suppliers_last_sync_at,
             }
             async with runtime_state.pg_pool.acquire() as conn:
                 await conn.execute(
@@ -570,8 +692,15 @@ def load_runtime_state_from_payload(payload: dict[str, Any]) -> bool:
         runtime_state.movements = list(payload.get("movements") or [])
         runtime_state.reservations = list(payload.get("reservations") or [])
         runtime_state.sale_events = list(payload.get("sale_events") or [])
-        runtime_state.catalog_last_sync_at = _parse_iso_datetime(
-            payload.get("catalog_last_sync_at")
+        legacy_catalog_sync = payload.get("catalog_last_sync_at")
+        runtime_state.catalog_drugs_last_sync_at = _parse_iso_datetime(
+            payload.get("catalog_drugs_last_sync_at")
+            or legacy_catalog_sync
+            or datetime.fromtimestamp(0, tz=timezone.utc).isoformat()
+        )
+        runtime_state.catalog_suppliers_last_sync_at = _parse_iso_datetime(
+            payload.get("catalog_suppliers_last_sync_at")
+            or legacy_catalog_sync
             or datetime.fromtimestamp(0, tz=timezone.utc).isoformat()
         )
 
@@ -706,6 +835,23 @@ async def resolve_or_register_drug(line: Any, token: str | None = None) -> dict[
         return register_provisional_drug_from_line(line)
 
 
+async def resolve_supplier_or_404(supplier_id: str, token: str | None = None) -> dict[str, Any]:
+    supplier = runtime_state.suppliers.get(supplier_id)
+    if supplier is not None:
+        return supplier
+
+    if token:
+        synced = await sync_supplier_from_catalog(token, supplier_id)
+        if synced is not None:
+            return synced
+        await maybe_sync_catalog_suppliers(token, force=True)
+        supplier = runtime_state.suppliers.get(supplier_id)
+        if supplier is not None:
+            return supplier
+
+    raise HTTPException(status_code=404, detail=f"Supplier '{supplier_id}' not found")
+
+
 def get_batch_or_404(batch_id: str) -> dict[str, Any]:
     batch = runtime_state.batches.get(batch_id)
     if batch is None:
@@ -826,20 +972,23 @@ def movement_to_view(movement: dict[str, Any]) -> dict[str, Any]:
 
 def batch_to_view(batch: dict[str, Any], as_of: date | None = None) -> dict[str, Any]:
     day = as_of or date.today()
-    drug = runtime_state.drugs[batch["drug_id"]]
-    supplier = runtime_state.suppliers[batch["supplier_id"]]
+    drug = runtime_state.drugs.get(batch["drug_id"])
+    supplier = runtime_state.suppliers.get(batch["supplier_id"])
+    supplier_name = supplier["name"] if supplier else batch.get("supplier_name", "")
+    supplier_contact_name = supplier["contact_name"] if supplier else batch.get("supplier_contact_name", "")
+    supplier_phone = supplier["phone"] if supplier else batch.get("supplier_phone", "")
     return {
         "id": batch["id"],
         "batch_code": batch["batch_code"],
         "lot_number": batch["lot_number"],
         "receipt_id": batch["receipt_id"],
         "drug_id": batch["drug_id"],
-        "drug_code": drug["code"],
-        "drug_name": drug["name"],
-        "drug_group": drug["group"],
+        "drug_code": (drug or {}).get("code") or batch.get("drug_code") or "",
+        "drug_name": (drug or {}).get("name") or batch.get("drug_name") or "",
+        "drug_group": (drug or {}).get("group") or batch.get("drug_group") or "",
         "supplier_id": batch["supplier_id"],
-        "supplier_name": supplier["name"],
-        "supplier_contact": f"{supplier['contact_name']} - {supplier['phone']}",
+        "supplier_name": supplier_name,
+        "supplier_contact": build_supplier_contact(supplier_contact_name, supplier_phone),
         "received_date": batch["received_date"],
         "mfg_date": batch["mfg_date"],
         "exp_date": batch["exp_date"],
@@ -896,7 +1045,12 @@ def receipt_is_editable(
 
 
 def receipt_to_view(receipt: dict[str, Any]) -> dict[str, Any]:
-    supplier = runtime_state.suppliers[receipt["supplier_id"]]
+    supplier = runtime_state.suppliers.get(receipt["supplier_id"])
+    supplier_name = supplier["name"] if supplier else receipt.get("supplier_name", "")
+    supplier_contact_name = (
+        supplier["contact_name"] if supplier else receipt.get("supplier_contact_name", "")
+    )
+    supplier_phone = supplier["phone"] if supplier else receipt.get("supplier_phone", "")
     lines = []
     for line in receipt["lines"]:
         batch = runtime_state.batches.get(line["batch_id"])
@@ -913,8 +1067,8 @@ def receipt_to_view(receipt: dict[str, Any]) -> dict[str, Any]:
         "code": receipt["code"],
         "receipt_date": receipt["receipt_date"],
         "supplier_id": receipt["supplier_id"],
-        "supplier_name": supplier["name"],
-        "supplier_contact": f"{supplier['contact_name']} - {supplier['phone']}",
+        "supplier_name": supplier_name,
+        "supplier_contact": build_supplier_contact(supplier_contact_name, supplier_phone),
         "shipping_carrier": receipt.get("shipping_carrier"),
         "payment_status": receipt.get("payment_status", PaymentStatus.PAID),
         "payment_method": receipt.get("payment_method", PaymentMethod.BANK),
@@ -999,7 +1153,8 @@ def seed_demo_data() -> None:
     runtime_state.movements = []
     runtime_state.reservations = []
     runtime_state.sale_events = []
-    runtime_state.catalog_last_sync_at = datetime.fromtimestamp(0, tz=timezone.utc)
+    runtime_state.catalog_drugs_last_sync_at = datetime.fromtimestamp(0, tz=timezone.utc)
+    runtime_state.catalog_suppliers_last_sync_at = datetime.fromtimestamp(0, tz=timezone.utc)
 
     suppliers = [
         {"id": "s1", "name": "Phuong Dong", "contact_name": "Nguyen Minh Ha", "phone": "028 3838 8899", "address": "Q1, HCMC"},
@@ -1076,7 +1231,8 @@ async def get_drugs(token: str | None = Depends(optional_oauth2_scheme)) -> list
 
 
 @router.get("/meta/suppliers")
-async def get_suppliers() -> list[dict[str, Any]]:
+async def get_suppliers(token: str | None = Depends(optional_oauth2_scheme)) -> list[dict[str, Any]]:
+    await maybe_sync_catalog_suppliers(token, force=True)
     return list(runtime_state.suppliers.values())
 
 
@@ -1168,7 +1324,7 @@ async def get_import_receipt(receipt_id: str) -> dict[str, Any]:
 async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
     actor = get_current_subject(token)
     async with runtime_state.lock:
-        supplier = get_supplier_or_404(payload.supplier_id)
+        supplier = await resolve_supplier_or_404(payload.supplier_id, token=token)
         receipt_id = next_id("receipt", "rcp")
         now = utc_now()
         lines: list[dict[str, Any]] = []
@@ -1205,6 +1361,10 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
                 "receipt_id": receipt_id,
                 "drug_id": drug["id"],
                 "supplier_id": supplier["id"],
+                "supplier_name": supplier.get("name", ""),
+                "supplier_contact_name": supplier.get("contact_name", ""),
+                "supplier_phone": supplier.get("phone", ""),
+                "supplier_address": supplier.get("address", ""),
                 "received_date": payload.receipt_date,
                 "mfg_date": line.mfg_date,
                 "exp_date": line.exp_date,
@@ -1255,6 +1415,10 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
             "code": receipt_code_for_date(payload.receipt_date),
             "receipt_date": payload.receipt_date,
             "supplier_id": supplier["id"],
+            "supplier_name": supplier.get("name", ""),
+            "supplier_contact_name": supplier.get("contact_name", ""),
+            "supplier_phone": supplier.get("phone", ""),
+            "supplier_address": supplier.get("address", ""),
             "shipping_carrier": payload.shipping_carrier,
             "payment_status": payload.payment_status,
             "payment_method": payload.payment_method,
@@ -1292,7 +1456,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
     allow_privileged = can_override_receipt_lock(role, username)
     async with runtime_state.lock:
         receipt = get_receipt_or_404(receipt_id)
-        supplier = get_supplier_or_404(payload.supplier_id)
+        supplier = await resolve_supplier_or_404(payload.supplier_id, token=token)
         editable = receipt_is_editable(receipt, raise_if_not=False)
         receipt_is_editable(receipt, raise_if_not=True, allow_privileged=allow_privileged)
 
@@ -1383,6 +1547,10 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                             "batch_code": row["batch_code"],
                             "lot_number": row["lot_number"],
                             "supplier_id": supplier["id"],
+                            "supplier_name": supplier.get("name", ""),
+                            "supplier_contact_name": supplier.get("contact_name", ""),
+                            "supplier_phone": supplier.get("phone", ""),
+                            "supplier_address": supplier.get("address", ""),
                             "received_date": payload.receipt_date,
                             "mfg_date": row["mfg_date"],
                             "exp_date": row["exp_date"],
@@ -1410,6 +1578,10 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
 
             receipt["receipt_date"] = payload.receipt_date
             receipt["supplier_id"] = supplier["id"]
+            receipt["supplier_name"] = supplier.get("name", "")
+            receipt["supplier_contact_name"] = supplier.get("contact_name", "")
+            receipt["supplier_phone"] = supplier.get("phone", "")
+            receipt["supplier_address"] = supplier.get("address", "")
             receipt["shipping_carrier"] = payload.shipping_carrier
             receipt["payment_status"] = payload.payment_status
             receipt["payment_method"] = payload.payment_method
@@ -1459,6 +1631,10 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                 "receipt_id": receipt["id"],
                 "drug_id": drug["id"],
                 "supplier_id": supplier["id"],
+                "supplier_name": supplier.get("name", ""),
+                "supplier_contact_name": supplier.get("contact_name", ""),
+                "supplier_phone": supplier.get("phone", ""),
+                "supplier_address": supplier.get("address", ""),
                 "received_date": payload.receipt_date,
                 "mfg_date": line.mfg_date,
                 "exp_date": line.exp_date,
@@ -1519,6 +1695,10 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
 
         receipt["receipt_date"] = payload.receipt_date
         receipt["supplier_id"] = supplier["id"]
+        receipt["supplier_name"] = supplier.get("name", "")
+        receipt["supplier_contact_name"] = supplier.get("contact_name", "")
+        receipt["supplier_phone"] = supplier.get("phone", "")
+        receipt["supplier_address"] = supplier.get("address", "")
         receipt["shipping_carrier"] = payload.shipping_carrier
         receipt["payment_status"] = payload.payment_status
         receipt["payment_method"] = payload.payment_method

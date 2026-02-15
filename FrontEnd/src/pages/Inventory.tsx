@@ -4,11 +4,11 @@ import {
   inventoryApi,
   type InventoryBatch,
   type InventoryMetaSupplier,
-  type InventoryStockSummary,
 } from '../api/inventoryService'
 import { catalogApi, type ProductListItem } from '../api/catalogService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
+import { downloadCsv } from '../utils/csv'
 
 type UnitConfig = {
   importUnit: { name: string; ratio: number } | null
@@ -177,7 +177,6 @@ export function Inventory() {
   const canAdjust = user?.role === 'owner' || user?.role === 'manager' || user?.username === 'admin'
 
   const [batches, setBatches] = useState<InventoryBatch[]>([])
-  const [stockSummary, setStockSummary] = useState<InventoryStockSummary[]>([])
   const [metaSuppliers, setMetaSuppliers] = useState<InventoryMetaSupplier[]>([])
   const [catalogProducts, setCatalogProducts] = useState<ProductListItem[]>([])
 
@@ -200,15 +199,13 @@ export function Inventory() {
     setError(null)
 
     try {
-      const [nextBatches, nextSummary, nextSuppliers, nextProducts] = await Promise.all([
+      const [nextBatches, nextSuppliers, nextProducts] = await Promise.all([
         inventoryApi.listBatches(),
-        inventoryApi.getStockSummary(accessToken || undefined),
-        inventoryApi.getMetaSuppliers(),
+        inventoryApi.getMetaSuppliers(accessToken || undefined),
         accessToken ? loadCatalogProducts(accessToken) : Promise.resolve([] as ProductListItem[]),
       ])
 
       setBatches(nextBatches)
-      setStockSummary(nextSummary)
       setMetaSuppliers(nextSuppliers)
       setCatalogProducts(nextProducts)
     } catch (loadError) {
@@ -229,9 +226,7 @@ export function Inventory() {
   )
   const supplierById = useMemo(() => new Map(metaSuppliers.map((item) => [item.id, item])), [metaSuppliers])
 
-  const lotRows = useMemo<LotRow[]>(() => {
-    const keyword = search.trim().toLowerCase()
-
+  const allLotRows = useMemo<LotRow[]>(() => {
     return batches
       .map((batch) => {
         const product = productByCode.get(batch.drug_code.toUpperCase())
@@ -250,61 +245,81 @@ export function Inventory() {
           nearDays: daysUntil(batch.exp_date),
         }
       })
-      .filter((row) => {
-        const matchKeyword =
-          !keyword ||
-          row.drugCode.toLowerCase().includes(keyword) ||
-          row.drugName.toLowerCase().includes(keyword) ||
-          row.batch.batch_code.toLowerCase().includes(keyword) ||
-          row.batch.lot_number.toLowerCase().includes(keyword) ||
-          row.batch.supplier_name.toLowerCase().includes(keyword)
-
-        const matchQuick =
-          quickFilter === 'all'
-            ? true
-            : quickFilter === 'out'
-              ? row.batch.qty_remaining <= 0
-              : quickFilter === 'near'
-                ? row.nearDays >= 0 && row.nearDays <= NEAR_EXPIRY_DAYS && row.batch.qty_remaining > 0
-                : row.nearDays < 0 && row.batch.qty_remaining > 0
-
-        const matchFrom = !expFrom || row.batch.exp_date >= expFrom
-        const matchTo = !expTo || row.batch.exp_date <= expTo
-
-        return matchKeyword && matchQuick && matchFrom && matchTo
-      })
       .sort((a, b) => {
         const expCompare = a.batch.exp_date.localeCompare(b.batch.exp_date)
         if (expCompare !== 0) return expCompare
         return a.batch.batch_code.localeCompare(b.batch.batch_code)
       })
-  }, [batches, expFrom, expTo, productByCode, quickFilter, search, supplierById])
+  }, [batches, productByCode, supplierById])
+
+  const scopedLotRows = useMemo(() => {
+    const keyword = search.trim().toLowerCase()
+    return allLotRows.filter((row) => {
+      const matchKeyword =
+        !keyword ||
+        row.drugCode.toLowerCase().includes(keyword) ||
+        row.drugName.toLowerCase().includes(keyword) ||
+        row.batch.batch_code.toLowerCase().includes(keyword) ||
+        row.batch.lot_number.toLowerCase().includes(keyword) ||
+        row.batch.supplier_name.toLowerCase().includes(keyword)
+
+      const matchFrom = !expFrom || row.batch.exp_date >= expFrom
+      const matchTo = !expTo || row.batch.exp_date <= expTo
+
+      return matchKeyword && matchFrom && matchTo
+    })
+  }, [allLotRows, expFrom, expTo, search])
+
+  const lotRows = useMemo(() => {
+    return scopedLotRows.filter((row) => {
+      if (quickFilter === 'all') return true
+      if (quickFilter === 'out') return row.batch.qty_remaining <= 0
+      if (quickFilter === 'near') {
+        return row.nearDays >= 0 && row.nearDays <= NEAR_EXPIRY_DAYS && row.batch.qty_remaining > 0
+      }
+      return row.nearDays < 0 && row.batch.qty_remaining > 0
+    })
+  }, [quickFilter, scopedLotRows])
+
+  const scopedActiveLotRows = useMemo(
+    () => scopedLotRows.filter((row) => row.batch.status !== 'cancelled'),
+    [scopedLotRows],
+  )
 
   const stats = useMemo(() => {
-    if (stockSummary.length > 0) {
-      return {
-        totalDrugs: stockSummary.length,
-        outOfStock: stockSummary.filter((row) => row.status === 'out_of_stock').length,
-        nearDate: stockSummary.filter((row) => row.status === 'near_date' || row.status === 'expiring_soon').length,
-        expired: stockSummary.filter((row) => row.status === 'expired').length,
-      }
-    }
+    const byDrug = new Map<string, { totalQty: number; near: boolean; expired: boolean }>()
 
-    const uniqueDrugIds = new Set(batches.map((batch) => batch.drug_id))
-    const outOfStock = batches.filter((batch) => batch.qty_remaining <= 0).length
-    const nearDate = batches.filter((batch) => {
-      const days = daysUntil(batch.exp_date)
-      return days >= 0 && days <= NEAR_EXPIRY_DAYS
-    }).length
-    const expired = batches.filter((batch) => daysUntil(batch.exp_date) < 0 && batch.qty_remaining > 0).length
+    scopedActiveLotRows.forEach((row) => {
+      const key = row.batch.drug_id
+      const current = byDrug.get(key) ?? { totalQty: 0, near: false, expired: false }
+
+      current.totalQty += Math.max(0, row.batch.qty_remaining)
+      if (row.batch.qty_remaining > 0) {
+        if (row.nearDays < 0) current.expired = true
+        else if (row.nearDays <= NEAR_EXPIRY_DAYS) current.near = true
+      }
+
+      byDrug.set(key, current)
+    })
+
+    const totalDrugs = byDrug.size
+    let outOfStock = 0
+    let nearDate = 0
+    let expired = 0
+
+    byDrug.forEach((item) => {
+      if (item.totalQty <= 0) outOfStock += 1
+      if (item.near) nearDate += 1
+      if (item.expired) expired += 1
+    })
 
     return {
-      totalDrugs: uniqueDrugIds.size,
+      totalDrugs,
       outOfStock,
       nearDate,
       expired,
     }
-  }, [batches, stockSummary])
+  }, [scopedActiveLotRows])
 
   const currentAdjustContext = useMemo(() => {
     if (!adjusting) return null
@@ -354,14 +369,6 @@ export function Inventory() {
       setBatches((prev) =>
         prev.map((item) => (item.id === response.batch.id ? response.batch : item)),
       )
-
-      try {
-        const summary = await inventoryApi.getStockSummary(accessToken)
-        setStockSummary(summary)
-      } catch {
-        // Bỏ qua lỗi phụ, dữ liệu lô đã được cập nhật cục bộ.
-      }
-
       setAdjusting(null)
       setAdjustError(null)
     } catch (adjustStockError) {
@@ -370,6 +377,57 @@ export function Inventory() {
     } finally {
       setAdjustSubmitting(false)
     }
+  }
+
+  const exportInventoryExcel = () => {
+    const headers = [
+      'Mã thuốc',
+      'Tên thuốc',
+      'Mã lô',
+      'Số lô NCC',
+      'HSD',
+      'Số ngày đến hạn',
+      'Tồn (đơn vị bán lẻ)',
+      'Quy đổi tồn',
+      'Nhà phân phối',
+      'Liên hệ NPP',
+      'Địa chỉ NPP',
+      'Giá đơn vị cao nhất',
+      'Trạng thái',
+    ]
+
+    const rows = lotRows.map((row) => {
+      const isExpired = row.nearDays < 0
+      const isNearDate = row.nearDays >= 0 && row.nearDays <= NEAR_EXPIRY_DAYS && row.batch.qty_remaining > 0
+      const status = row.batch.qty_remaining <= 0
+        ? 'Hết hàng'
+        : isExpired
+          ? 'Hết hạn'
+          : isNearDate
+            ? 'Cận date'
+            : 'Bình thường'
+
+      return [
+        row.drugCode,
+        row.drugName,
+        row.batch.batch_code,
+        row.batch.lot_number,
+        formatDate(row.batch.exp_date),
+        row.nearDays,
+        `${row.batch.qty_remaining} ${row.units.retailUnit.name}`,
+        quantityBreakdown(row.batch.qty_remaining, row.units)
+          .map((item) => `${item.value} ${item.label}`)
+          .join(' · '),
+        row.batch.supplier_name,
+        row.supplierContact,
+        row.supplierAddress,
+        row.highestUnitPrice,
+        status,
+      ]
+    })
+
+    const dateKey = new Date().toISOString().slice(0, 10)
+    downloadCsv(`ton-kho-theo-lo-${dateKey}.csv`, headers, rows)
   }
 
   if (printingLot) {
@@ -389,9 +447,19 @@ export function Inventory() {
 
   return (
     <div className="space-y-6">
-      <header>
-        <p className="text-xs uppercase tracking-[0.35em] text-ink-600">Kho</p>
-        <h2 className="mt-2 text-3xl font-semibold text-ink-900">Tồn kho theo lô</h2>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.35em] text-ink-600">Kho</p>
+          <h2 className="mt-2 text-3xl font-semibold text-ink-900">Tồn kho theo lô</h2>
+        </div>
+        <button
+          type="button"
+          onClick={exportInventoryExcel}
+          disabled={loading || lotRows.length === 0}
+          className="rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
+        >
+          Xuất Excel
+        </button>
       </header>
 
       {error ? (

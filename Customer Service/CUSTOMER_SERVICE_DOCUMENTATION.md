@@ -5,7 +5,7 @@
 Customer Service quan ly:
 
 - Customers
-- Points transactions (earn/redeem/adjust/expire)
+- Points transactions (earn/redeem/adjust/expire/rollback)
 - Tier configs
 - Promotions + promotion usages
 - Internal APIs cho Sale Service
@@ -105,8 +105,10 @@ Discount:
 - `POST /internal/points/calculate`
 - `POST /internal/points/earn`
 - `POST /internal/points/redeem`
+- `POST /internal/points/rollback`
 - `POST /internal/promotions/validate`
 - `POST /internal/promotions/apply`
+- `POST /internal/promotions/rollback`
 - `GET /internal/promotions/suggest`
 - `POST /internal/stats/update`
 
@@ -334,6 +336,65 @@ Response 200:
   }
 }
 ```
+
+### 6.9 Internal points rollback
+
+`POST /internal/points/rollback`
+
+Request:
+```json
+{
+  "customer_id": "uuid",
+  "points": 225,
+  "reference_type": "invoice_cancel",
+  "reference_id": "invoice-uuid",
+  "reference_code": "HD20260214001",
+  "note": "Huy don hang"
+}
+```
+
+Response 200:
+```json
+{
+  "success": true,
+  "rollback_mode": "reverse_earn",
+  "points_rolled_back": 225,
+  "new_balance": 1725
+}
+```
+
+Logic:
+- Service tim transaction theo `reference_id/reference_code`.
+- Neu rollback earn: tru diem va giam `total_points_earned`.
+- Neu rollback redeem: cong diem va giam `total_points_used`.
+- Tao transaction moi voi `type=rollback`.
+
+### 6.10 Internal promotion rollback
+
+`POST /internal/promotions/rollback`
+
+Request:
+```json
+{
+  "promotion_id": "uuid",
+  "usage_id": "uuid",
+  "reason": "Invoice cancelled"
+}
+```
+
+Response 200:
+```json
+{
+  "success": true,
+  "promotion_id": "uuid",
+  "new_usage_count": 99
+}
+```
+
+Logic:
+- Mark usage `is_cancelled=true`, set `cancelled_reason`, `cancelled_at`.
+- Giam `promotion.current_usage` (khong am).
+- Neu usage da cancel truoc do, endpoint idempotent va khong giam tiep.
 
 ## 7) Database objects
 

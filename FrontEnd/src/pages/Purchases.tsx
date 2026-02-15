@@ -20,6 +20,7 @@ import {
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
+import { downloadCsv } from '../utils/csv'
 
 type Unit = {
   id: string
@@ -993,7 +994,7 @@ export function Purchases() {
       setLoadingOrders(true)
       try {
         const [apiSuppliers, apiDrugs, apiReceipts] = await Promise.all([
-          inventoryApi.getMetaSuppliers(),
+          inventoryApi.getMetaSuppliers(accessToken || undefined),
           inventoryApi.getMetaDrugs(accessToken || undefined),
           inventoryApi.listImportReceipts(),
         ])
@@ -1216,6 +1217,91 @@ export function Purchases() {
     setDateFrom('')
     setDateTo('')
     setPage(1)
+  }
+
+  const exportOrdersExcel = () => {
+    const headers = [
+      'Mã phiếu',
+      'Ngày',
+      'Nhà phân phối',
+      'Liên hệ NPP',
+      'Đơn vị vận chuyển',
+      'Trạng thái thanh toán',
+      'PT thanh toán',
+      'Ghi chú',
+      'Số mặt hàng',
+      'Tổng tiền phiếu',
+      'Mã thuốc',
+      'Tên thuốc',
+      'Mã lô',
+      'Số lô NCC',
+      'Số lượng nhập',
+      'Đơn giá nhập',
+      'Khuyến mãi',
+      'SL sau khuyến mãi',
+      'Giá sau khuyến mãi',
+      'Thành tiền dòng',
+    ]
+
+    const rows = filtered.flatMap((order) => {
+      const supplier = supplierMap.get(order.supplierId)
+      const orderTotal = calcOrderTotal(order.lines)
+
+      if (order.lines.length === 0) {
+        return [[
+          order.code,
+          formatDate(order.date),
+          supplier?.name ?? '-',
+          supplier ? `${supplier.contactName} - ${supplier.phone}` : '-',
+          order.shippingCarrier || '-',
+          order.paymentStatus,
+          order.paymentMethod,
+          order.note || '',
+          0,
+          orderTotal,
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+        ]]
+      }
+
+      return order.lines.map((line) => {
+        const pricing = calcLinePricing(line)
+        const selectedDrug = drugMap.get(line.drugId)
+        return [
+          order.code,
+          formatDate(order.date),
+          supplier?.name ?? '-',
+          supplier ? `${supplier.contactName} - ${supplier.phone}` : '-',
+          order.shippingCarrier || '-',
+          order.paymentStatus,
+          order.paymentMethod,
+          order.note || '',
+          order.lines.length,
+          orderTotal,
+          selectedDrug?.code ?? '',
+          selectedDrug?.name ?? '',
+          line.batchCode,
+          line.lotNumber,
+          line.quantity,
+          parseNumber(line.price),
+          describePromo(line),
+          pricing.quantityAfterPromo,
+          pricing.unitPriceAfterPromo,
+          pricing.lineTotal,
+        ]
+      })
+    })
+
+    const dateKey = new Date().toISOString().slice(0, 10)
+    downloadCsv(`nhap-hang-${dateKey}.csv`, headers, rows)
   }
 
   const openCreate = () => {
@@ -2156,7 +2242,12 @@ export function Purchases() {
           >
             Tạo phiếu nhập
           </button>
-          <button className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900">
+          <button
+            type="button"
+            onClick={exportOrdersExcel}
+            disabled={loadingOrders || filtered.length === 0}
+            className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
+          >
             Xuất Excel
           </button>
         </div>

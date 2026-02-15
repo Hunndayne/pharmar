@@ -90,6 +90,9 @@ CREATE TABLE IF NOT EXISTS customer.promotion_usages (
     invoice_id UUID NOT NULL,
     invoice_code VARCHAR(30),
     discount_amount DECIMAL(12,2) NOT NULL,
+    is_cancelled BOOLEAN NOT NULL DEFAULT FALSE,
+    cancelled_reason TEXT,
+    cancelled_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

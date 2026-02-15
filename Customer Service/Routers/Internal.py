@@ -13,6 +13,8 @@ from Source.customer import (
     get_customer_or_404,
     now_utc,
     promotion_summary,
+    resolve_points_rollback,
+    rollback_promotion_usage,
     setting_decimal,
     validate_promotion_business_rules,
     validate_promotion_by_code,
@@ -28,8 +30,12 @@ from Source.schemas.customer import (
     PointsEarnResponse,
     PointsRedeemRequest,
     PointsRedeemResponse,
+    PointsRollbackRequest,
+    PointsRollbackResponse,
     PromotionApplyRequest,
     PromotionApplyResponse,
+    PromotionRollbackRequest,
+    PromotionRollbackResponse,
     PromotionSuggestResponse,
     PromotionSuggestionItem,
     PromotionValidateRequest,
@@ -141,6 +147,51 @@ async def redeem_points(payload: PointsRedeemRequest, db: DbSession) -> PointsRe
     )
 
 
+@router.post("/points/rollback", response_model=PointsRollbackResponse)
+async def rollback_points(payload: PointsRollbackRequest, db: DbSession) -> PointsRollbackResponse:
+    customer = await get_customer_or_404(payload.customer_id, db)
+    mode, requested_points, _, _ = await resolve_points_rollback(
+        db=db,
+        customer_id=payload.customer_id,
+        points=payload.points,
+        reference_type=payload.reference_type,
+        reference_id=payload.reference_id,
+        reference_code=payload.reference_code,
+        note=payload.note,
+    )
+
+    if mode == "reverse_earn":
+        points_delta = -requested_points
+        total_earned_delta = -requested_points
+        total_used_delta = 0
+    else:
+        points_delta = requested_points
+        total_earned_delta = 0
+        total_used_delta = -requested_points
+
+    new_balance, _, _ = await apply_points_change(
+        db=db,
+        customer=customer,
+        points_delta=points_delta,
+        transaction_type="rollback",
+        reference_type=payload.reference_type,
+        reference_id=payload.reference_id,
+        reference_code=payload.reference_code,
+        note=payload.note,
+        created_by="internal",
+        total_earned_delta=total_earned_delta,
+        total_used_delta=total_used_delta,
+    )
+    await db.commit()
+
+    return PointsRollbackResponse(
+        success=True,
+        rollback_mode=mode,
+        points_rolled_back=requested_points,
+        new_balance=new_balance,
+    )
+
+
 @router.post("/promotions/validate", response_model=PromotionValidateResponse)
 async def validate_promotion(payload: PromotionValidateRequest, db: DbSession) -> PromotionValidateResponse:
     valid, reason, promotion, discount = await validate_promotion_by_code(
@@ -193,6 +244,22 @@ async def apply_promotion(payload: PromotionApplyRequest, db: DbSession) -> Prom
         promotion_code=promotion.code,
         discount_amount=discount,
         current_usage=promotion.current_usage,
+    )
+
+
+@router.post("/promotions/rollback", response_model=PromotionRollbackResponse)
+async def rollback_promotion(payload: PromotionRollbackRequest, db: DbSession) -> PromotionRollbackResponse:
+    new_usage_count = await rollback_promotion_usage(
+        db=db,
+        promotion_id=payload.promotion_id,
+        usage_id=payload.usage_id,
+        reason=payload.reason,
+    )
+    await db.commit()
+    return PromotionRollbackResponse(
+        success=True,
+        promotion_id=payload.promotion_id,
+        new_usage_count=new_usage_count,
     )
 
 

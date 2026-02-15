@@ -11,6 +11,7 @@ import { storeApi } from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
+import { downloadCsv, parseDelimitedText } from '../utils/csv'
 
 type Unit = {
   id: string
@@ -444,6 +445,7 @@ export function DrugCatalog() {
   const [makerOptions, setMakerOptions] = useState<ManufacturerItem[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [search, setSearch] = useState('')
   const [barcodeSearch, setBarcodeSearch] = useState('')
   const [groupFilter, setGroupFilter] = useState('Tất cả')
@@ -991,21 +993,235 @@ export function DrugCatalog() {
         `${drug.vatRate}`,
         `${drug.otherTaxRate}`,
         drug.barcode,
-        drug.active ? 'Đang bán' : 'Ngừng bán',
+        drug.active ? 'Dang ban' : 'Ngung ban',
         unitData,
-      ].join(',')
+      ]
     })
-    const header = ['Mã thuốc','Tên thuốc','Số đăng ký','Loại thuốc','Nhóm','NSX','VAT','Thuế khác','Barcode','Trạng thái','Đơn vị'].join(',')
-    const csv = [header, ...rows].join('\n')
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-    const link = document.createElement('a')
-    link.href = URL.createObjectURL(blob)
-    link.download = 'danh-muc-thuoc.csv'
-    link.click()
-    URL.revokeObjectURL(link.href)
+    downloadCsv(
+      'danh-muc-thuoc.csv',
+      ['Ma thuoc', 'Ten thuoc', 'So dang ky', 'Loai thuoc', 'Nhom', 'NSX', 'VAT', 'Thue khac', 'Barcode', 'Trang thai', 'Don vi'],
+      rows,
+    )
+  }
+
+  const normalizeImportText = (value: string) =>
+    value
+      .trim()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/\s+/g, '')
+
+  const parseImportedUnits = (raw: string): DesiredUnit[] => {
+    if (!raw.trim()) {
+      return [{ name: 'Vien', conversion: 1, price: 0, level: 'retail' }]
+    }
+
+    const parsed = raw
+      .split('|')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => {
+        const [namePart = '', payloadPart = ''] = item.split('=')
+        const [conversionPart = '1', pricePart = '0'] = payloadPart.split(':')
+        const conversion = Number(conversionPart.replace(/[^\d.-]/g, ''))
+        const price = Number(pricePart.replace(/[^\d.-]/g, ''))
+        return {
+          name: namePart.trim(),
+          conversion: Number.isFinite(conversion) && conversion > 0 ? conversion : 1,
+          price: Number.isFinite(price) && price >= 0 ? price : 0,
+        }
+      })
+      .filter((item) => item.name)
+      .sort((a, b) => a.conversion - b.conversion)
+
+    if (!parsed.length) {
+      return [{ name: 'Vien', conversion: 1, price: 0, level: 'retail' }]
+    }
+
+    const baseConversion = parsed[0].conversion > 0 ? parsed[0].conversion : 1
+    const normalized = parsed.map((item) => ({
+      ...item,
+      conversion: Math.max(1, Math.round(item.conversion / baseConversion)),
+    }))
+
+    if (normalized.length === 1) {
+      return [{ ...normalized[0], conversion: 1, level: 'retail' }]
+    }
+
+    if (normalized.length === 2) {
+      return [
+        { ...normalized[0], conversion: 1, level: 'retail' },
+        { ...normalized[1], level: 'import' },
+      ]
+    }
+
+    const retail = normalized[0]
+    const importUnit = normalized[normalized.length - 1]
+    const intermediate = normalized[normalized.length - 2]
+    return [
+      { ...retail, conversion: 1, level: 'retail' },
+      { ...intermediate, level: 'intermediate' },
+      { ...importUnit, level: 'import' },
+    ]
+  }
+
+  const readFileText = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result ?? ''))
+      reader.onerror = () => reject(new Error('Khong the doc file'))
+      reader.readAsText(file, 'utf-8')
+    })
+
+  const handleImportExcel = async (file: File | null) => {
+    if (!file) return
+    setImportFile(file.name)
+
+    if (!accessToken) {
+      setAlert('Ban can dang nhap de import du lieu.')
+      return
+    }
+
+    if (!canManage) {
+      setAlert('Ban khong co quyen import danh muc thuoc.')
+      return
+    }
+
+    if (file.name.toLowerCase().endsWith('.xlsx')) {
+      setAlert('Hien tai chi ho tro import file CSV (co the Save As CSV tu Excel).')
+      return
+    }
+
+    setImporting(true)
+    try {
+      const text = await readFileText(file)
+      const rows = parseDelimitedText(text)
+      if (rows.length <= 1) {
+        setAlert('File import khong co du lieu.')
+        return
+      }
+
+      const header = rows[0].map(normalizeImportText)
+      const dataRows = rows.slice(1)
+      const findIndex = (...aliases: string[]) => {
+        const normalizedAliases = aliases.map(normalizeImportText)
+        return header.findIndex((item) => normalizedAliases.includes(item))
+      }
+
+      const idxCode = findIndex('Ma thuoc', 'Code')
+      const idxName = findIndex('Ten thuoc', 'Name')
+      const idxRegNo = findIndex('So dang ky', 'Registration number')
+      const idxGroup = findIndex('Nhom', 'Nhom thuoc', 'Group')
+      const idxMaker = findIndex('NSX', 'Nha san xuat', 'Maker')
+      const idxVat = findIndex('VAT')
+      const idxOtherTax = findIndex('Thue khac', 'Other tax')
+      const idxBarcode = findIndex('Barcode')
+      const idxStatus = findIndex('Trang thai', 'Status')
+      const idxUnits = findIndex('Don vi', 'Don vi & gia')
+
+      if (idxName < 0) {
+        setAlert('Khong tim thay cot "Ten thuoc" trong file import.')
+        return
+      }
+
+      const groupByName = new Map(groupOptions.map((item) => [normalizeGroupKey(item.name), item.id]))
+      const makerByName = new Map(makerOptions.map((item) => [normalizeGroupKey(item.name), item.id]))
+      const existingByCode = new Map<string, { id: string }>(
+        drugs
+          .filter((item) => item.code)
+          .map((item) => [item.code.trim().toUpperCase(), { id: item.id }]),
+      )
+      const existingByName = new Map<string, { id: string }>(
+        drugs.map((item) => [normalizeGroupKey(item.name), { id: item.id }]),
+      )
+
+      let created = 0
+      let updated = 0
+      let skipped = 0
+      const failed: string[] = []
+
+      for (const row of dataRows) {
+        const name = (row[idxName] ?? '').trim()
+        if (!name) {
+          skipped += 1
+          continue
+        }
+
+        try {
+          const code = idxCode >= 0 ? (row[idxCode] ?? '').trim().toUpperCase() : ''
+          const regNo = idxRegNo >= 0 ? (row[idxRegNo] ?? '').trim() : ''
+          const groupName = idxGroup >= 0 ? (row[idxGroup] ?? '').trim() : ''
+          const makerName = idxMaker >= 0 ? (row[idxMaker] ?? '').trim() : ''
+          const vatRate = idxVat >= 0 ? Number((row[idxVat] ?? '0').replace(/[^\d.-]/g, '')) : 0
+          const otherTaxRate = idxOtherTax >= 0 ? Number((row[idxOtherTax] ?? '0').replace(/[^\d.-]/g, '')) : 0
+          const barcode = idxBarcode >= 0 ? (row[idxBarcode] ?? '').trim() : ''
+          const statusRaw = idxStatus >= 0 ? normalizeImportText(row[idxStatus] ?? '') : ''
+          const active = !(statusRaw.includes('ngung') || statusRaw.includes('inactive'))
+          const desiredUnits = parseImportedUnits(idxUnits >= 0 ? (row[idxUnits] ?? '') : '')
+          const baseUnit = desiredUnits.find((item) => item.level === 'retail')
+          if (!baseUnit) {
+            skipped += 1
+            continue
+          }
+
+          const payload = {
+            name,
+            registration_number: regNo || null,
+            group_id: groupByName.get(normalizeGroupKey(groupName)) ?? null,
+            manufacturer_id: makerByName.get(normalizeGroupKey(makerName)) ?? null,
+            barcode: barcode || null,
+            instructions: null,
+            note: null,
+            vat_rate: Number.isFinite(vatRate) ? Math.max(0, vatRate) : 0,
+            other_tax_rate: Number.isFinite(otherTaxRate) ? Math.max(0, otherTaxRate) : 0,
+            is_active: active,
+          }
+
+          const nameKey = normalizeGroupKey(name)
+          const existing = (code ? existingByCode.get(code) : undefined) ?? existingByName.get(nameKey)
+
+          if (existing) {
+            const updatedProduct = await catalogApi.updateProduct(accessToken, existing.id, payload)
+            await syncProductUnits(updatedProduct.id, updatedProduct.units, desiredUnits)
+            if (code) existingByCode.set(code, { id: updatedProduct.id })
+            existingByName.set(nameKey, { id: updatedProduct.id })
+            updated += 1
+            continue
+          }
+
+          const createdProduct = await catalogApi.createProduct(accessToken, {
+            ...payload,
+            base_unit: {
+              unit_name: baseUnit.name,
+              selling_price: baseUnit.price,
+            },
+          })
+          await syncProductUnits(createdProduct.id, createdProduct.units, desiredUnits)
+          if (code) existingByCode.set(code, { id: createdProduct.id })
+          existingByName.set(nameKey, { id: createdProduct.id })
+          created += 1
+        } catch (error) {
+          failed.push(`${name}: ${getApiErrorMessage(error, 'Khong the import dong du lieu')}`)
+        }
+      }
+
+      await loadCatalogData()
+
+      const failedPreview = failed.slice(0, 3).join(' | ')
+      setAlert(
+        `Import hoan tat. Tao moi: ${created}, cap nhat: ${updated}, bo qua: ${skipped}, loi: ${failed.length}` +
+          (failedPreview ? `. ${failedPreview}` : ''),
+      )
+    } catch (error) {
+      setAlert(getApiErrorMessage(error, 'Khong the import file danh muc thuoc.'))
+    } finally {
+      setImporting(false)
+    }
   }
 
   const resetFilters = () => {
+
     setSearch('')
     setBarcodeSearch('')
     setGroupFilter('Tất cả')
@@ -1330,7 +1546,16 @@ export function DrugCatalog() {
           </button>
           <label className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900">
             Import Excel
-            <input type="file" className="hidden" accept=".csv,.xlsx" onChange={(event) => setImportFile(event.target.files?.[0]?.name ?? null)} />
+            <input
+              type="file"
+              className="hidden"
+              accept=".csv,.xlsx"
+              onChange={(event) => {
+                const [file] = Array.from(event.target.files ?? [])
+                void handleImportExcel(file ?? null)
+                event.currentTarget.value = ''
+              }}
+            />
           </label>
           <button onClick={exportCsv} className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900">
             Export Excel
@@ -1341,6 +1566,7 @@ export function DrugCatalog() {
       {importFile ? (
         <div className="glass-card rounded-2xl px-4 py-3 text-sm text-ink-700">
           Đã chọn file: <span className="font-semibold text-ink-900">{importFile}</span>
+          {importing ? <span className="ml-2 text-ink-500">Đang import...</span> : null}
         </div>
       ) : null}
 

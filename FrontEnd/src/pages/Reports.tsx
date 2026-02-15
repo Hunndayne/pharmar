@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { downloadCsv } from '../utils/csv'
 
 type ReportTab = 'revenue' | 'inventory' | 'debt' | 'customer'
 
@@ -27,6 +28,13 @@ export function Reports() {
     }
   }, [tab])
 
+  const exportExcel = () => {
+    const headers = ['Nhóm báo cáo', 'Nội dung']
+    const rows = [[tabs.find((item) => item.id === tab)?.label ?? tab, content]]
+    const dateKey = new Date().toISOString().slice(0, 10)
+    downloadCsv(`bao-cao-${tab}-${dateKey}.csv`, headers, rows)
+  }
+
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
@@ -35,7 +43,11 @@ export function Reports() {
           <h2 className="mt-2 text-3xl font-semibold text-ink-900">Báo cáo</h2>
         </div>
         <div className="flex gap-2">
-          <button className="rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900">
+          <button
+            type="button"
+            onClick={exportExcel}
+            className="rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900"
+          >
             Export Excel
           </button>
           <button className="rounded-full bg-ink-900 px-4 py-2 text-sm font-semibold text-white">

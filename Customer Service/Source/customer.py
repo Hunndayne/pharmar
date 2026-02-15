@@ -334,6 +334,8 @@ async def apply_points_change(
     created_by: str | None = None,
     increase_total_earned: bool = False,
     increase_total_used: bool = False,
+    total_earned_delta: int = 0,
+    total_used_delta: int = 0,
 ) -> tuple[int, bool, str]:
     if points_delta == 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="points_delta cannot be zero")
@@ -348,6 +350,10 @@ async def apply_points_change(
         customer.total_points_earned += points_delta
     if increase_total_used and points_delta < 0:
         customer.total_points_used += abs(points_delta)
+    if total_earned_delta != 0:
+        customer.total_points_earned = max(0, customer.total_points_earned + total_earned_delta)
+    if total_used_delta != 0:
+        customer.total_points_used = max(0, customer.total_points_used + total_used_delta)
 
     settings_map = await fetch_customer_settings()
     expiry_months = setting_int(settings_map, "customer.points_expiry_months", 12)
@@ -372,6 +378,131 @@ async def apply_points_change(
     db.add(transaction)
 
     return customer.current_points, tier_changed, new_tier
+
+
+def _build_point_reference_filters(
+    customer_id: UUID,
+    reference_id: UUID | None,
+    reference_code: str | None,
+) -> list[Any]:
+    filters: list[Any] = [PointTransaction.customer_id == customer_id]
+    normalized_code = normalize_optional_string(reference_code)
+    if reference_id is not None and normalized_code is not None:
+        filters.append(
+            or_(
+                PointTransaction.reference_id == reference_id,
+                PointTransaction.reference_code == normalized_code,
+            )
+        )
+    elif reference_id is not None:
+        filters.append(PointTransaction.reference_id == reference_id)
+    elif normalized_code is not None:
+        filters.append(PointTransaction.reference_code == normalized_code)
+
+    if reference_id is None and normalized_code is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="reference_id or reference_code is required for rollback",
+        )
+    return filters
+
+
+def _rollback_mode_hint(reference_type: str | None, note: str | None) -> str:
+    text = f"{reference_type or ''} {note or ''}".lower()
+    if any(keyword in text for keyword in ("return", "refund", "redeem")):
+        return "reverse_redeem"
+    if any(keyword in text for keyword in ("cancel", "void", "earn")):
+        return "reverse_earn"
+    return "reverse_earn"
+
+
+async def resolve_points_rollback(
+    db: AsyncSession,
+    customer_id: UUID,
+    points: int,
+    reference_type: str | None,
+    reference_id: UUID | None,
+    reference_code: str | None,
+    note: str | None,
+) -> tuple[str, int, int, int]:
+    if points <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="points must be > 0")
+
+    filters = _build_point_reference_filters(customer_id, reference_id, reference_code)
+    rows = (
+        await db.execute(
+            select(PointTransaction.transaction_type, PointTransaction.points).where(*filters)
+        )
+    ).all()
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No point transaction found for this reference",
+        )
+
+    earned_total = sum(max(0, int(value)) for transaction_type, value in rows if transaction_type == "earn")
+    redeemed_total = sum(abs(int(value)) for transaction_type, value in rows if transaction_type == "redeem")
+    rollback_reverse_earn_total = sum(
+        abs(int(value))
+        for transaction_type, value in rows
+        if transaction_type == "rollback" and int(value) < 0
+    )
+    rollback_reverse_redeem_total = sum(
+        int(value)
+        for transaction_type, value in rows
+        if transaction_type == "rollback" and int(value) > 0
+    )
+
+    available_reverse_earn = max(0, earned_total - rollback_reverse_earn_total)
+    available_reverse_redeem = max(0, redeemed_total - rollback_reverse_redeem_total)
+    requested = int(points)
+
+    candidates: list[str] = []
+    if available_reverse_earn >= requested:
+        candidates.append("reverse_earn")
+    if available_reverse_redeem >= requested:
+        candidates.append("reverse_redeem")
+
+    if not candidates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Rollback points exceed available amount for the reference",
+        )
+
+    if len(candidates) == 1:
+        mode = candidates[0]
+    else:
+        mode = _rollback_mode_hint(reference_type, note)
+        if mode not in candidates:
+            mode = candidates[0]
+
+    return mode, requested, available_reverse_earn, available_reverse_redeem
+
+
+async def rollback_promotion_usage(
+    db: AsyncSession,
+    promotion_id: UUID,
+    usage_id: UUID,
+    reason: str | None = None,
+) -> int:
+    promotion = await get_promotion_or_404(promotion_id, db)
+    usage = await db.get(PromotionUsage, usage_id)
+    if usage is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Promotion usage not found")
+    if usage.promotion_id != promotion.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Usage does not belong to the given promotion",
+        )
+
+    if usage.is_cancelled:
+        return int(promotion.current_usage)
+
+    usage.is_cancelled = True
+    usage.cancelled_reason = normalize_optional_string(reason)
+    usage.cancelled_at = now_utc()
+    promotion.current_usage = max(0, int(promotion.current_usage) - 1)
+    return int(promotion.current_usage)
 
 
 async def calculate_points(
@@ -448,6 +579,7 @@ async def validate_promotion_business_rules(
                 and_(
                     PromotionUsage.promotion_id == promotion.id,
                     PromotionUsage.customer_id == customer_id,
+                    PromotionUsage.is_cancelled.is_(False),
                 )
             )
         )

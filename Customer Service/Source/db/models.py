@@ -171,7 +171,9 @@ class PromotionUsage(Base):
     invoice_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
     invoice_code: Mapped[str | None] = mapped_column(String(30), nullable=True)
     discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    is_cancelled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    cancelled_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     promotion: Mapped[Promotion] = relationship(back_populates="usages")
-

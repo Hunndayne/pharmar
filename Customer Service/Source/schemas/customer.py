@@ -10,7 +10,7 @@ T = TypeVar("T")
 
 GenderType = Literal["male", "female", "other"]
 PromotionDiscountType = Literal["percent", "fixed"]
-PointTransactionType = Literal["earn", "redeem", "expire", "adjust"]
+PointTransactionType = Literal["earn", "redeem", "expire", "adjust", "rollback"]
 
 
 class PageResponse(BaseModel, Generic[T]):
@@ -232,6 +232,9 @@ class PromotionUsageResponse(BaseModel):
     invoice_id: UUID
     invoice_code: str | None
     discount_amount: Decimal
+    is_cancelled: bool
+    cancelled_reason: str | None
+    cancelled_at: datetime | None
     created_at: datetime
 
 
@@ -288,6 +291,22 @@ class PointsRedeemResponse(BaseModel):
     new_balance: int
 
 
+class PointsRollbackRequest(BaseModel):
+    customer_id: UUID
+    points: int = Field(gt=0)
+    reference_type: str = Field(default="invoice_cancel", max_length=20)
+    reference_id: UUID | None = None
+    reference_code: str | None = Field(default=None, max_length=30)
+    note: str | None = None
+
+
+class PointsRollbackResponse(BaseModel):
+    success: bool
+    rollback_mode: Literal["reverse_earn", "reverse_redeem"]
+    points_rolled_back: int
+    new_balance: int
+
+
 class PromotionValidateRequest(BaseModel):
     promotion_code: str = Field(min_length=1, max_length=30)
     customer_id: UUID | None = None
@@ -329,6 +348,18 @@ class PromotionApplyResponse(BaseModel):
     promotion_code: str
     discount_amount: Decimal
     current_usage: int
+
+
+class PromotionRollbackRequest(BaseModel):
+    promotion_id: UUID
+    usage_id: UUID
+    reason: str | None = None
+
+
+class PromotionRollbackResponse(BaseModel):
+    success: bool
+    promotion_id: UUID
+    new_usage_count: int
 
 
 class PromotionSuggestionItem(BaseModel):
