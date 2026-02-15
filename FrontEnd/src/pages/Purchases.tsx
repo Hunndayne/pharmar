@@ -292,19 +292,12 @@ const createOrderCode = (orders: PurchaseOrder[], date: string) => {
 }
 
 const createLine = (
-  date: string,
   index: number,
-  existingBatchCodes: Set<string> = new Set(),
 ): LineItemForm => {
-  let runningIndex = Math.max(1, index)
-  let batchCode = `LO${toDateKey(date)}${String(runningIndex).padStart(3, '0')}`
-  while (existingBatchCodes.has(normalizeBatchCode(batchCode))) {
-    runningIndex += 1
-    batchCode = `LO${toDateKey(date)}${String(runningIndex).padStart(3, '0')}`
-  }
+  const runningIndex = Math.max(1, index)
   return {
     id: `line-${Date.now()}-${runningIndex}`,
-    batchCode,
+    batchCode: '',
     drugId: '',
     lotNumber: '',
     quantity: '',
@@ -332,7 +325,7 @@ const createEmptyOrder = (
   note: '',
   paymentStatus: 'Còn nợ',
   paymentMethod: 'Ngân hàng',
-  lines: [createLine(date, 1)],
+  lines: [createLine(1)],
 })
 
 const calcLinePricing = (line: LineItemForm) => {
@@ -782,6 +775,7 @@ const buildReceiptExtraFromOrder = (order: OrderFormState): ReceiptExtra => ({
 const buildInventoryPayloadFromForm = (
   order: OrderFormState,
   drugMap: Map<string, Drug>,
+  options?: { includeBatchCode?: boolean },
 ): InventoryCreateReceiptPayload => ({
   receipt_date: order.date,
   supplier_id: order.supplierId,
@@ -794,7 +788,7 @@ const buildInventoryPayloadFromForm = (
     return {
       drug_id: line.drugId || undefined,
       drug_code: selectedDrug?.code || undefined,
-    batch_code: normalizeBatchCode(line.batchCode) || undefined,
+    batch_code: options?.includeBatchCode ? normalizeBatchCode(line.batchCode) || undefined : undefined,
     lot_number: line.lotNumber.trim(),
     quantity: Math.max(1, Math.floor(parseNumber(line.quantity))),
     mfg_date: line.mfgDate,
@@ -1000,7 +994,7 @@ export function Purchases() {
       try {
         const [apiSuppliers, apiDrugs, apiReceipts] = await Promise.all([
           inventoryApi.getMetaSuppliers(),
-          inventoryApi.getMetaDrugs(),
+          inventoryApi.getMetaDrugs(accessToken || undefined),
           inventoryApi.listImportReceipts(),
         ])
 
@@ -1276,15 +1270,10 @@ export function Purchases() {
   const handleDateChange = (value: string) => {
     setForm((prev) => {
       if (editingId) return { ...prev, date: value }
-      const updatedLines = prev.lines.map((line, index) => ({
-        ...line,
-        batchCode: `LO${toDateKey(value)}${String(index + 1).padStart(3, '0')}`,
-      }))
       return {
         ...prev,
         date: value,
         code: createOrderCode(orders, value),
-        lines: updatedLines,
       }
     })
   }
@@ -1332,11 +1321,7 @@ export function Purchases() {
       ...prev,
       lines: [
         ...prev.lines,
-        createLine(
-          prev.date || todayISO(),
-          prev.lines.length + 1,
-          new Set(prev.lines.map((line) => normalizeBatchCode(line.batchCode))),
-        ),
+        createLine(prev.lines.length + 1),
       ],
     }))
   }
@@ -1406,7 +1391,9 @@ export function Purchases() {
     const isCreating = !editingId
     setSavingOrder(true)
     try {
-      const payload = buildInventoryPayloadFromForm(form, drugMap)
+      const payload = buildInventoryPayloadFromForm(form, drugMap, {
+        includeBatchCode: Boolean(editingId),
+      })
       const receipt = editingId
         ? await inventoryApi.updateImportReceipt(accessToken, editingId, payload)
         : await inventoryApi.createImportReceipt(accessToken, payload)
@@ -2502,7 +2489,9 @@ export function Purchases() {
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div>
                             <p className="text-xs uppercase tracking-[0.25em] text-ink-500">Mã lô</p>
-                            <p className="text-sm font-semibold text-ink-900">{line.batchCode}</p>
+                            <p className="text-sm font-semibold text-ink-900">
+                              {line.batchCode || 'Server tự sinh khi lưu'}
+                            </p>
                           </div>
                           <div className="flex flex-wrap gap-2">
                             <button
@@ -2575,13 +2564,16 @@ export function Purchases() {
                           </label>
 
                           <label className="space-y-1 text-xs text-ink-600">
-                            Số lượng *
+                            Số lượng nhập (đơn vị nhập) *
                             <input
                               value={line.quantity}
                               onChange={(event) => updateLine(line.id, 'quantity', event.target.value)}
                               className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
                               placeholder="0"
                             />
+                            <span className="text-[11px] text-ink-500">
+                              Hệ thống tự quy đổi sang đơn vị bán lẻ để tính tồn kho.
+                            </span>
                             {errors[`line-qty-${index}`] ? (
                               <span className="text-xs text-coral-500">{errors[`line-qty-${index}`]}</span>
                             ) : null}

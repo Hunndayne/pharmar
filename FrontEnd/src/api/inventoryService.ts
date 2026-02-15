@@ -23,6 +23,14 @@ export type InventoryMetaUnitPrice = {
 export type InventoryPaymentStatus = 'paid' | 'debt'
 export type InventoryPaymentMethod = 'bank' | 'ewallet' | 'card'
 export type InventoryPromoType = 'none' | 'buy_x_get_y' | 'discount_percent'
+export type InventoryBatchStatus = 'active' | 'expired' | 'depleted' | 'cancelled'
+export type InventoryStockStatus =
+  | 'out_of_stock'
+  | 'expired'
+  | 'expiring_soon'
+  | 'near_date'
+  | 'low_stock'
+  | 'normal'
 
 export type InventoryMetaDrug = {
   id: string
@@ -63,7 +71,7 @@ export type InventoryReceiptLine = {
   unit_prices: InventoryReceiptLineUnitPrice[]
   promo_note: string | null
   line_total: number
-  batch_status: 'active' | 'expired' | 'depleted' | 'cancelled'
+  batch_status: InventoryBatchStatus
 }
 
 export type InventoryReceipt = {
@@ -85,6 +93,96 @@ export type InventoryReceipt = {
   line_count: number
   lines: InventoryReceiptLine[]
   can_edit: boolean
+}
+
+export type InventoryBatch = {
+  id: string
+  batch_code: string
+  lot_number: string
+  receipt_id: string
+  drug_id: string
+  drug_code: string
+  drug_name: string
+  drug_group: string
+  supplier_id: string
+  supplier_name: string
+  supplier_contact: string
+  received_date: string
+  mfg_date: string
+  exp_date: string
+  days_to_expiry: number
+  qty_in: number
+  qty_remaining: number
+  import_price: number
+  barcode: string
+  promo_type: InventoryPromoType
+  promo_buy_qty: number | null
+  promo_get_qty: number | null
+  promo_discount_percent: number | null
+  unit_prices: InventoryReceiptLineUnitPrice[]
+  promo_note: string | null
+  status: InventoryBatchStatus
+  created_at: string
+  updated_at: string
+}
+
+export type InventoryMovement = {
+  id: string
+  event_type: string
+  drug_id: string
+  drug_code: string | null
+  drug_name: string | null
+  batch_id: string
+  batch_code: string | null
+  lot_number: string | null
+  quantity_delta: number
+  reference_type: string
+  reference_id: string
+  actor: string | null
+  note: string | null
+  occurred_at: string
+}
+
+export type InventoryBatchDetail = {
+  batch: InventoryBatch
+  history: InventoryMovement[]
+}
+
+export type InventoryStockSummary = {
+  drug_id: string
+  drug_code: string
+  drug_name: string
+  drug_group: string
+  base_unit: string
+  reorder_level: number
+  total_qty: number
+  nearest_expiry: string | null
+  days_to_nearest_expiry: number | null
+  status: InventoryStockStatus
+}
+
+export type InventoryStockDrugDetail = {
+  drug: InventoryMetaDrug
+  summary: {
+    total_qty: number
+    status: InventoryStockStatus
+    reorder_level: number
+  }
+  batches: InventoryBatch[]
+}
+
+export type InventoryAdjustStockPayload = {
+  batch_id: string
+  reason: string
+  note?: string | null
+  quantity_delta?: number
+  new_quantity?: number
+}
+
+export type InventoryAdjustStockResponse = {
+  message: string
+  batch: InventoryBatch
+  adjustment: InventoryMovement
 }
 
 export type InventoryCreateReceiptPayload = {
@@ -143,11 +241,13 @@ const requestInventoryJson = async <T>(
           })
           .join('; ')
       : undefined
+
     const detail =
       detailMessage ??
       (typeof payload?.detail === 'string' ? payload.detail : undefined) ??
       payload?.message ??
       `Yêu cầu thất bại (${response.status})`
+
     throw new ApiError(detail, response.status)
   }
 
@@ -158,8 +258,8 @@ export const inventoryApi = {
   getMetaSuppliers: () =>
     requestInventoryJson<InventoryMetaSupplier[]>('/inventory/meta/suppliers', { method: 'GET' }),
 
-  getMetaDrugs: () =>
-    requestInventoryJson<InventoryMetaDrug[]>('/inventory/meta/drugs', { method: 'GET' }),
+  getMetaDrugs: (token?: string) =>
+    requestInventoryJson<InventoryMetaDrug[]>('/inventory/meta/drugs', { method: 'GET' }, token),
 
   listImportReceipts: (params?: {
     date_from?: string
@@ -195,6 +295,41 @@ export const inventoryApi = {
     requestInventoryJson<{ message: string; receipt: InventoryReceipt }>(
       `/inventory/import-receipts/${receiptId}/cancel`,
       { method: 'POST' },
+      token,
+    ),
+
+  listBatches: (params?: {
+    search?: string
+    drug?: string
+    supplier_id?: string
+    status?: InventoryBatchStatus
+    exp_from?: string
+    exp_to?: string
+  }) => requestInventoryJson<InventoryBatch[]>('/inventory/batches', { method: 'GET' }, undefined, params),
+
+  getBatchDetail: (batchId: string) =>
+    requestInventoryJson<InventoryBatchDetail>(`/inventory/batches/${batchId}`, { method: 'GET' }),
+
+  getBatchByQr: (qrValue: string) =>
+    requestInventoryJson<InventoryBatchDetail>(`/inventory/batches/qr/${encodeURIComponent(qrValue)}`, { method: 'GET' }),
+
+  getStockSummary: (token?: string) =>
+    requestInventoryJson<InventoryStockSummary[]>('/inventory/stock/summary', { method: 'GET' }, token),
+
+  getStockDrugDetail: (drugId: string, token?: string) =>
+    requestInventoryJson<InventoryStockDrugDetail>(
+      `/inventory/stock/drugs/${drugId}`,
+      { method: 'GET' },
+      token,
+    ),
+
+  adjustStock: (token: string, payload: InventoryAdjustStockPayload) =>
+    requestInventoryJson<InventoryAdjustStockResponse>(
+      '/inventory/stock/adjustments',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
       token,
     ),
 }

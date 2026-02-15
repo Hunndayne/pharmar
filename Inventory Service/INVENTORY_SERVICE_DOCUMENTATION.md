@@ -91,12 +91,12 @@ Request:
 - Write endpoints require `Bearer` token:
   - `POST/PUT` receipts, `POST cancel`, `PATCH batch status`, `POST stock adjustments`, `POST reserve`.
 - Token is decoded from JWT and accepts token type `access` (or missing type for backward compatibility). Invalid/expired token returns `401`.
-- Service uses in-memory runtime state (`runtime_state`) and protects all write operations with `asyncio.Lock` to avoid race conditions.
+- Service keeps runtime state (`runtime_state`) with `asyncio.Lock` for write safety, and persists it to PostgreSQL (`inventory_runtime_state`) after write operations.
 
 ### 1) Health + metadata
 
 - `GET /health`: liveness check.
-- `GET /meta/drugs`, `GET /meta/suppliers`: return seeded reference catalogs from memory.
+- `GET /meta/drugs`, `GET /meta/suppliers`: return metadata from runtime state; drugs are auto-synced from Catalog service when token is provided.
 - `GET /events`: returns latest consumed `sale.created` events from Redis (keeps last 200).
 
 ### 2) Import receipts
@@ -112,6 +112,10 @@ Request:
   - Validates supplier and each line (`drug_id`/`drug_code`, `qty > 0`, `exp_date > mfg_date`).
   - Auto-generates `receipt_code` and `batch_code` when missing.
   - Enforces unique `batch_code` globally (`409` if duplicated).
+  - `lines[].quantity` được hiểu là **số lượng theo đơn vị nhập** (đơn vị lớn nhất của thuốc trong dòng đó).
+  - Tồn kho (`qty_in`, `qty_remaining`) được lưu theo **đơn vị bán lẻ**:
+    - `stock_qty = quantity * max(unit_prices.conversion)`.
+    - Ví dụ: `quantity=222` hộp, `conversion=100` viên/hộp => tồn kho tăng `22,200` viên.
   - Creates receipt + batches, sets `qty_remaining = qty_in`.
   - Logs `import_receipt` movement for each line.
 - `PUT /import-receipts/{receipt_id}`:
@@ -199,7 +203,7 @@ Request:
   - Phase 1: compute allocations for every item using the same FEFO/FIFO suggestion logic.
   - If any item has shortage -> return `409` and do not mutate stock.
   - Phase 2: when all items pass, deduct from each allocated batch and log `sale_reserve` movements.
-  - Writes a reservation record (keeps last 500 records in memory).
+  - Writes a reservation record (keeps last 500 records and persists state to PostgreSQL).
 
 ## API Reference (Request/Response Samples)
 
@@ -962,5 +966,6 @@ Base gateway URL: `http://localhost:8000/api/v1`
 
 ## Notes
 
-- Service currently uses in-memory state (seeded demo data on startup).
+- Service persists state to PostgreSQL and reloads it on startup.
+- Ensure `DATABASE_URL` points to a persistent Postgres instance to keep receipts/batches across container recreation.
 - Existing `Sale Service` integration remains compatible through `/inventory/reserve`.

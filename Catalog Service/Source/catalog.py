@@ -197,6 +197,8 @@ def to_product_list_item(product: Product) -> ProductListItemResponse:
         manufacturer_name=product.manufacturer.name if product.manufacturer else None,
         base_unit=base_unit.unit_name if base_unit else None,
         base_price=base_unit.selling_price if base_unit else None,
+        vat_rate=product.vat_rate,
+        other_tax_rate=product.other_tax_rate,
         is_active=product.is_active,
         created_at=product.created_at,
         updated_at=product.updated_at,
@@ -231,6 +233,8 @@ def to_product_detail(product: Product) -> ProductDetailResponse:
         ),
         instructions=product.instructions,
         note=product.note,
+        vat_rate=product.vat_rate,
+        other_tax_rate=product.other_tax_rate,
         is_active=product.is_active,
         units=[to_product_unit_response(unit) for unit in units],
         created_at=product.created_at,
@@ -303,4 +307,3 @@ def search_filter(statement: Select[Any], query_text: str | None, *columns: Any)
     pattern = f"%{query_text.strip()}%"
     conditions = [column.ilike(pattern) for column in columns]
     return statement.where(or_(*conditions))
-

@@ -209,6 +209,8 @@ class ProductCreateRequest(BaseModel):
     manufacturer_id: UUID | None = None
     instructions: str | None = None
     note: str | None = None
+    vat_rate: Decimal = Field(default=Decimal("0.00"), ge=0, le=100)
+    other_tax_rate: Decimal = Field(default=Decimal("0.00"), ge=0, le=100)
     is_active: bool = True
     base_unit: ProductBaseUnitRequest | None = None
 
@@ -230,6 +232,8 @@ class ProductUpdateRequest(BaseModel):
     manufacturer_id: UUID | None = None
     instructions: str | None = None
     note: str | None = None
+    vat_rate: Decimal | None = Field(default=None, ge=0, le=100)
+    other_tax_rate: Decimal | None = Field(default=None, ge=0, le=100)
     is_active: bool | None = None
 
     @field_validator("code")
@@ -278,6 +282,8 @@ class ProductListItemResponse(BaseModel):
     manufacturer_name: str | None
     base_unit: str | None
     base_price: Decimal | None
+    vat_rate: Decimal
+    other_tax_rate: Decimal
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -293,6 +299,8 @@ class ProductDetailResponse(BaseModel):
     manufacturer: ProductManufacturerRef | None
     instructions: str | None
     note: str | None
+    vat_rate: Decimal
+    other_tax_rate: Decimal
     is_active: bool
     units: list[ProductUnitResponse]
     created_at: datetime

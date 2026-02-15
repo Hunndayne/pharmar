@@ -9,3 +9,6 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'pharmar_catalog')\gex
 
 SELECT 'CREATE DATABASE pharmar_customer'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'pharmar_customer')\gexec
+
+SELECT 'CREATE DATABASE pharmar_inventory'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'pharmar_inventory')\gexec

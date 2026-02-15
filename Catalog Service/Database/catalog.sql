@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS catalog.products (
     manufacturer_id UUID REFERENCES catalog.manufacturers(id),
     instructions TEXT,
     note TEXT,
+    vat_rate DECIMAL(5,2) NOT NULL DEFAULT 0,
+    other_tax_rate DECIMAL(5,2) NOT NULL DEFAULT 0,
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -90,4 +92,3 @@ CREATE INDEX IF NOT EXISTS idx_products_manufacturer ON catalog.products(manufac
 CREATE INDEX IF NOT EXISTS idx_product_units_barcode ON catalog.product_units(barcode);
 CREATE INDEX IF NOT EXISTS idx_product_units_product ON catalog.product_units(product_id);
 CREATE INDEX IF NOT EXISTS idx_products_name ON catalog.products USING gin(to_tsvector('simple', name));
-

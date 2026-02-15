@@ -1,8 +1,12 @@
 import asyncio
 import json
+from enum import Enum
 from datetime import date, datetime, time, timezone
+from pathlib import Path
 from typing import Any
 
+import asyncpg
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
@@ -29,6 +33,7 @@ from Source.schemas.inventory import (
 router = APIRouter(prefix="/api/v1/inventory", tags=["inventory"])
 runtime_state = SimpleNamespace()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+optional_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 
 
 def utc_now() -> datetime:
@@ -84,6 +89,18 @@ def resolve_line_unit_prices(line: Any, drug: dict[str, Any]) -> list[dict[str, 
             for item in line.unit_prices
         ]
     return default_line_unit_prices(drug)
+
+
+def import_unit_conversion(unit_prices: list[dict[str, Any]]) -> int:
+    if not unit_prices:
+        return 1
+    return max(1, max(int(item.get("conversion", 1)) for item in unit_prices))
+
+
+def to_stock_quantity(import_quantity: int, unit_prices: list[dict[str, Any]]) -> int:
+    # quantity sent from receipt line is nhập theo đơn vị nhập (đơn vị lớn nhất).
+    # tồn kho luôn lưu theo đơn vị bán lẻ (conversion nhỏ nhất).
+    return max(1, int(import_quantity)) * import_unit_conversion(unit_prices)
 
 
 def resolve_line_promo_note(line: Any) -> str | None:
@@ -191,6 +208,425 @@ def resolve_drug(drug_id: str | None = None, drug_code_or_sku: str | None = None
     raise HTTPException(status_code=404, detail=f"Drug not found for '{drug_id or drug_code_or_sku}'")
 
 
+def _to_positive_int(value: Any, default: int = 1) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed
+
+
+async def fetch_catalog_json(
+    path: str,
+    token: str,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    url = f"{settings.CATALOG_SERVICE_URL.rstrip('/')}{path}"
+    headers = {"Authorization": f"Bearer {token}"}
+    timeout = httpx.Timeout(settings.CATALOG_SYNC_TIMEOUT_SECONDS)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url, headers=headers, params=params)
+    except httpx.HTTPError:
+        return None
+
+    if response.status_code == 404:
+        return None
+    if response.status_code in {401, 403}:
+        raise HTTPException(status_code=response.status_code, detail="Unauthorized to sync catalog metadata")
+    if response.status_code >= 400:
+        return None
+    payload = response.json()
+    return payload if isinstance(payload, dict) else None
+
+
+def upsert_drug_from_catalog_product(product: dict[str, Any]) -> dict[str, Any] | None:
+    product_id = str(product.get("id") or "").strip()
+    product_code = normalize_code(str(product.get("code") or ""))
+    product_name = str(product.get("name") or "").strip()
+    if not product_id or not product_code or not product_name:
+        return None
+
+    raw_units = product.get("units") or []
+    units: list[dict[str, Any]] = []
+    unit_prices: list[dict[str, Any]] = []
+    for index, unit in enumerate(raw_units):
+        if not isinstance(unit, dict):
+            continue
+        unit_id = str(unit.get("id") or "").strip() or f"{product_code}-U{index + 1}"
+        unit_name = str(unit.get("unit_name") or "").strip() or f"Don vi {index + 1}"
+        conversion = _to_positive_int(unit.get("conversion_rate"), default=1)
+        barcode = str(unit.get("barcode") or "").strip()
+        units.append(
+            {
+                "id": unit_id,
+                "name": unit_name,
+                "conversion": conversion,
+                "barcode": barcode,
+            }
+        )
+        unit_prices.append(
+            {
+                "unit_id": unit_id,
+                "price": _to_float(unit.get("selling_price"), default=0.0),
+            }
+        )
+
+    if not units:
+        fallback_unit_id = f"{product_code}-U1"
+        units = [{"id": fallback_unit_id, "name": "Don vi", "conversion": 1, "barcode": ""}]
+        unit_prices = [{"unit_id": fallback_unit_id, "price": 0.0}]
+
+    units.sort(key=lambda item: item["conversion"])
+    highest_unit = max(units, key=lambda item: item["conversion"])
+    group = product.get("group") if isinstance(product.get("group"), dict) else None
+    group_name = str(group.get("name") or "Khac") if isinstance(group, dict) else "Khac"
+
+    existing = runtime_state.drugs.get(product_id)
+    existing_aliases = list(existing.get("sku_aliases", [])) if isinstance(existing, dict) else []
+    aliases = [product_code]
+    for alias in existing_aliases:
+        alias_text = str(alias).strip()
+        if alias_text and normalize_key(alias_text) not in {normalize_key(item) for item in aliases}:
+            aliases.append(alias_text)
+
+    drug = {
+        "id": product_id,
+        "code": product_code,
+        "name": product_name,
+        "group": group_name,
+        "base_unit": highest_unit["name"],
+        "reorder_level": _to_positive_int((existing or {}).get("reorder_level"), default=0),
+        "units": units,
+        "unit_prices": unit_prices,
+        "sku_aliases": aliases,
+    }
+    runtime_state.drugs[product_id] = drug
+    return drug
+
+
+async def sync_drug_from_catalog(
+    token: str,
+    drug_id: str | None = None,
+    drug_code: str | None = None,
+) -> dict[str, Any] | None:
+    normalized_code = normalize_code(drug_code or "")
+    product: dict[str, Any] | None = None
+
+    if drug_id:
+        product = await fetch_catalog_json(f"/api/v1/catalog/products/{drug_id}", token)
+
+    if product is None and normalized_code:
+        listing = await fetch_catalog_json(
+            "/api/v1/catalog/products",
+            token,
+            {
+                "search": normalized_code,
+                "page": 1,
+                "size": 200,
+            },
+        )
+        items = listing.get("items", []) if isinstance(listing, dict) else []
+        match = next(
+            (
+                item
+                for item in items
+                if isinstance(item, dict)
+                and normalize_code(str(item.get("code") or "")) == normalized_code
+            ),
+            None,
+        )
+        if isinstance(match, dict) and match.get("id"):
+            product = await fetch_catalog_json(f"/api/v1/catalog/products/{match['id']}", token)
+
+    if product is None:
+        return None
+    return upsert_drug_from_catalog_product(product)
+
+
+async def sync_all_drugs_from_catalog(token: str) -> int:
+    page = 1
+    pages = 1
+    upserted = 0
+
+    while page <= pages:
+        listing = await fetch_catalog_json(
+            "/api/v1/catalog/products",
+            token,
+            {
+                "page": page,
+                "size": settings.CATALOG_SYNC_PAGE_SIZE,
+            },
+        )
+        if listing is None:
+            break
+
+        items = listing.get("items", [])
+        if not isinstance(items, list):
+            break
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            product_id = item.get("id")
+            if not product_id:
+                continue
+            detail = await fetch_catalog_json(f"/api/v1/catalog/products/{product_id}", token)
+            if detail is None:
+                continue
+            if upsert_drug_from_catalog_product(detail) is not None:
+                upserted += 1
+
+        pages = _to_positive_int(listing.get("pages"), default=1)
+        page += 1
+
+    runtime_state.catalog_last_sync_at = utc_now()
+    await save_runtime_state_safe()
+    return upserted
+
+
+async def maybe_sync_catalog_drugs(token: str | None, force: bool = False) -> int:
+    if not token:
+        return 0
+    last_sync_at = getattr(runtime_state, "catalog_last_sync_at", datetime.fromtimestamp(0, tz=timezone.utc))
+    elapsed_seconds = (utc_now() - last_sync_at).total_seconds()
+    if not force and elapsed_seconds < settings.CATALOG_SYNC_TTL_SECONDS:
+        return 0
+    return await sync_all_drugs_from_catalog(token)
+
+
+def state_file_path() -> Path:
+    return Path(settings.STATE_FILE_PATH)
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Enum):
+        return value.value
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _parse_iso_date(value: Any) -> date:
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        return date.fromisoformat(value[:10])
+    raise ValueError("Invalid date value")
+
+
+def _parse_iso_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        parsed = datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    raise ValueError("Invalid datetime value")
+
+
+def _to_enum(enum_cls: type[Enum], value: Any, default: Enum) -> Enum:
+    if isinstance(value, enum_cls):
+        return value
+    try:
+        return enum_cls(value)
+    except Exception:
+        return default
+
+
+def save_runtime_state() -> None:
+    path = state_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "counters": runtime_state.counters,
+        "suppliers": runtime_state.suppliers,
+        "drugs": runtime_state.drugs,
+        "receipts": runtime_state.receipts,
+        "batches": runtime_state.batches,
+        "movements": runtime_state.movements,
+        "reservations": runtime_state.reservations,
+        "sale_events": runtime_state.sale_events,
+        "catalog_last_sync_at": runtime_state.catalog_last_sync_at,
+    }
+    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+    tmp_path.write_text(
+        json.dumps(payload, ensure_ascii=False, default=_json_default),
+        encoding="utf-8",
+    )
+    tmp_path.replace(path)
+
+
+async def save_runtime_state_safe() -> None:
+    try:
+        if settings.STATE_PERSISTENCE.lower() == "postgres":
+            await init_state_store()
+            payload = {
+                "counters": runtime_state.counters,
+                "suppliers": runtime_state.suppliers,
+                "drugs": runtime_state.drugs,
+                "receipts": runtime_state.receipts,
+                "batches": runtime_state.batches,
+                "movements": runtime_state.movements,
+                "reservations": runtime_state.reservations,
+                "sale_events": runtime_state.sale_events,
+                "catalog_last_sync_at": runtime_state.catalog_last_sync_at,
+            }
+            async with runtime_state.pg_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO inventory_runtime_state(id, payload, updated_at)
+                    VALUES (1, $1::jsonb, NOW())
+                    ON CONFLICT (id)
+                    DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()
+                    """,
+                    json.dumps(payload, ensure_ascii=False, default=_json_default),
+                )
+        else:
+            save_runtime_state()
+    except Exception:
+        # Tránh chặn luồng nghiệp vụ nếu storage tạm thời gặp lỗi.
+        pass
+
+
+def load_runtime_state() -> bool:
+    path = state_file_path()
+    if not path.exists():
+        return False
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+
+    return load_runtime_state_from_payload(payload)
+
+
+async def init_state_store() -> None:
+    if settings.STATE_PERSISTENCE.lower() != "postgres":
+        return
+    if getattr(runtime_state, "pg_pool", None) is None:
+        runtime_state.pg_pool = await asyncpg.create_pool(
+            dsn=settings.DATABASE_URL,
+            min_size=1,
+            max_size=5,
+        )
+    async with runtime_state.pg_pool.acquire() as conn:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inventory_runtime_state (
+              id SMALLINT PRIMARY KEY CHECK (id = 1),
+              payload JSONB NOT NULL,
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+
+
+async def load_runtime_state_safe() -> bool:
+    try:
+        if settings.STATE_PERSISTENCE.lower() == "postgres":
+            await init_state_store()
+            async with runtime_state.pg_pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT payload FROM inventory_runtime_state WHERE id = 1")
+            if row and row.get("payload") is not None:
+                payload = row["payload"]
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
+                if isinstance(payload, dict):
+                    return load_runtime_state_from_payload(payload)
+
+            # fallback: migrate file snapshot cũ vào postgres nếu có
+            loaded_from_file = load_runtime_state()
+            if loaded_from_file:
+                await save_runtime_state_safe()
+                return True
+            return False
+        return load_runtime_state()
+    except Exception:
+        return False
+
+
+def load_runtime_state_from_payload(payload: dict[str, Any]) -> bool:
+    try:
+        if not isinstance(payload, dict):
+            return False
+
+        runtime_state.counters = dict(payload.get("counters") or {})
+        for key in ("receipt", "receipt_line", "batch", "movement", "reservation"):
+            runtime_state.counters.setdefault(key, 0)
+        runtime_state.suppliers = dict(payload.get("suppliers") or {})
+        runtime_state.drugs = dict(payload.get("drugs") or {})
+        runtime_state.receipts = dict(payload.get("receipts") or {})
+        runtime_state.batches = dict(payload.get("batches") or {})
+        runtime_state.movements = list(payload.get("movements") or [])
+        runtime_state.reservations = list(payload.get("reservations") or [])
+        runtime_state.sale_events = list(payload.get("sale_events") or [])
+        runtime_state.catalog_last_sync_at = _parse_iso_datetime(
+            payload.get("catalog_last_sync_at")
+            or datetime.fromtimestamp(0, tz=timezone.utc).isoformat()
+        )
+
+        for receipt in runtime_state.receipts.values():
+            if not isinstance(receipt, dict):
+                continue
+            try:
+                receipt["receipt_date"] = _parse_iso_date(receipt.get("receipt_date"))
+                receipt["created_at"] = _parse_iso_datetime(receipt.get("created_at"))
+                receipt["updated_at"] = _parse_iso_datetime(receipt.get("updated_at"))
+            except Exception:
+                continue
+            receipt["status"] = _to_enum(ReceiptStatus, receipt.get("status"), ReceiptStatus.CONFIRMED)
+            receipt["payment_status"] = _to_enum(PaymentStatus, receipt.get("payment_status"), PaymentStatus.PAID)
+            receipt["payment_method"] = _to_enum(PaymentMethod, receipt.get("payment_method"), PaymentMethod.BANK)
+
+            for line in receipt.get("lines", []):
+                if not isinstance(line, dict):
+                    continue
+                if line.get("mfg_date") is not None:
+                    line["mfg_date"] = _parse_iso_date(line["mfg_date"])
+                if line.get("exp_date") is not None:
+                    line["exp_date"] = _parse_iso_date(line["exp_date"])
+                line["promo_type"] = _to_enum(PromoType, line.get("promo_type"), PromoType.NONE)
+
+        for batch in runtime_state.batches.values():
+            if not isinstance(batch, dict):
+                continue
+            try:
+                batch["received_date"] = _parse_iso_date(batch.get("received_date"))
+                batch["mfg_date"] = _parse_iso_date(batch.get("mfg_date"))
+                batch["exp_date"] = _parse_iso_date(batch.get("exp_date"))
+                batch["created_at"] = _parse_iso_datetime(batch.get("created_at"))
+                batch["updated_at"] = _parse_iso_datetime(batch.get("updated_at"))
+            except Exception:
+                continue
+            batch["promo_type"] = _to_enum(PromoType, batch.get("promo_type"), PromoType.NONE)
+
+        for movement in runtime_state.movements:
+            if not isinstance(movement, dict):
+                continue
+            if movement.get("occurred_at") is not None:
+                movement["occurred_at"] = _parse_iso_datetime(movement["occurred_at"])
+            movement["event_type"] = _to_enum(MovementType, movement.get("event_type"), MovementType.STOCK_ADJUSTMENT)
+
+        for reservation in runtime_state.reservations:
+            if not isinstance(reservation, dict):
+                continue
+            if reservation.get("reserved_at") is not None:
+                reservation["reserved_at"] = _parse_iso_datetime(reservation["reserved_at"])
+        return True
+    except Exception:
+        return False
+
+
 def register_provisional_drug_from_line(line: Any) -> dict[str, Any]:
     raw_code = normalize_code((line.drug_code or line.drug_id or "").strip())
     if not raw_code:
@@ -255,11 +691,17 @@ def register_provisional_drug_from_line(line: Any) -> dict[str, Any]:
     return drug
 
 
-def resolve_or_register_drug(line: Any) -> dict[str, Any]:
+async def resolve_or_register_drug(line: Any, token: str | None = None) -> dict[str, Any]:
     try:
         return resolve_drug(drug_id=line.drug_id, drug_code_or_sku=line.drug_code)
     except HTTPException as exc:
-        if exc.status_code != 404 or not line.drug_code:
+        if exc.status_code != 404:
+            raise
+        if token:
+            synced = await sync_drug_from_catalog(token, drug_id=line.drug_id, drug_code=line.drug_code)
+            if synced is not None:
+                return synced
+        if not line.drug_code:
             raise
         return register_provisional_drug_from_line(line)
 
@@ -557,6 +999,7 @@ def seed_demo_data() -> None:
     runtime_state.movements = []
     runtime_state.reservations = []
     runtime_state.sale_events = []
+    runtime_state.catalog_last_sync_at = datetime.fromtimestamp(0, tz=timezone.utc)
 
     suppliers = [
         {"id": "s1", "name": "Phuong Dong", "contact_name": "Nguyen Minh Ha", "phone": "028 3838 8899", "address": "Q1, HCMC"},
@@ -605,14 +1048,21 @@ async def consume_sale_events() -> None:
 async def startup_event() -> None:
     runtime_state.redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     runtime_state.lock = asyncio.Lock()
-    seed_demo_data()
+    runtime_state.pg_pool = None
+    loaded = await load_runtime_state_safe()
+    if not loaded:
+        seed_demo_data()
+        await save_runtime_state_safe()
     runtime_state.consumer_task = asyncio.create_task(consume_sale_events())
 
 
 async def shutdown_event() -> None:
+    await save_runtime_state_safe()
     runtime_state.consumer_task.cancel()
     await asyncio.gather(runtime_state.consumer_task, return_exceptions=True)
     await runtime_state.redis.aclose()
+    if getattr(runtime_state, "pg_pool", None) is not None:
+        await runtime_state.pg_pool.close()
 
 @router.get("/events")
 async def get_events() -> list[dict[str, Any]]:
@@ -620,7 +1070,8 @@ async def get_events() -> list[dict[str, Any]]:
 
 
 @router.get("/meta/drugs")
-async def get_drugs() -> list[dict[str, Any]]:
+async def get_drugs(token: str | None = Depends(optional_oauth2_scheme)) -> list[dict[str, Any]]:
+    await maybe_sync_catalog_drugs(token)
     return list(runtime_state.drugs.values())
 
 
@@ -630,7 +1081,8 @@ async def get_suppliers() -> list[dict[str, Any]]:
 
 
 @router.get("/stock")
-async def get_stock() -> dict[str, int]:
+async def get_stock(token: str | None = Depends(optional_oauth2_scheme)) -> dict[str, int]:
+    await maybe_sync_catalog_drugs(token)
     stock_map: dict[str, int] = {}
     for drug in runtime_state.drugs.values():
         total = stock_total_for_drug(drug["id"])
@@ -641,7 +1093,8 @@ async def get_stock() -> dict[str, int]:
 
 
 @router.get("/stock/summary")
-async def get_stock_summary() -> list[dict[str, Any]]:
+async def get_stock_summary(token: str | None = Depends(optional_oauth2_scheme)) -> list[dict[str, Any]]:
+    await maybe_sync_catalog_drugs(token)
     day = date.today()
     rows: list[dict[str, Any]] = []
     for drug in runtime_state.drugs.values():
@@ -670,7 +1123,8 @@ async def get_stock_summary() -> list[dict[str, Any]]:
 
 
 @router.get("/stock/drugs/{drug_id}")
-async def get_stock_detail(drug_id: str) -> dict[str, Any]:
+async def get_stock_detail(drug_id: str, token: str | None = Depends(optional_oauth2_scheme)) -> dict[str, Any]:
+    await maybe_sync_catalog_drugs(token)
     drug = resolve_drug(drug_id=drug_id)
     day = date.today()
     batches = [batch for batch in runtime_state.batches.values() if batch["drug_id"] == drug["id"]]
@@ -724,7 +1178,7 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
         total = 0.0
 
         for line in payload.lines:
-            drug = resolve_or_register_drug(line)
+            drug = await resolve_or_register_drug(line, token=token)
 
             if line.batch_code:
                 batch_code = normalize_code(line.batch_code)
@@ -742,6 +1196,7 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
             promo_note = resolve_line_promo_note(line)
             barcode = resolve_line_barcode(line, drug)
             unit_prices = resolve_line_unit_prices(line, drug)
+            stock_quantity = to_stock_quantity(line.quantity, unit_prices)
 
             batch = {
                 "id": batch_id,
@@ -753,8 +1208,8 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
                 "received_date": payload.receipt_date,
                 "mfg_date": line.mfg_date,
                 "exp_date": line.exp_date,
-                "qty_in": line.quantity,
-                "qty_remaining": line.quantity,
+                "qty_in": stock_quantity,
+                "qty_remaining": stock_quantity,
                 "import_price": line.import_price,
                 "barcode": barcode,
                 "promo_type": line.promo_type,
@@ -789,10 +1244,11 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
                 "promo_discount_percent": line.promo_discount_percent,
                 "unit_prices": unit_prices,
                 "promo_note": promo_note,
+                "stock_quantity": stock_quantity,
             }
             lines.append(row)
             total += line.quantity * line.import_price
-            staged_movements.append((drug["id"], batch_id, line.quantity))
+            staged_movements.append((drug["id"], batch_id, stock_quantity))
 
         receipt = {
             "id": receipt_id,
@@ -825,6 +1281,7 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
                 actor,
                 "create import receipt",
             )
+        await save_runtime_state_safe()
 
     return receipt_to_view(receipt)
 
@@ -877,7 +1334,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                 if batch is None:
                     raise HTTPException(status_code=409, detail="Receipt has missing batch")
 
-                drug = resolve_or_register_drug(line)
+                drug = await resolve_or_register_drug(line, token=token)
                 if drug["id"] != existing_line["drug_id"]:
                     raise HTTPException(
                         status_code=409,
@@ -960,6 +1417,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
             receipt["lines"] = lines
             receipt["total_value"] = round(total, 2)
             receipt["updated_at"] = now
+            await save_runtime_state_safe()
             return receipt_to_view(receipt)
 
         old_batch_ids = {line["batch_id"] for line in receipt["lines"]}
@@ -970,7 +1428,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
         total = 0.0
 
         for line in payload.lines:
-            drug = resolve_or_register_drug(line)
+            drug = await resolve_or_register_drug(line, token=token)
 
             if line.batch_code:
                 batch_code = normalize_code(line.batch_code)
@@ -992,6 +1450,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
             promo_note = resolve_line_promo_note(line)
             barcode = resolve_line_barcode(line, drug)
             unit_prices = resolve_line_unit_prices(line, drug)
+            stock_quantity = to_stock_quantity(line.quantity, unit_prices)
 
             batch = {
                 "id": batch_id,
@@ -1003,8 +1462,8 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                 "received_date": payload.receipt_date,
                 "mfg_date": line.mfg_date,
                 "exp_date": line.exp_date,
-                "qty_in": line.quantity,
-                "qty_remaining": line.quantity,
+                "qty_in": stock_quantity,
+                "qty_remaining": stock_quantity,
                 "import_price": line.import_price,
                 "barcode": barcode,
                 "promo_type": line.promo_type,
@@ -1013,6 +1472,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                 "promo_discount_percent": line.promo_discount_percent,
                 "unit_prices": unit_prices,
                 "promo_note": promo_note,
+                "stock_quantity": stock_quantity,
                 "force_expired": False,
                 "cancelled": False,
                 "created_at": now,
@@ -1039,10 +1499,11 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                 "promo_discount_percent": line.promo_discount_percent,
                 "unit_prices": unit_prices,
                 "promo_note": promo_note,
+                "stock_quantity": stock_quantity,
             }
             lines.append(row)
             total += line.quantity * line.import_price
-            staged_movements.append((drug["id"], batch_id, line.quantity))
+            staged_movements.append((drug["id"], batch_id, stock_quantity))
 
         for batch_id in old_batch_ids:
             runtime_state.batches.pop(batch_id, None)
@@ -1076,6 +1537,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                 actor,
                 "update import receipt",
             )
+        await save_runtime_state_safe()
 
     return receipt_to_view(receipt)
 
@@ -1104,6 +1566,7 @@ async def cancel_import_receipt(receipt_id: str, token: str = Depends(oauth2_sch
 
         receipt["status"] = ReceiptStatus.CANCELLED
         receipt["updated_at"] = now
+        await save_runtime_state_safe()
 
     return {"message": "Import receipt cancelled and stock rolled back", "receipt": receipt_to_view(receipt)}
 
@@ -1232,6 +1695,7 @@ async def update_batch_status(batch_id: str, payload: BatchStatusUpdateRequest, 
             batch["force_expired"] = False
 
         batch["updated_at"] = now
+        await save_runtime_state_safe()
 
     return batch_to_view(batch)
 
@@ -1256,6 +1720,7 @@ async def adjust_stock(payload: StockAdjustmentRequest, token: str = Depends(oau
         batch["qty_remaining"] = next_qty
         batch["updated_at"] = utc_now()
         movement = add_movement(MovementType.STOCK_ADJUSTMENT, batch["drug_id"], batch["id"], quantity_delta, "stock_adjustment", next_id("reservation", "adj"), actor, f"{payload.reason}: {payload.note or ''}".strip())
+        await save_runtime_state_safe()
 
     return {"message": "Stock adjusted", "batch": batch_to_view(batch), "adjustment": movement_to_view(movement)}
 
@@ -1404,6 +1869,7 @@ async def reserve(payload: ReserveRequest, token: str = Depends(oauth2_scheme)) 
         }
         runtime_state.reservations.append(reservation_record)
         runtime_state.reservations = runtime_state.reservations[-500:]
+        await save_runtime_state_safe()
 
     return {"message": "Stock reserved", "reservation": reservation_record}
 

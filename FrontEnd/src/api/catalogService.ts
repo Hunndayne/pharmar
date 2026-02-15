@@ -65,6 +65,8 @@ export type ProductListItem = {
   manufacturer_name: string | null
   base_unit: string | null
   base_price: string | number | null
+  vat_rate: string | number
+  other_tax_rate: string | number
   is_active: boolean
   created_at: string
   updated_at: string
@@ -80,6 +82,8 @@ export type ProductDetailItem = {
   manufacturer: ProductManufacturerRef | null
   instructions: string | null
   note: string | null
+  vat_rate: string | number
+  other_tax_rate: string | number
   is_active: boolean
   units: ProductUnitItem[]
   created_at: string
@@ -225,6 +229,8 @@ type ProductCreatePayload = {
   manufacturer_id?: string | null
   instructions?: string | null
   note?: string | null
+  vat_rate?: string | number
+  other_tax_rate?: string | number
   is_active?: boolean
   base_unit?: {
     unit_name: string
@@ -241,6 +247,8 @@ type ProductUpdatePayload = {
   manufacturer_id?: string | null
   instructions?: string | null
   note?: string | null
+  vat_rate?: string | number
+  other_tax_rate?: string | number
   is_active?: boolean
 }
 

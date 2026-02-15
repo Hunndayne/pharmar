@@ -264,6 +264,8 @@ async def create_product(
         manufacturer_id=payload.manufacturer_id,
         instructions=normalize_optional_string(payload.instructions),
         note=normalize_optional_string(payload.note),
+        vat_rate=payload.vat_rate,
+        other_tax_rate=payload.other_tax_rate,
         is_active=payload.is_active,
     )
     db.add(product)
@@ -326,6 +328,10 @@ async def update_product(
         product.instructions = normalize_optional_string(payload.instructions)
     if "note" in updates:
         product.note = normalize_optional_string(payload.note)
+    if "vat_rate" in updates and payload.vat_rate is not None:
+        product.vat_rate = payload.vat_rate
+    if "other_tax_rate" in updates and payload.other_tax_rate is not None:
+        product.other_tax_rate = payload.other_tax_rate
     if "is_active" in updates and payload.is_active is not None:
         product.is_active = payload.is_active
 
@@ -584,6 +590,14 @@ async def import_products_from_excel(
         if base_unit_price < 0:
             errors.append(f"Row {row_index}: base_unit_price must be >= 0")
             continue
+        vat_rate = parse_decimal(cell_value("vat_rate"))
+        if vat_rate < 0 or vat_rate > 100:
+            errors.append(f"Row {row_index}: vat_rate must be between 0 and 100")
+            continue
+        other_tax_rate = parse_decimal(cell_value("other_tax_rate"))
+        if other_tax_rate < 0 or other_tax_rate > 100:
+            errors.append(f"Row {row_index}: other_tax_rate must be between 0 and 100")
+            continue
 
         code = normalize_code(str(cell_value("code")) if cell_value("code") is not None else None)
         if code is None:
@@ -617,6 +631,8 @@ async def import_products_from_excel(
                     str(cell_value("instructions")) if cell_value("instructions") is not None else None
                 ),
                 note=normalize_optional_string(str(cell_value("note")) if cell_value("note") is not None else None),
+                vat_rate=vat_rate,
+                other_tax_rate=other_tax_rate,
                 is_active=True,
             )
             db.add(product)
@@ -675,6 +691,8 @@ async def export_products(_: ManagerOrOwner, db: DbSession):
             "manufacturer_name",
             "instructions",
             "note",
+            "vat_rate",
+            "other_tax_rate",
             "base_unit_name",
             "base_unit_price",
             "is_active",
@@ -695,6 +713,8 @@ async def export_products(_: ManagerOrOwner, db: DbSession):
                 product.manufacturer.name if product.manufacturer else None,
                 product.instructions,
                 product.note,
+                float(product.vat_rate),
+                float(product.other_tax_rate),
                 base_unit.unit_name if base_unit else None,
                 float(base_unit.selling_price) if base_unit else None,
                 product.is_active,

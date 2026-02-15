@@ -25,6 +25,9 @@ type Drug = {
   code: string
   name: string
   regNo: string
+  category: string
+  vatRate: number
+  otherTaxRate: number
   groupId: string | null
   group: string
   makerId: string | null
@@ -48,6 +51,9 @@ type FormState = {
   code: string
   name: string
   regNo: string
+  groupCategory: string
+  vatRate: string
+  otherTaxRate: string
   groupId: string
   makerId: string
   barcode: string
@@ -101,10 +107,13 @@ const statusStyles: Record<string, string> = {
   'Ngừng bán': 'bg-ink-600/10 text-ink-600 border border-ink-600/20',
 }
 
-const emptyForm = (groupId = '', makerId = ''): FormState => ({
+const emptyForm = (groupId = '', makerId = '', groupCategory = ''): FormState => ({
   code: '',
   name: '',
   regNo: '',
+  groupCategory,
+  vatRate: '0',
+  otherTaxRate: '0',
   groupId,
   makerId,
   barcode: '',
@@ -282,6 +291,9 @@ const mapProductDetailToDrug = (item: ProductDetailItem): Drug => {
     code: item.code,
     name: item.name,
     regNo: item.registration_number ?? '',
+    category: '-',
+    vatRate: toPriceNumber(item.vat_rate),
+    otherTaxRate: toPriceNumber(item.other_tax_rate),
     groupId: item.group?.id ?? null,
     group: item.group?.name ?? '-',
     makerId: item.manufacturer?.id ?? null,
@@ -428,6 +440,7 @@ export function DrugCatalog() {
 
   const [drugs, setDrugs] = useState<Drug[]>(initialDrugs)
   const [groupOptions, setGroupOptions] = useState<DrugGroupItem[]>([])
+  const [groupCategoryById, setGroupCategoryById] = useState<Record<string, string>>({})
   const [makerOptions, setMakerOptions] = useState<ManufacturerItem[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -499,6 +512,7 @@ export function DrugCatalog() {
       ])
 
       let resolvedGroups = groupPage.items
+      const groupCategoryByName: Record<string, string> = {}
 
       try {
         const storeCategoryPage = await storeApi.listDrugCategories({
@@ -509,14 +523,22 @@ export function DrugCatalog() {
           resolvedGroups.map((group) => [normalizeGroupKey(group.name), group]),
         )
 
-        const storeGroupEntries: Array<[string, string]> = storeCategoryPage.items
-          .flatMap((category) => category.groups)
-          .filter((group) => group.is_active)
-          .map((group): [string, string] => [normalizeGroupKey(group.name), group.name.trim()])
-          .filter((entry): entry is [string, string] => Boolean(entry[0]))
-
         const uniqueStoreGroupNames = Array.from(
-          new Map<string, string>(storeGroupEntries).values(),
+          new Set(
+            storeCategoryPage.items.flatMap((category) => {
+              const categoryName = category.name.trim()
+              return category.groups
+                .filter((group) => group.is_active)
+                .map((group) => {
+                  const normalizedGroupName = normalizeGroupKey(group.name)
+                  if (normalizedGroupName && !groupCategoryByName[normalizedGroupName]) {
+                    groupCategoryByName[normalizedGroupName] = categoryName || '-'
+                  }
+                  return group.name.trim()
+                })
+                .filter(Boolean)
+            }),
+          ),
         )
 
         if (canManage && uniqueStoreGroupNames.length > 0) {
@@ -556,13 +578,29 @@ export function DrugCatalog() {
         products.map((item) => catalogApi.getProduct(accessToken, item.id)),
       )
 
+      const nextGroupCategoryById = resolvedGroups.reduce<Record<string, string>>((acc, group) => {
+        acc[group.id] = groupCategoryByName[normalizeGroupKey(group.name)] ?? '-'
+        return acc
+      }, {})
+
       setGroupOptions(
         resolvedGroups
           .slice()
           .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN')),
       )
+      setGroupCategoryById(nextGroupCategoryById)
       setMakerOptions(manufacturerPage.items)
-      setDrugs(details.map(mapProductDetailToDrug))
+      setDrugs(
+        details.map((item) => {
+          const mapped = mapProductDetailToDrug(item)
+          return {
+            ...mapped,
+            category: mapped.groupId
+              ? (nextGroupCategoryById[mapped.groupId] ?? '-')
+              : (groupCategoryByName[normalizeGroupKey(mapped.group)] ?? '-'),
+          }
+        }),
+      )
     } catch (error) {
       setAlert(getApiErrorMessage(error, 'Không thể tải danh mục thuốc từ cơ sở dữ liệu.'))
     } finally {
@@ -690,13 +728,59 @@ export function DrugCatalog() {
     form.retailUnit.name,
   ])
 
+  const categoryOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          groupOptions
+            .map((group) => groupCategoryById[group.id] ?? '')
+            .filter((name): name is string => Boolean(name && name !== '-')),
+        ),
+      ).sort((a, b) => a.localeCompare(b, 'vi-VN')),
+    [groupOptions, groupCategoryById],
+  )
+
+  const filteredGroupOptions = useMemo(() => {
+    if (!form.groupCategory) return groupOptions
+    return groupOptions.filter(
+      (group) => (groupCategoryById[group.id] ?? '-') === form.groupCategory,
+    )
+  }, [form.groupCategory, groupOptions, groupCategoryById])
+
+  const selectedGroupCategory = useMemo(() => {
+    if (form.groupCategory) return form.groupCategory
+    if (!form.groupId) return '-'
+    return groupCategoryById[form.groupId] ?? '-'
+  }, [form.groupCategory, form.groupId, groupCategoryById])
+
+  const handleGroupCategoryChange = (groupCategory: string) => {
+    setForm((prev) => {
+      const firstGroupId = groupOptions.find(
+        (group) => (groupCategoryById[group.id] ?? '-') === groupCategory,
+      )?.id
+      return {
+        ...prev,
+        groupCategory,
+        groupId: firstGroupId ?? '',
+      }
+    })
+  }
+
+  const handleGroupChange = (groupId: string) => {
+    setForm((prev) => ({
+      ...prev,
+      groupId,
+      groupCategory: groupId ? (groupCategoryById[groupId] ?? prev.groupCategory) : prev.groupCategory,
+    }))
+  }
+
   const openCreate = () => {
     if (!canManage) {
       setAlert('Bạn không có quyền thêm thuốc.')
       return
     }
     setErrors({})
-    setForm(emptyForm(groupOptions[0]?.id ?? '', makerOptions[0]?.id ?? ''))
+    setForm(emptyForm('', makerOptions[0]?.id ?? '', ''))
     setModalOpen(true)
   }
 
@@ -712,6 +796,11 @@ export function DrugCatalog() {
       code: drug.code,
       name: drug.name,
       regNo: drug.regNo,
+      groupCategory:
+        (drug.groupId ? (groupCategoryById[drug.groupId] ?? '') : '') ||
+        (drug.category !== '-' ? drug.category : ''),
+      vatRate: String(drug.vatRate ?? 0),
+      otherTaxRate: String(drug.otherTaxRate ?? 0),
       groupId: drug.groupId ?? '',
       makerId: drug.makerId ?? '',
       barcode: drug.barcode,
@@ -783,6 +872,16 @@ export function DrugCatalog() {
     if (!form.regNo.trim()) next.regNo = 'Bắt buộc'
     if (!form.groupId) next.group = 'Bắt buộc'
     if (!form.makerId) next.maker = 'Bắt buộc'
+    const vatRate = Number(form.vatRate)
+    const otherTaxRate = Number(form.otherTaxRate)
+    if (form.vatRate.trim() === '') next.vatRate = 'Bắt buộc'
+    if (form.otherTaxRate.trim() === '') next.otherTaxRate = 'Bắt buộc'
+    if (form.vatRate.trim() !== '' && (!Number.isFinite(vatRate) || vatRate < 0 || vatRate > 100)) {
+      next.vatRate = 'Từ 0 đến 100'
+    }
+    if (form.otherTaxRate.trim() !== '' && (!Number.isFinite(otherTaxRate) || otherTaxRate < 0 || otherTaxRate > 100)) {
+      next.otherTaxRate = 'Từ 0 đến 100'
+    }
 
     const retailPrice = parsePositive(form.retailUnit.price)
     if (!form.retailUnit.name.trim()) next['retail-name'] = 'Bắt buộc'
@@ -846,6 +945,8 @@ export function DrugCatalog() {
         barcode: form.barcode.trim() || null,
         instructions: form.usage.trim() || null,
         note: form.note.trim() || null,
+        vat_rate: Math.max(0, Number(form.vatRate) || 0),
+        other_tax_rate: Math.max(0, Number(form.otherTaxRate) || 0),
         is_active: form.active,
       }
 
@@ -881,11 +982,20 @@ export function DrugCatalog() {
         .map((unit) => `${unit.name}=${unit.conversion}:${unit.price}`)
         .join('|')
       return [
-        drug.code, drug.name, drug.regNo, drug.group, drug.maker,
-        drug.barcode, drug.active ? 'Đang bán' : 'Ngừng bán', unitData,
+        drug.code,
+        drug.name,
+        drug.regNo,
+        drug.category,
+        drug.group,
+        drug.maker,
+        `${drug.vatRate}`,
+        `${drug.otherTaxRate}`,
+        drug.barcode,
+        drug.active ? 'Đang bán' : 'Ngừng bán',
+        unitData,
       ].join(',')
     })
-    const header = ['Mã thuốc','Tên thuốc','Số đăng ký','Nhóm','NSX','Barcode','Trạng thái','Đơn vị'].join(',')
+    const header = ['Mã thuốc','Tên thuốc','Số đăng ký','Loại thuốc','Nhóm','NSX','VAT','Thuế khác','Barcode','Trạng thái','Đơn vị'].join(',')
     const csv = [header, ...rows].join('\n')
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const link = document.createElement('a')
@@ -1309,6 +1419,7 @@ export function DrugCatalog() {
               <tr>
                 <th className="px-6 py-4">Mã thuốc</th>
                 <th className="px-6 py-4">Tên thuốc</th>
+                <th className="px-6 py-4">Loại thuốc</th>
                 <th className="px-6 py-4">Nhóm</th>
                 <th className="px-6 py-4">Nhà SX</th>
                 <th className="px-6 py-4">Đơn vị & giá</th>
@@ -1320,12 +1431,12 @@ export function DrugCatalog() {
             <tbody className="divide-y divide-white/70">
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-6 text-sm text-ink-600">Đang tải dữ liệu...</td>
+                  <td colSpan={9} className="px-6 py-6 text-sm text-ink-600">Đang tải dữ liệu...</td>
                 </tr>
               ) : null}
               {!loading && paged.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-6 text-sm text-ink-600">Không có dữ liệu thuốc.</td>
+                  <td colSpan={9} className="px-6 py-6 text-sm text-ink-600">Không có dữ liệu thuốc.</td>
                 </tr>
               ) : null}
               {!loading ? paged.map((drug) => (
@@ -1333,6 +1444,7 @@ export function DrugCatalog() {
                   <tr className="hover:bg-white/80">
                     <td className="px-6 py-4 font-semibold text-ink-900">{drug.code}</td>
                     <td className="px-6 py-4 text-ink-900">{drug.name}</td>
+                    <td className="px-6 py-4 text-ink-700">{drug.category || '-'}</td>
                     <td className="px-6 py-4 text-ink-700">{drug.group}</td>
                     <td className="px-6 py-4 text-ink-700">{drug.maker}</td>
                     <td className="px-6 py-4 text-ink-900">{formatUnits(drug.units)}</td>
@@ -1364,11 +1476,13 @@ export function DrugCatalog() {
                   </tr>
                   {expandedId === drug.id ? (
                     <tr>
-                      <td colSpan={8} className="px-6 pb-6">
+                      <td colSpan={9} className="px-6 pb-6">
                         <div className="rounded-2xl bg-white/80 p-4">
                           <div className="grid gap-4 lg:grid-cols-[1.2fr,1fr]">
                             <div className="space-y-2 text-sm text-ink-700">
+                              <p><span className="font-semibold text-ink-900">Loại thuốc:</span> {drug.category || '-'}</p>
                               <p><span className="font-semibold text-ink-900">Số đăng ký:</span> {drug.regNo}</p>
+                              <p><span className="font-semibold text-ink-900">Thuế:</span> VAT {drug.vatRate}% · Thuế khác {drug.otherTaxRate}%</p>
                               <p><span className="font-semibold text-ink-900">Hướng dẫn:</span> {drug.usage || '-'}</p>
                               <p><span className="font-semibold text-ink-900">Ghi chú:</span> {drug.note || '-'}</p>
                             </div>
@@ -1438,11 +1552,53 @@ export function DrugCatalog() {
                   {errors.regNo ? <span className="text-xs text-coral-500">{errors.regNo}</span> : null}
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">
-                  <span>Nhóm thuốc *</span>
-                  <select value={form.groupId} onChange={(e) => updateForm('groupId', e.target.value)} className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2">
-                    <option value="">Chọn nhóm thuốc</option>
-                    {groupOptions.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+                  <span>Thuế VAT (%) *</span>
+                  <input
+                    value={form.vatRate}
+                    onChange={(e) => updateForm('vatRate', e.target.value)}
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    inputMode="decimal"
+                  />
+                  {errors.vatRate ? <span className="text-xs text-coral-500">{errors.vatRate}</span> : null}
+                </label>
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Thuế khác (%) *</span>
+                  <input
+                    value={form.otherTaxRate}
+                    onChange={(e) => updateForm('otherTaxRate', e.target.value)}
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    inputMode="decimal"
+                  />
+                  {errors.otherTaxRate ? <span className="text-xs text-coral-500">{errors.otherTaxRate}</span> : null}
+                </label>
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Loại thuốc *</span>
+                  <select
+                    value={form.groupCategory}
+                    onChange={(e) => handleGroupCategoryChange(e.target.value)}
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  >
+                    <option value="">Chọn loại thuốc</option>
+                    {categoryOptions.map((category) => <option key={category} value={category}>{category}</option>)}
                   </select>
+                </label>
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Nhóm thuốc *</span>
+                  <select
+                    value={form.groupId}
+                    onChange={(e) => handleGroupChange(e.target.value)}
+                    disabled={!form.groupCategory}
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 disabled:opacity-60"
+                  >
+                    <option value="">Chọn nhóm thuốc</option>
+                    {filteredGroupOptions.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+                  </select>
+                  {!form.groupCategory ? (
+                    <span className="text-xs text-ink-500">Hãy chọn loại thuốc trước.</span>
+                  ) : null}
+                  <div className="rounded-2xl border border-ink-900/10 bg-fog-50 px-4 py-2 text-sm text-ink-700">
+                    Loại thuốc hiện tại: <span className="font-semibold text-ink-900">{selectedGroupCategory}</span>
+                  </div>
                   {errors.group ? <span className="text-xs text-coral-500">{errors.group}</span> : null}
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">

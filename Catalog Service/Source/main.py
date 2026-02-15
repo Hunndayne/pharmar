@@ -25,6 +25,22 @@ async def lifespan(_: FastAPI):
         await connection.execute(
             text(
                 f"""
+                ALTER TABLE {SCHEMA_NAME}.products
+                ADD COLUMN IF NOT EXISTS vat_rate NUMERIC(5,2) NOT NULL DEFAULT 0
+                """
+            )
+        )
+        await connection.execute(
+            text(
+                f"""
+                ALTER TABLE {SCHEMA_NAME}.products
+                ADD COLUMN IF NOT EXISTS other_tax_rate NUMERIC(5,2) NOT NULL DEFAULT 0
+                """
+            )
+        )
+        await connection.execute(
+            text(
+                f"""
                 CREATE INDEX IF NOT EXISTS idx_products_name
                 ON {SCHEMA_NAME}.products USING gin(to_tsvector('simple', name))
                 """
@@ -61,4 +77,3 @@ async def root() -> dict[str, str]:
 @app.get("/health", tags=["system"])
 async def health() -> dict[str, str]:
     return {"service": "catalog", "status": "ok"}
-
