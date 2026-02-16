@@ -344,6 +344,7 @@ class PromotionApplyRequest(BaseModel):
 
 class PromotionApplyResponse(BaseModel):
     success: bool
+    usage_id: UUID
     promotion_id: UUID
     promotion_code: str
     discount_amount: Decimal

@@ -11,9 +11,12 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     FEFO_THRESHOLD_DAYS: int = 180
     CATALOG_SERVICE_URL: str = "http://catalog-service:8006"
+    STORE_SERVICE_URL: str = "http://store-service:8005"
     CATALOG_SYNC_TTL_SECONDS: int = 60
     CATALOG_SYNC_PAGE_SIZE: int = 200
     CATALOG_SYNC_TIMEOUT_SECONDS: float = 8.0
+    STORE_SETTINGS_TIMEOUT_SECONDS: float = 3.0
+    STORE_SETTINGS_TTL_SECONDS: int = 30
     STATE_FILE_PATH: str = "/data/runtime_state.json"
     STATE_PERSISTENCE: str = "postgres"
 

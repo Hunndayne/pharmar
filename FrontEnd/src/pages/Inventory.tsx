@@ -6,6 +6,7 @@ import {
   type InventoryMetaSupplier,
 } from '../api/inventoryService'
 import { catalogApi, type ProductListItem } from '../api/catalogService'
+import { storeApi } from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { downloadCsv } from '../utils/csv'
@@ -37,7 +38,8 @@ type LotRow = {
   nearDays: number
 }
 
-const NEAR_EXPIRY_DAYS = 60
+const DEFAULT_EXPIRY_WARNING_DAYS = 30
+const DEFAULT_NEAR_EXPIRY_DAYS = 90
 const STORE_NAME = 'Nhà thuốc Thanh Huy'
 const defaultUnitConfig: UnitConfig = {
   importUnit: null,
@@ -62,6 +64,12 @@ const formatDate = (value: string) => {
 const parseSafeInt = (value: string) => {
   const parsed = Number.parseInt(value, 10)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
+const parseConfigInt = (value: unknown, fallback: number) => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback
+  return Math.trunc(parsed)
 }
 
 const normalizeRatio = (conversion: number, retailConversion: number) => {
@@ -182,6 +190,8 @@ export function Inventory() {
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [expiryWarningDays, setExpiryWarningDays] = useState(DEFAULT_EXPIRY_WARNING_DAYS)
+  const [nearExpiryDays, setNearExpiryDays] = useState(DEFAULT_NEAR_EXPIRY_DAYS)
 
   const [search, setSearch] = useState('')
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all')
@@ -199,15 +209,30 @@ export function Inventory() {
     setError(null)
 
     try {
-      const [nextBatches, nextSuppliers, nextProducts] = await Promise.all([
+      const [nextBatches, nextSuppliers, nextProducts, inventorySettings] = await Promise.all([
         inventoryApi.listBatches(),
         inventoryApi.getMetaSuppliers(accessToken || undefined),
         accessToken ? loadCatalogProducts(accessToken) : Promise.resolve([] as ProductListItem[]),
+        storeApi
+          .getSettingsByGroup('inventory')
+          .catch(() => ({} as Record<string, unknown>)),
       ])
+
+      const nextExpiryWarningDays = parseConfigInt(
+        inventorySettings['inventory.expiry_warning_days'],
+        DEFAULT_EXPIRY_WARNING_DAYS,
+      )
+      const nextNearExpiryDaysRaw = parseConfigInt(
+        inventorySettings['inventory.near_date_days'],
+        DEFAULT_NEAR_EXPIRY_DAYS,
+      )
+      const nextNearExpiryDays = Math.max(nextExpiryWarningDays, nextNearExpiryDaysRaw)
 
       setBatches(nextBatches)
       setMetaSuppliers(nextSuppliers)
       setCatalogProducts(nextProducts)
+      setExpiryWarningDays(nextExpiryWarningDays)
+      setNearExpiryDays(nextNearExpiryDays)
     } catch (loadError) {
       if (loadError instanceof ApiError) setError(loadError.message)
       else setError('Không thể tải dữ liệu tồn kho.')
@@ -275,11 +300,11 @@ export function Inventory() {
       if (quickFilter === 'all') return true
       if (quickFilter === 'out') return row.batch.qty_remaining <= 0
       if (quickFilter === 'near') {
-        return row.nearDays >= 0 && row.nearDays <= NEAR_EXPIRY_DAYS && row.batch.qty_remaining > 0
+        return row.nearDays >= 0 && row.nearDays <= nearExpiryDays && row.batch.qty_remaining > 0
       }
       return row.nearDays < 0 && row.batch.qty_remaining > 0
     })
-  }, [quickFilter, scopedLotRows])
+  }, [quickFilter, scopedLotRows, nearExpiryDays])
 
   const scopedActiveLotRows = useMemo(
     () => scopedLotRows.filter((row) => row.batch.status !== 'cancelled'),
@@ -296,7 +321,7 @@ export function Inventory() {
       current.totalQty += Math.max(0, row.batch.qty_remaining)
       if (row.batch.qty_remaining > 0) {
         if (row.nearDays < 0) current.expired = true
-        else if (row.nearDays <= NEAR_EXPIRY_DAYS) current.near = true
+        else if (row.nearDays <= nearExpiryDays) current.near = true
       }
 
       byDrug.set(key, current)
@@ -319,7 +344,7 @@ export function Inventory() {
       nearDate,
       expired,
     }
-  }, [scopedActiveLotRows])
+  }, [scopedActiveLotRows, nearExpiryDays])
 
   const currentAdjustContext = useMemo(() => {
     if (!adjusting) return null
@@ -398,14 +423,18 @@ export function Inventory() {
 
     const rows = lotRows.map((row) => {
       const isExpired = row.nearDays < 0
-      const isNearDate = row.nearDays >= 0 && row.nearDays <= NEAR_EXPIRY_DAYS && row.batch.qty_remaining > 0
+      const isNearDate = row.nearDays >= 0 && row.nearDays <= nearExpiryDays && row.batch.qty_remaining > 0
+      const isExpiringSoon =
+        row.nearDays >= 0 && row.nearDays < expiryWarningDays && row.batch.qty_remaining > 0
       const status = row.batch.qty_remaining <= 0
         ? 'Hết hàng'
         : isExpired
           ? 'Hết hạn'
-          : isNearDate
-            ? 'Cận date'
-            : 'Bình thường'
+          : isExpiringSoon
+            ? 'Sắp hết hạn'
+            : isNearDate
+              ? 'Cận date'
+              : 'Bình thường'
 
       return [
         row.drugCode,
@@ -584,7 +613,10 @@ export function Inventory() {
               {!loading
                 ? lotRows.map((row) => {
                     const isExpired = row.nearDays < 0
-                    const isNearDate = row.nearDays >= 0 && row.nearDays <= NEAR_EXPIRY_DAYS
+                    const isExpiringSoon =
+                      row.nearDays >= 0 && row.nearDays < expiryWarningDays && row.batch.qty_remaining > 0
+                    const isNearDate =
+                      row.nearDays >= 0 && row.nearDays <= nearExpiryDays && row.batch.qty_remaining > 0
                     const breakdown = quantityBreakdown(row.batch.qty_remaining, row.units)
                     return (
                       <Fragment key={row.batch.id}>
@@ -600,7 +632,10 @@ export function Inventory() {
                                   Đã hết hạn {Math.abs(row.nearDays)} ngày
                                 </span>
                               ) : null}
-                              {!isExpired && isNearDate ? (
+                              {!isExpired && isExpiringSoon ? (
+                                <span className="text-xs font-semibold text-coral-500">Sắp hết hạn: còn {row.nearDays} ngày</span>
+                              ) : null}
+                              {!isExpired && !isExpiringSoon && isNearDate ? (
                                 <span className="text-xs font-semibold text-sun-500">Còn {row.nearDays} ngày</span>
                               ) : null}
                             </div>

@@ -240,6 +240,7 @@ async def apply_promotion(payload: PromotionApplyRequest, db: DbSession) -> Prom
 
     return PromotionApplyResponse(
         success=True,
+        usage_id=usage.id,
         promotion_id=promotion.id,
         promotion_code=promotion.code,
         discount_amount=discount,

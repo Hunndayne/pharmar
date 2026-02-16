@@ -71,6 +71,7 @@
       STATE_PERSISTENCE: postgres
       STATE_FILE_PATH: /data/runtime_state.json
       CATALOG_SERVICE_URL: http://catalog-service:8006
+      STORE_SERVICE_URL: http://store-service:8005
     volumes:
       - inventory_state_data:/data
     ports:
@@ -90,16 +91,35 @@
       dockerfile: dockerfile
     container_name: pharmar-sale-service
     environment:
+      APP_PORT: 8003
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/pharmar_sale
+      STORE_SERVICE_URL: http://store-service:8005
+      CATALOG_SERVICE_URL: http://catalog-service:8006
       INVENTORY_SERVICE_URL: http://inventory-service:8002
-      REDIS_URL: redis://redis:6379/0
+      CUSTOMER_SERVICE_URL: http://customer-service:8007
+      CUSTOMER_INTERNAL_API_KEY: ${CUSTOMER_INTERNAL_API_KEY:-change-this-internal-key}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      HELD_ORDER_EXPIRE_MINUTES: ${HELD_ORDER_EXPIRE_MINUTES:-30}
+      ENABLE_HELD_ORDER_CLEANUP_JOB: ${ENABLE_HELD_ORDER_CLEANUP_JOB:-true}
+      REQUIRE_SHIFT_FOR_SALE: ${REQUIRE_SHIFT_FOR_SALE:-true}
+      DEFAULT_COMMISSION_RATE: ${DEFAULT_COMMISSION_RATE:-1.5}
     ports:
       - "8003:8003"
     depends_on:
+      postgres:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
+      users-service:
+        condition: service_started
+      store-service:
+        condition: service_started
+      catalog-service:
+        condition: service_started
       inventory-service:
         condition: service_started
-      redis:
+      customer-service:
         condition: service_started
     restart: unless-stopped
 

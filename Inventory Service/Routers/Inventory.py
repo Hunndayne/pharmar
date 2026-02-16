@@ -35,6 +35,110 @@ runtime_state = SimpleNamespace()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 optional_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 
+DEFAULT_INVENTORY_SETTINGS: dict[str, Any] = {
+    "inventory.low_stock_threshold": 10,
+    "inventory.expiry_warning_days": 30,
+    "inventory.near_date_days": 90,
+    "inventory.enable_fefo": True,
+    "inventory.fefo_threshold_days": settings.FEFO_THRESHOLD_DAYS,
+}
+
+
+def _to_non_negative_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed < 0:
+        return default
+    return parsed
+
+
+def _to_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
+def normalize_inventory_settings(raw: dict[str, Any]) -> dict[str, Any]:
+    low_stock_threshold = _to_non_negative_int(
+        raw.get("inventory.low_stock_threshold"),
+        _to_non_negative_int(DEFAULT_INVENTORY_SETTINGS["inventory.low_stock_threshold"], 10),
+    )
+    expiry_warning_days = _to_non_negative_int(
+        raw.get("inventory.expiry_warning_days"),
+        _to_non_negative_int(DEFAULT_INVENTORY_SETTINGS["inventory.expiry_warning_days"], 30),
+    )
+    near_date_days = _to_non_negative_int(
+        raw.get("inventory.near_date_days"),
+        _to_non_negative_int(DEFAULT_INVENTORY_SETTINGS["inventory.near_date_days"], 90),
+    )
+    if near_date_days < expiry_warning_days:
+        near_date_days = expiry_warning_days
+
+    enable_fefo = _to_bool(
+        raw.get("inventory.enable_fefo"),
+        bool(DEFAULT_INVENTORY_SETTINGS["inventory.enable_fefo"]),
+    )
+    fefo_threshold_days = _to_positive_int(
+        raw.get("inventory.fefo_threshold_days"),
+        default=_to_positive_int(DEFAULT_INVENTORY_SETTINGS["inventory.fefo_threshold_days"], settings.FEFO_THRESHOLD_DAYS),
+    )
+
+    return {
+        "inventory.low_stock_threshold": low_stock_threshold,
+        "inventory.expiry_warning_days": expiry_warning_days,
+        "inventory.near_date_days": near_date_days,
+        "inventory.enable_fefo": enable_fefo,
+        "inventory.fefo_threshold_days": fefo_threshold_days,
+    }
+
+
+async def fetch_inventory_settings(force: bool = False) -> dict[str, Any]:
+    now = utc_now()
+    cached = getattr(runtime_state, "inventory_settings", None)
+    ttl_seconds = max(0, int(settings.STORE_SETTINGS_TTL_SECONDS))
+
+    if (
+        not force
+        and isinstance(cached, dict)
+        and isinstance(cached.get("data"), dict)
+        and isinstance(cached.get("fetched_at"), datetime)
+        and ttl_seconds > 0
+        and (now - cached["fetched_at"]).total_seconds() <= ttl_seconds
+    ):
+        return cached["data"]
+
+    merged = dict(DEFAULT_INVENTORY_SETTINGS)
+    base_url = settings.STORE_SERVICE_URL.strip()
+    if base_url:
+        target_url = f"{base_url.rstrip('/')}/api/v1/store/settings/group/inventory"
+        try:
+            timeout = httpx.Timeout(settings.STORE_SETTINGS_TIMEOUT_SECONDS)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(target_url)
+            if response.status_code < 400:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    merged.update(payload)
+        except (httpx.HTTPError, ValueError):
+            pass
+
+    normalized = normalize_inventory_settings(merged)
+    runtime_state.inventory_settings = {
+        "data": normalized,
+        "fetched_at": now,
+    }
+    return normalized
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -922,7 +1026,14 @@ def stock_total_for_drug(drug_id: str) -> int:
     )
 
 
-def stock_status_for_drug(drug_id: str, as_of: date | None = None) -> str:
+def stock_status_for_drug(
+    drug_id: str,
+    as_of: date | None = None,
+    *,
+    low_stock_threshold: int = 0,
+    expiry_warning_days: int = 30,
+    near_date_days: int = 90,
+) -> str:
     day = as_of or date.today()
     drug = runtime_state.drugs[drug_id]
     batches = [
@@ -940,11 +1051,12 @@ def stock_status_for_drug(drug_id: str, as_of: date | None = None) -> str:
     nearest_expiry = min(batch["exp_date"] for batch in batches)
     days_to_expiry = (nearest_expiry - day).days
 
-    if days_to_expiry < 30:
+    if days_to_expiry < expiry_warning_days:
         return "expiring_soon"
-    if days_to_expiry < 90:
+    if days_to_expiry < near_date_days:
         return "near_date"
-    if total < drug["reorder_level"]:
+    threshold = drug["reorder_level"] if drug["reorder_level"] > 0 else low_stock_threshold
+    if total < threshold:
         return "low_stock"
     return "normal"
 
@@ -1084,19 +1196,38 @@ def receipt_to_view(receipt: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def issue_sort_key(batch: dict[str, Any], as_of: date) -> tuple[int, date, date, datetime]:
+def issue_sort_key(
+    batch: dict[str, Any],
+    as_of: date,
+    *,
+    enable_fefo: bool,
+    fefo_threshold_days: int,
+) -> tuple[int, date, date, datetime]:
     days_to_expiry = (batch["exp_date"] - as_of).days
-    if days_to_expiry < settings.FEFO_THRESHOLD_DAYS:
+    if enable_fefo and days_to_expiry < fefo_threshold_days:
         return (0, batch["exp_date"], batch["received_date"], batch["created_at"])
     return (1, batch["received_date"], batch["exp_date"], batch["created_at"])
 
 
-def issue_strategy(batch: dict[str, Any], as_of: date) -> str:
+def issue_strategy(
+    batch: dict[str, Any],
+    as_of: date,
+    *,
+    enable_fefo: bool,
+    fefo_threshold_days: int,
+) -> str:
     days_to_expiry = (batch["exp_date"] - as_of).days
-    return "fefo" if days_to_expiry < settings.FEFO_THRESHOLD_DAYS else "fifo"
+    return "fefo" if enable_fefo and days_to_expiry < fefo_threshold_days else "fifo"
 
 
-def suggest_issue_plan(drug: dict[str, Any], quantity: int, as_of: date | None = None) -> tuple[list[dict[str, Any]], int]:
+def suggest_issue_plan(
+    drug: dict[str, Any],
+    quantity: int,
+    as_of: date | None = None,
+    *,
+    enable_fefo: bool,
+    fefo_threshold_days: int,
+) -> tuple[list[dict[str, Any]], int]:
     day = as_of or date.today()
     candidates = [
         batch
@@ -1105,7 +1236,14 @@ def suggest_issue_plan(drug: dict[str, Any], quantity: int, as_of: date | None =
         and batch_status(batch, day) == BatchStatus.ACTIVE
         and batch["qty_remaining"] > 0
     ]
-    candidates.sort(key=lambda batch: issue_sort_key(batch, day))
+    candidates.sort(
+        key=lambda batch: issue_sort_key(
+            batch,
+            day,
+            enable_fefo=enable_fefo,
+            fefo_threshold_days=fefo_threshold_days,
+        )
+    )
 
     remaining = quantity
     allocations: list[dict[str, Any]] = []
@@ -1128,7 +1266,12 @@ def suggest_issue_plan(drug: dict[str, Any], quantity: int, as_of: date | None =
                 "exp_date": batch["exp_date"],
                 "available": batch["qty_remaining"],
                 "allocated": allocated,
-                "strategy": issue_strategy(batch, day),
+                "strategy": issue_strategy(
+                    batch,
+                    day,
+                    enable_fefo=enable_fefo,
+                    fefo_threshold_days=fefo_threshold_days,
+                ),
             }
         )
         remaining -= allocated
@@ -1204,10 +1347,15 @@ async def startup_event() -> None:
     runtime_state.redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     runtime_state.lock = asyncio.Lock()
     runtime_state.pg_pool = None
+    runtime_state.inventory_settings = {
+        "data": normalize_inventory_settings(DEFAULT_INVENTORY_SETTINGS),
+        "fetched_at": datetime.fromtimestamp(0, tz=timezone.utc),
+    }
     loaded = await load_runtime_state_safe()
     if not loaded:
         seed_demo_data()
         await save_runtime_state_safe()
+    await fetch_inventory_settings(force=True)
     runtime_state.consumer_task = asyncio.create_task(consume_sale_events())
 
 
@@ -1251,7 +1399,11 @@ async def get_stock(token: str | None = Depends(optional_oauth2_scheme)) -> dict
 @router.get("/stock/summary")
 async def get_stock_summary(token: str | None = Depends(optional_oauth2_scheme)) -> list[dict[str, Any]]:
     await maybe_sync_catalog_drugs(token)
+    inventory_settings = await fetch_inventory_settings()
     day = date.today()
+    low_stock_threshold = _to_non_negative_int(inventory_settings.get("inventory.low_stock_threshold"), 10)
+    expiry_warning_days = _to_non_negative_int(inventory_settings.get("inventory.expiry_warning_days"), 30)
+    near_date_days = _to_non_negative_int(inventory_settings.get("inventory.near_date_days"), 90)
     rows: list[dict[str, Any]] = []
     for drug in runtime_state.drugs.values():
         batches = [
@@ -1271,7 +1423,13 @@ async def get_stock_summary(token: str | None = Depends(optional_oauth2_scheme))
                 "total_qty": stock_total_for_drug(drug["id"]),
                 "nearest_expiry": nearest,
                 "days_to_nearest_expiry": (nearest - day).days if nearest else None,
-                "status": stock_status_for_drug(drug["id"], day),
+                "status": stock_status_for_drug(
+                    drug["id"],
+                    day,
+                    low_stock_threshold=low_stock_threshold,
+                    expiry_warning_days=expiry_warning_days,
+                    near_date_days=near_date_days,
+                ),
             }
         )
     rows.sort(key=lambda row: row["drug_code"])
@@ -1281,15 +1439,25 @@ async def get_stock_summary(token: str | None = Depends(optional_oauth2_scheme))
 @router.get("/stock/drugs/{drug_id}")
 async def get_stock_detail(drug_id: str, token: str | None = Depends(optional_oauth2_scheme)) -> dict[str, Any]:
     await maybe_sync_catalog_drugs(token)
+    inventory_settings = await fetch_inventory_settings()
     drug = resolve_drug(drug_id=drug_id)
     day = date.today()
+    low_stock_threshold = _to_non_negative_int(inventory_settings.get("inventory.low_stock_threshold"), 10)
+    expiry_warning_days = _to_non_negative_int(inventory_settings.get("inventory.expiry_warning_days"), 30)
+    near_date_days = _to_non_negative_int(inventory_settings.get("inventory.near_date_days"), 90)
     batches = [batch for batch in runtime_state.batches.values() if batch["drug_id"] == drug["id"]]
     batches.sort(key=lambda batch: (batch["exp_date"], batch["received_date"], batch["batch_code"]))
     return {
         "drug": drug,
         "summary": {
             "total_qty": stock_total_for_drug(drug["id"]),
-            "status": stock_status_for_drug(drug["id"], day),
+            "status": stock_status_for_drug(
+                drug["id"],
+                day,
+                low_stock_threshold=low_stock_threshold,
+                expiry_warning_days=expiry_warning_days,
+                near_date_days=near_date_days,
+            ),
             "reorder_level": drug["reorder_level"],
         },
         "batches": [batch_to_view(batch, day) for batch in batches],
@@ -1813,7 +1981,19 @@ async def suggest_batches_for_issue(
         raise HTTPException(status_code=400, detail="Provide drug_id or drug_code")
     drug = resolve_drug(drug_id=drug_id, drug_code_or_sku=drug_code)
     day = as_of or date.today()
-    allocations, shortage = suggest_issue_plan(drug, quantity, day)
+    inventory_settings = await fetch_inventory_settings()
+    fefo_enabled = _to_bool(inventory_settings.get("inventory.enable_fefo"), True)
+    fefo_threshold_days = _to_positive_int(
+        inventory_settings.get("inventory.fefo_threshold_days"),
+        default=settings.FEFO_THRESHOLD_DAYS,
+    )
+    allocations, shortage = suggest_issue_plan(
+        drug,
+        quantity,
+        day,
+        enable_fefo=fefo_enabled,
+        fefo_threshold_days=fefo_threshold_days,
+    )
     return {
         "drug_id": drug["id"],
         "drug_code": drug["code"],
@@ -1821,7 +2001,11 @@ async def suggest_batches_for_issue(
         "requested": quantity,
         "allocated": quantity - shortage,
         "shortage": shortage,
-        "rule": {"fefo_threshold_days": settings.FEFO_THRESHOLD_DAYS, "description": "expiry < threshold => FEFO, otherwise FIFO"},
+        "rule": {
+            "enable_fefo": fefo_enabled,
+            "fefo_threshold_days": fefo_threshold_days,
+            "description": "expiry < threshold => FEFO, otherwise FIFO",
+        },
         "allocations": allocations,
     }
 
@@ -1956,7 +2140,20 @@ async def inventory_alerts(
     low_stock_threshold: int | None = Query(default=None, ge=0),
     as_of: date | None = Query(default=None),
 ) -> dict[str, Any]:
+    inventory_settings = await fetch_inventory_settings()
     day = as_of or date.today()
+    configured_low_stock_threshold = _to_non_negative_int(
+        inventory_settings.get("inventory.low_stock_threshold"),
+        10,
+    )
+    expiry_warning_days = _to_non_negative_int(
+        inventory_settings.get("inventory.expiry_warning_days"),
+        30,
+    )
+    near_date_days = _to_non_negative_int(
+        inventory_settings.get("inventory.near_date_days"),
+        90,
+    )
     low_stock: list[dict[str, Any]] = []
     expired: list[dict[str, Any]] = []
     expiring_soon: list[dict[str, Any]] = []
@@ -1964,7 +2161,11 @@ async def inventory_alerts(
 
     for drug in runtime_state.drugs.values():
         total = stock_total_for_drug(drug["id"])
-        threshold = low_stock_threshold if low_stock_threshold is not None else drug["reorder_level"]
+        threshold = (
+            low_stock_threshold
+            if low_stock_threshold is not None
+            else (drug["reorder_level"] if drug["reorder_level"] > 0 else configured_low_stock_threshold)
+        )
         if total < threshold:
             low_stock.append(
                 {
@@ -1983,9 +2184,9 @@ async def inventory_alerts(
         entry = {"batch": batch_to_view(batch, day), "days_to_expiry": days}
         if days < 0:
             expired.append(entry)
-        elif days < 30:
+        elif days < expiry_warning_days:
             expiring_soon.append(entry)
-        elif days < 90:
+        elif days < near_date_days:
             near_date.append(entry)
 
     return {
@@ -2006,12 +2207,24 @@ async def inventory_alerts(
 @router.post("/reserve")
 async def reserve(payload: ReserveRequest, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
     user_id = get_current_subject(token)
+    inventory_settings = await fetch_inventory_settings()
+    fefo_enabled = _to_bool(inventory_settings.get("inventory.enable_fefo"), True)
+    fefo_threshold_days = _to_positive_int(
+        inventory_settings.get("inventory.fefo_threshold_days"),
+        default=settings.FEFO_THRESHOLD_DAYS,
+    )
     async with runtime_state.lock:
         reservation_items: list[dict[str, Any]] = []
 
         for item in payload.items:
             drug = resolve_drug(drug_code_or_sku=item.sku)
-            allocations, shortage = suggest_issue_plan(drug, item.quantity, date.today())
+            allocations, shortage = suggest_issue_plan(
+                drug,
+                item.quantity,
+                date.today(),
+                enable_fefo=fefo_enabled,
+                fefo_threshold_days=fefo_threshold_days,
+            )
             if shortage > 0:
                 raise HTTPException(
                     status_code=409,
