@@ -9,8 +9,9 @@ from Routers.HeldOrders import router as held_orders_router
 from Routers.Invoices import router as invoices_router
 from Routers.PaymentMethods import router as payment_methods_router
 from Routers.Returns import router as returns_router
-from Routers.Shifts import router as shifts_router
 from Routers.Stats import router as stats_router
+# NOTE: Shift open/close feature is temporarily disabled.
+# from Routers.Shifts import router as shifts_router
 
 from .core.config import get_settings
 from .db import models  # noqa: F401
@@ -97,7 +98,8 @@ app.include_router(payment_methods_router, prefix="/api/v1")
 app.include_router(invoices_router, prefix="/api/v1")
 app.include_router(held_orders_router, prefix="/api/v1")
 app.include_router(returns_router, prefix="/api/v1")
-app.include_router(shifts_router, prefix="/api/v1")
+# NOTE: Shift open/close feature is temporarily disabled.
+# app.include_router(shifts_router, prefix="/api/v1")
 app.include_router(stats_router, prefix="/api/v1")
 
 

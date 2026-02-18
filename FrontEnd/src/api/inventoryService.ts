@@ -148,6 +148,35 @@ export type InventoryBatchDetail = {
   history: InventoryMovement[]
 }
 
+export type InventoryIssueSuggestionAllocation = {
+  batch_id: string
+  batch_code: string
+  lot_number: string
+  drug_id: string
+  drug_code: string
+  drug_name: string
+  received_date: string
+  exp_date: string
+  available: number
+  allocated: number
+  strategy: 'fefo' | 'fifo'
+}
+
+export type InventoryIssueSuggestion = {
+  drug_id: string
+  drug_code: string
+  drug_name: string
+  requested: number
+  allocated: number
+  shortage: number
+  rule: {
+    enable_fefo?: boolean
+    fefo_threshold_days: number
+    description: string
+  }
+  allocations: InventoryIssueSuggestionAllocation[]
+}
+
 export type InventoryStockSummary = {
   drug_id: string
   drug_code: string
@@ -310,8 +339,25 @@ export const inventoryApi = {
   getBatchDetail: (batchId: string) =>
     requestInventoryJson<InventoryBatchDetail>(`/inventory/batches/${batchId}`, { method: 'GET' }),
 
-  getBatchByQr: (qrValue: string) =>
-    requestInventoryJson<InventoryBatchDetail>(`/inventory/batches/qr/${encodeURIComponent(qrValue)}`, { method: 'GET' }),
+  getBatchByQr: (qrValue: string, token?: string) =>
+    requestInventoryJson<InventoryBatchDetail>(
+      `/inventory/batches/qr/${encodeURIComponent(qrValue)}`,
+      { method: 'GET' },
+      token,
+    ),
+
+  suggestIssueByDrug: (params: {
+    quantity: number
+    drug_id?: string
+    drug_code?: string
+    as_of?: string
+  }) =>
+    requestInventoryJson<InventoryIssueSuggestion>(
+      '/inventory/batches/suggest-issue',
+      { method: 'GET' },
+      undefined,
+      params,
+    ),
 
   getStockSummary: (token?: string) =>
     requestInventoryJson<InventoryStockSummary[]>('/inventory/stock/summary', { method: 'GET' }, token),

@@ -26,10 +26,10 @@ from Source.sale import (
     fetch_customer_by_id,
     fetch_customer_tier_discount_percent,
     fetch_store_info,
+    fetch_store_settings_group,
     generate_next_daily_code,
     get_invoice_by_code_or_404,
     get_invoice_or_404,
-    get_open_shift_for_user,
     inventory_reserve,
     inventory_return_stock,
     invoice_search_filter,
@@ -41,7 +41,6 @@ from Source.sale import (
     quantize_money,
     safe_decimal,
     safe_uuid,
-    update_shift_sales_by_method,
     customer_internal_post,
 )
 from Source.schemas.sale import (
@@ -85,12 +84,8 @@ async def _prepare_invoice_creation(
     token: str,
     db: AsyncSession,
 ) -> tuple[Invoice, list[InvoiceItem], list[InvoicePayment], dict[str, Any]]:
-    open_shift: Shift | None = await get_open_shift_for_user(current_user.sub, db)
-    if settings.REQUIRE_SHIFT_FOR_SALE and open_shift is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="You must open a shift before creating invoice",
-        )
+    # Shift open/close feature is temporarily disabled.
+    open_shift: Shift | None = None
 
     invoice_code = await generate_next_daily_code(
         db=db,
@@ -100,7 +95,16 @@ async def _prepare_invoice_creation(
     )
     invoice_id = uuid4()
 
-    reserve_items = [{"sku": extract_item_sku(item), "quantity": item.quantity} for item in payload.items]
+    reserve_items: list[dict[str, Any]] = []
+    for item in payload.items:
+        conversion_rate = max(int(item.conversion_rate or 1), 1)
+        reserve_item: dict[str, Any] = {
+            "sku": extract_item_sku(item),
+            "quantity": item.quantity * conversion_rate,
+        }
+        if item.batch_id:
+            reserve_item["batch_id"] = item.batch_id
+        reserve_items.append(reserve_item)
     await inventory_reserve(invoice_code, reserve_items, token)
 
     customer_snapshot: dict[str, Any] | None = None
@@ -245,13 +249,7 @@ async def _prepare_invoice_creation(
         )
         payment_method = single_method
 
-    if amount_paid < total_amount:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Insufficient payment amount. Required {total_amount}, got {amount_paid}",
-        )
-
-    change_amount = _normalize_decimal(amount_paid - total_amount)
+    change_amount = _normalize_decimal(max(amount_paid - total_amount, Decimal("0.00")))
 
     points_earned = 0
     if payload.customer_id is not None and total_amount > Decimal("0.00"):
@@ -300,7 +298,6 @@ async def _prepare_invoice_creation(
     context = {
         "invoice_id": invoice_id,
         "invoice_code": invoice_code,
-        "open_shift": open_shift,
         "promotion_validated": promotion_validated,
         "promotion_order_amount": promotion_base_amount,
         "points_used_applied": points_used_applied,
@@ -327,19 +324,13 @@ async def process_checkout(
         db.add_all(invoice_items)
         db.add_all(invoice_payments)
 
-        open_shift: Shift | None = context.get("open_shift")
-        if open_shift is not None:
-            open_shift.total_invoices += 1
-            open_shift.total_sales = quantize_money(open_shift.total_sales + invoice.total_amount)
-            for payment in invoice_payments:
-                update_shift_sales_by_method(open_shift, payment.payment_method, payment.amount)
-
         await db.commit()
     except Exception:
         await db.rollback()
         for item in payload.items:
+            conversion_rate = max(int(item.conversion_rate or 1), 1)
             try:
-                await inventory_return_stock(item.batch_id, item.quantity, token)
+                await inventory_return_stock(item.batch_id, item.quantity * conversion_rate, token)
             except Exception:
                 pass
         points_to_rollback = int(context.get("points_used_applied", payload.points_used if payload.points_used > 0 else 0) or 0)
@@ -447,6 +438,7 @@ async def list_invoices(
                 customer_name=item.customer_name,
                 customer_phone=item.customer_phone,
                 total_amount=item.total_amount,
+                amount_paid=item.amount_paid,
                 payment_method=item.payment_method,
                 status=item.status,
                 cashier_name=item.created_by_name,
@@ -507,7 +499,8 @@ async def cancel_invoice(
     }
 
     for item in invoice.items:
-        ok = await inventory_return_stock(item.batch_id, item.quantity, token)
+        conversion_rate = max(int(item.conversion_rate or 1), 1)
+        ok = await inventory_return_stock(item.batch_id, item.quantity * conversion_rate, token)
         rollback["stock_returned"] = rollback["stock_returned"] and ok
 
     if invoice.customer_id and invoice.points_used > 0:
@@ -588,10 +581,23 @@ async def cancel_invoice(
 async def print_invoice_data(invoice_id: UUID, _: AnyUser, token: AccessToken, db: DbSession) -> InvoicePrintResponse:
     invoice = await _get_invoice_with_details(invoice_id, db)
     store = await fetch_store_info(token)
+    sale_settings = await fetch_store_settings_group("sale", token)
 
     payment_name = invoice.payment_method
     if invoice.payment_method == "mixed":
-        payment_name = "Thanh toan ket hop"
+        payment_name = "Thanh toán kết hợp"
+
+    raw_window_value = sale_settings.get("sale.return_window_value", 7)
+    try:
+        return_window_value = int(raw_window_value)
+    except (TypeError, ValueError):
+        return_window_value = 7
+    if return_window_value < 0:
+        return_window_value = 7
+
+    raw_window_unit = str(sale_settings.get("sale.return_window_unit", "day") or "day").strip().lower()
+    return_window_unit = "hour" if raw_window_unit in {"hour", "hours", "gio", "h"} else "day"
+    return_window_label = "giờ" if return_window_unit == "hour" else "ngày"
 
     return InvoicePrintResponse(
         store={
@@ -600,6 +606,7 @@ async def print_invoice_data(invoice_id: UUID, _: AnyUser, token: AccessToken, d
             "phone": store.get("phone"),
             "tax_code": store.get("tax_code"),
             "license_number": store.get("license_number"),
+            "logo_url": store.get("logo_url"),
         },
         invoice={
             "code": invoice.code,
@@ -643,8 +650,10 @@ async def print_invoice_data(invoice_id: UUID, _: AnyUser, token: AccessToken, d
             "earned": invoice.points_earned,
         },
         footer={
-            "message": "Cam on quy khach!",
-            "return_policy": "Doi tra trong 7 ngay voi hoa don",
+            "message": "Cảm ơn quý khách!",
+            "return_policy": f"Đổi trả trong {return_window_value} {return_window_label} với hóa đơn",
+            "return_window_value": return_window_value,
+            "return_window_unit": return_window_unit,
         },
     )
 

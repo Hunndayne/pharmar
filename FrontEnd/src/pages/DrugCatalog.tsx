@@ -993,13 +993,13 @@ export function DrugCatalog() {
         `${drug.vatRate}`,
         `${drug.otherTaxRate}`,
         drug.barcode,
-        drug.active ? 'Dang ban' : 'Ngung ban',
+        drug.active ? 'Đang bán' : 'Ngừng bán',
         unitData,
       ]
     })
     downloadCsv(
       'danh-muc-thuoc.csv',
-      ['Ma thuoc', 'Ten thuoc', 'So dang ky', 'Loai thuoc', 'Nhom', 'NSX', 'VAT', 'Thue khac', 'Barcode', 'Trang thai', 'Don vi'],
+      ['Mã thuốc', 'Tên thuốc', 'Số đăng ký', 'Loại thuốc', 'Nhóm', 'NSX', 'VAT', 'Thuế khác', 'Barcode', 'Trạng thái', 'Đơn vị'],
       rows,
     )
   }
@@ -1070,7 +1070,7 @@ export function DrugCatalog() {
     new Promise<string>((resolve, reject) => {
       const reader = new FileReader()
       reader.onload = () => resolve(String(reader.result ?? ''))
-      reader.onerror = () => reject(new Error('Khong the doc file'))
+      reader.onerror = () => reject(new Error('Không thể đọc file'))
       reader.readAsText(file, 'utf-8')
     })
 
@@ -1084,7 +1084,7 @@ export function DrugCatalog() {
     }
 
     if (!canManage) {
-      setAlert('Ban khong co quyen import danh muc thuoc.')
+      setAlert('Bạn không có quyền import danh mục thuốc.')
       return
     }
 
@@ -1098,7 +1098,7 @@ export function DrugCatalog() {
       const text = await readFileText(file)
       const rows = parseDelimitedText(text)
       if (rows.length <= 1) {
-        setAlert('File import khong co du lieu.')
+        setAlert('File import không có dữ liệu.')
         return
       }
 
@@ -1109,19 +1109,19 @@ export function DrugCatalog() {
         return header.findIndex((item) => normalizedAliases.includes(item))
       }
 
-      const idxCode = findIndex('Ma thuoc', 'Code')
-      const idxName = findIndex('Ten thuoc', 'Name')
-      const idxRegNo = findIndex('So dang ky', 'Registration number')
-      const idxGroup = findIndex('Nhom', 'Nhom thuoc', 'Group')
+      const idxCode = findIndex('Mã thuốc', 'Code')
+      const idxName = findIndex('Tên thuốc', 'Name')
+      const idxRegNo = findIndex('Số đăng ký', 'Registration number')
+      const idxGroup = findIndex('Nhóm', 'Nhom thuoc', 'Group')
       const idxMaker = findIndex('NSX', 'Nha san xuat', 'Maker')
       const idxVat = findIndex('VAT')
-      const idxOtherTax = findIndex('Thue khac', 'Other tax')
+      const idxOtherTax = findIndex('Thuế khác', 'Other tax')
       const idxBarcode = findIndex('Barcode')
-      const idxStatus = findIndex('Trang thai', 'Status')
-      const idxUnits = findIndex('Don vi', 'Don vi & gia')
+      const idxStatus = findIndex('Trạng thái', 'Status')
+      const idxUnits = findIndex('Đơn vị', 'Đơn vị & giá')
 
       if (idxName < 0) {
-        setAlert('Khong tim thay cot "Ten thuoc" trong file import.')
+        setAlert('Không tìm thấy cột "Tên thuốc" trong file import.')
         return
       }
 
@@ -1202,7 +1202,7 @@ export function DrugCatalog() {
           existingByName.set(nameKey, { id: createdProduct.id })
           created += 1
         } catch (error) {
-          failed.push(`${name}: ${getApiErrorMessage(error, 'Khong the import dong du lieu')}`)
+          failed.push(`${name}: ${getApiErrorMessage(error, 'Không thể import dòng dữ liệu')}`)
         }
       }
 
@@ -1214,7 +1214,7 @@ export function DrugCatalog() {
           (failedPreview ? `. ${failedPreview}` : ''),
       )
     } catch (error) {
-      setAlert(getApiErrorMessage(error, 'Khong the import file danh muc thuoc.'))
+      setAlert(getApiErrorMessage(error, 'Không thể import file danh mục thuốc.'))
     } finally {
       setImporting(false)
     }

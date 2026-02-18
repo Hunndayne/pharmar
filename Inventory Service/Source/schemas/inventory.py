@@ -8,6 +8,7 @@ from ..domain import BatchStatus, PaymentMethod, PaymentStatus, PromoType
 class ReserveItemRequest(BaseModel):
     sku: str = Field(min_length=1, max_length=64)
     quantity: int = Field(gt=0)
+    batch_id: str | None = Field(default=None, max_length=64)
 
 
 class ReserveRequest(BaseModel):

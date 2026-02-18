@@ -2560,14 +2560,11 @@ export function Purchases() {
               </div>
 
               <div className="space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
                   <div>
                     <p className="text-sm font-semibold text-ink-900">Chi tiết lô nhập</p>
                     <p className="text-xs text-ink-500">Quét barcode hoặc chọn thuốc để tự điền thông tin.</p>
                   </div>
-                  <button onClick={addLine} className="rounded-full border border-ink-900/10 bg-white/80 px-4 py-2 text-xs font-semibold text-ink-900">
-                    Thêm dòng thuốc
-                  </button>
                 </div>
                 {errors.lines ? <p className="text-xs text-coral-500">{errors.lines}</p> : null}
 
@@ -2842,6 +2839,13 @@ export function Purchases() {
                 Tổng cộng: <span className="font-semibold text-ink-900">{formatCurrency(calcOrderTotal(form.lines))}</span>
               </div>
               <div className="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={addLine}
+                  className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900"
+                >
+                  Thêm dòng thuốc
+                </button>
                 <button
                   onClick={saveOrder}
                   disabled={savingOrder}

@@ -193,11 +193,16 @@ async def list_active_payment_methods_map(db: AsyncSession) -> dict[str, Payment
 
 
 def extract_item_sku(item: Any) -> str:
+    # Prefer product_id when available so inventory reserve can validate exact drug ownership.
+    product_id = getattr(item, "product_id", None)
+    if isinstance(product_id, str) and product_id.strip():
+        return product_id.strip()
+
     sku = getattr(item, "sku", None)
     if isinstance(sku, str) and sku.strip():
         return sku.strip()
 
-    for attr in ("product_code", "product_id"):
+    for attr in ("product_code",):
         value = getattr(item, attr, None)
         if isinstance(value, str) and value.strip():
             return value.strip()
@@ -259,7 +264,7 @@ async def inventory_reserve(sale_id: str, items: list[dict[str, Any]], token: st
 
 
 async def inventory_return_stock(batch_id: str, quantity: int, token: str) -> bool:
-    url = f"{settings.INVENTORY_SERVICE_URL.rstrip('/')}/api/v1/inventory/adjustment"
+    url = f"{settings.INVENTORY_SERVICE_URL.rstrip('/')}/api/v1/inventory/stock/adjustments"
     payload = {
         "batch_id": batch_id,
         "reason": "sale_return",

@@ -190,7 +190,8 @@ async def approve_return(
 
         invoice_item.returned_quantity += item.quantity
         if item.condition == "good":
-            ok = await inventory_return_stock(item.batch_id, item.quantity, token)
+            conversion_rate = max(int(invoice_item.conversion_rate or 1), 1)
+            ok = await inventory_return_stock(item.batch_id, item.quantity * conversion_rate, token)
             stock_returned = stock_returned and ok
 
     fully_returned = all(row.returned_quantity >= row.quantity for row in invoice.items)

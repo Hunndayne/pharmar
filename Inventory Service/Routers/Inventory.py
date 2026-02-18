@@ -1,9 +1,11 @@
 import asyncio
 import json
+import re
 from enum import Enum
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, unquote, urlparse
 
 import asyncpg
 import httpx
@@ -1280,11 +1282,94 @@ def suggest_issue_plan(
 
 
 def find_batch_by_qr(qr_value: str) -> dict[str, Any] | None:
-    needle = normalize_code(qr_value)
-    for batch in runtime_state.batches.values():
-        if normalize_code(batch["batch_code"]) == needle or normalize_code(batch["lot_number"]) == needle:
-            return batch
+    candidates = extract_qr_candidates(qr_value)
+    if not candidates:
+        return None
+
+    for candidate in candidates:
+        needle = normalize_code(candidate)
+        for batch in runtime_state.batches.values():
+            if (
+                normalize_code(batch["batch_code"]) == needle
+                or normalize_code(batch["lot_number"]) == needle
+                or normalize_code(batch.get("barcode", "")) == needle
+            ):
+                return batch
+
+    # Fuzzy fallback for scanner payload that wraps the real lot code.
+    for candidate in candidates:
+        needle = normalize_code(candidate)
+        for batch in runtime_state.batches.values():
+            batch_code = normalize_code(batch["batch_code"])
+            lot_number = normalize_code(batch["lot_number"])
+            barcode = normalize_code(batch.get("barcode", ""))
+            if (
+                needle in batch_code
+                or needle in lot_number
+                or needle in barcode
+                or batch_code in needle
+                or lot_number in needle
+                or (barcode and barcode in needle)
+            ):
+                return batch
+
     return None
+
+
+def extract_qr_candidates(raw_value: str) -> list[str]:
+    values: set[str] = set()
+
+    def add(candidate: Any) -> None:
+        if not isinstance(candidate, str):
+            return
+        normalized = candidate.strip()
+        if normalized:
+            values.add(normalized)
+
+    add(raw_value)
+    if not values:
+        return []
+
+    for value in list(values):
+        try:
+            add(unquote(value))
+        except Exception:
+            pass
+
+    for value in list(values):
+        for part in re.split(r"[\s|,;]+", value):
+            add(part)
+
+        if "://" in value:
+            try:
+                parsed = urlparse(value)
+                segments = [segment for segment in parsed.path.split("/") if segment]
+                if segments:
+                    add(segments[-1])
+                query_params = parse_qs(parsed.query, keep_blank_values=False)
+                for key in ("qr", "batch", "batch_code", "batchCode", "lot", "lot_number", "code"):
+                    for item in query_params.get(key, []):
+                        add(item)
+            except Exception:
+                pass
+
+        if value.startswith("{") and value.endswith("}"):
+            try:
+                payload = json.loads(value)
+                if isinstance(payload, dict):
+                    for key in ("qr", "batch", "batch_code", "batchCode", "lot", "lot_number", "code"):
+                        add(payload.get(key))
+            except Exception:
+                pass
+
+    for value in list(values):
+        if ":" in value:
+            add(value.rsplit(":", 1)[-1])
+        for match in re.findall(r"[A-Za-z]{1,6}[-_ ]?\d{4,}", value):
+            add(match)
+        add(value.upper())
+
+    return list(values)
 
 
 def seed_demo_data() -> None:
@@ -2213,28 +2298,93 @@ async def reserve(payload: ReserveRequest, token: str = Depends(oauth2_scheme)) 
         inventory_settings.get("inventory.fefo_threshold_days"),
         default=settings.FEFO_THRESHOLD_DAYS,
     )
+    as_of_day = date.today()
     async with runtime_state.lock:
         reservation_items: list[dict[str, Any]] = []
 
         for item in payload.items:
             drug = resolve_drug(drug_code_or_sku=item.sku)
-            allocations, shortage = suggest_issue_plan(
+            recommended_allocations, shortage = suggest_issue_plan(
                 drug,
                 item.quantity,
-                date.today(),
+                as_of_day,
                 enable_fefo=fefo_enabled,
                 fefo_threshold_days=fefo_threshold_days,
             )
-            if shortage > 0:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "message": f"Not enough stock for '{item.sku}'",
-                        "requested": item.quantity,
-                        "available": item.quantity - shortage,
-                        "shortage": shortage,
-                    },
-                )
+
+            allocations: list[dict[str, Any]]
+            lot_policy: dict[str, Any]
+            if item.batch_id:
+                batch = get_batch_or_404(item.batch_id)
+                if batch["drug_id"] != drug["id"]:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Batch '{item.batch_id}' does not belong to sku '{item.sku}'",
+                    )
+                if batch_status(batch, as_of_day) != BatchStatus.ACTIVE or batch["qty_remaining"] <= 0:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Batch '{item.batch_id}' is not available for reservation",
+                    )
+                if batch["qty_remaining"] < item.quantity:
+                    shortage = item.quantity - batch["qty_remaining"]
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "message": f"Not enough stock in batch '{item.batch_id}' for '{item.sku}'",
+                            "requested": item.quantity,
+                            "available": batch["qty_remaining"],
+                            "shortage": shortage,
+                            "batch_id": item.batch_id,
+                        },
+                    )
+
+                allocations = [
+                    {
+                        "batch_id": batch["id"],
+                        "batch_code": batch["batch_code"],
+                        "lot_number": batch["lot_number"],
+                        "drug_id": batch["drug_id"],
+                        "drug_code": drug["code"],
+                        "drug_name": drug["name"],
+                        "received_date": batch["received_date"],
+                        "exp_date": batch["exp_date"],
+                        "available": batch["qty_remaining"],
+                        "allocated": item.quantity,
+                        "strategy": issue_strategy(
+                            batch,
+                            as_of_day,
+                            enable_fefo=fefo_enabled,
+                            fefo_threshold_days=fefo_threshold_days,
+                        ),
+                    }
+                ]
+                recommended_batch_id = recommended_allocations[0]["batch_id"] if recommended_allocations else None
+                lot_policy = {
+                    "is_checked": True,
+                    "is_recommended": bool(recommended_batch_id == batch["id"]),
+                    "recommended_batch_id": recommended_batch_id,
+                    "recommended_batch_code": recommended_allocations[0]["batch_code"] if recommended_allocations else None,
+                }
+            else:
+                allocations = recommended_allocations
+                lot_policy = {
+                    "is_checked": False,
+                    "is_recommended": True,
+                    "recommended_batch_id": allocations[0]["batch_id"] if allocations else None,
+                    "recommended_batch_code": allocations[0]["batch_code"] if allocations else None,
+                }
+                if shortage > 0:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "message": f"Not enough stock for '{item.sku}'",
+                            "requested": item.quantity,
+                            "available": item.quantity - shortage,
+                            "shortage": shortage,
+                        },
+                    )
+
             reservation_items.append(
                 {
                     "sku": item.sku,
@@ -2242,6 +2392,8 @@ async def reserve(payload: ReserveRequest, token: str = Depends(oauth2_scheme)) 
                     "drug_code": drug["code"],
                     "drug_name": drug["name"],
                     "requested": item.quantity,
+                    "requested_batch_id": item.batch_id,
+                    "lot_policy": lot_policy,
                     "allocations": allocations,
                 }
             )

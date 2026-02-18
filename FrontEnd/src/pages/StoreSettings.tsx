@@ -26,10 +26,15 @@ type StoreInfoForm = {
 
 type StoreSettingsForm = {
   autoPrint: boolean
+  sellByLot: boolean
   defaultPaymentMethod: string
+  returnWindowValue: string
+  returnWindowUnit: 'day' | 'hour'
   lowStockThreshold: string
   expiryWarningDays: string
   nearDateDays: string
+  enableFefo: boolean
+  fefoThresholdDays: string
   timezone: string
   currency: string
 }
@@ -49,10 +54,15 @@ const emptyStoreInfoForm: StoreInfoForm = {
 
 const defaultStoreSettings: StoreSettingsForm = {
   autoPrint: true,
+  sellByLot: true,
   defaultPaymentMethod: 'cash',
+  returnWindowValue: '7',
+  returnWindowUnit: 'day',
   lowStockThreshold: '10',
   expiryWarningDays: '30',
   nearDateDays: '90',
+  enableFefo: true,
+  fefoThresholdDays: '180',
   timezone: 'Asia/Ho_Chi_Minh',
   currency: 'VND',
 }
@@ -99,10 +109,15 @@ const mapStoreInfoToForm = (info: StoreInfo): StoreInfoForm => ({
 
 const mapSettingsToForm = (settings: StoreSettingsMap): StoreSettingsForm => ({
   autoPrint: asBoolean(settings['sale.auto_print'], true),
+  sellByLot: asBoolean(settings['sale.enforce_lot_policy'], true),
   defaultPaymentMethod: asString(settings['sale.default_payment_method'], 'cash'),
+  returnWindowValue: asNumberString(settings['sale.return_window_value'], 7),
+  returnWindowUnit: asString(settings['sale.return_window_unit'], 'day').toLowerCase() === 'hour' ? 'hour' : 'day',
   lowStockThreshold: asNumberString(settings['inventory.low_stock_threshold'], 10),
   expiryWarningDays: asNumberString(settings['inventory.expiry_warning_days'], 30),
   nearDateDays: asNumberString(settings['inventory.near_date_days'], 90),
+  enableFefo: asBoolean(settings['inventory.enable_fefo'], true),
+  fefoThresholdDays: asNumberString(settings['inventory.fefo_threshold_days'], 180),
   timezone: asString(settings['system.timezone'], 'Asia/Ho_Chi_Minh'),
   currency: asString(settings['system.currency'], 'VND'),
 })
@@ -270,6 +285,8 @@ export function StoreSettings() {
     const lowStock = Number(storeSettingsForm.lowStockThreshold)
     const expiryDays = Number(storeSettingsForm.expiryWarningDays)
     const nearDateDays = Number(storeSettingsForm.nearDateDays)
+    const fefoThresholdDays = Number(storeSettingsForm.fefoThresholdDays)
+    const returnWindowValue = Number(storeSettingsForm.returnWindowValue)
 
     if (!Number.isFinite(lowStock) || lowStock < 0) {
       setSettingsError('Ngưỡng sắp hết hàng không hợp lệ.')
@@ -283,6 +300,14 @@ export function StoreSettings() {
       setSettingsError('Số ngày cận date không hợp lệ.')
       return
     }
+    if (!Number.isFinite(fefoThresholdDays) || fefoThresholdDays <= 0) {
+      setSettingsError('Ngưỡng FEFO/FIFO không hợp lệ.')
+      return
+    }
+    if (!Number.isFinite(returnWindowValue) || returnWindowValue < 0) {
+      setSettingsError('Thời gian trả hàng không hợp lệ.')
+      return
+    }
 
     setSettingsSubmitting(true)
     setSettingsError(null)
@@ -292,10 +317,15 @@ export function StoreSettings() {
       await Promise.all([
         storeApi.updateSetting(token.access_token, 'sale.auto_print', storeSettingsForm.autoPrint),
         storeApi.updateSettingsBulk(token.access_token, {
+          'sale.enforce_lot_policy': storeSettingsForm.sellByLot,
           'sale.default_payment_method': storeSettingsForm.defaultPaymentMethod.trim() || 'cash',
+          'sale.return_window_value': Math.trunc(returnWindowValue),
+          'sale.return_window_unit': storeSettingsForm.returnWindowUnit,
           'inventory.low_stock_threshold': Math.trunc(lowStock),
           'inventory.expiry_warning_days': Math.trunc(expiryDays),
           'inventory.near_date_days': Math.trunc(nearDateDays),
+          'inventory.enable_fefo': storeSettingsForm.enableFefo,
+          'inventory.fefo_threshold_days': Math.trunc(fefoThresholdDays),
           'system.timezone': storeSettingsForm.timezone.trim() || 'Asia/Ho_Chi_Minh',
           'system.currency': storeSettingsForm.currency.trim() || 'VND',
         }),
@@ -555,6 +585,17 @@ export function StoreSettings() {
             />
             Tự động in hóa đơn
           </label>
+          <label className="flex items-center gap-2 text-sm text-ink-700 md:col-span-2">
+            <input
+              type="checkbox"
+              checked={storeSettingsForm.sellByLot}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({ ...prev, sellByLot: event.target.checked }))
+              }
+              disabled={!canManageStore || storeLoading}
+            />
+            Bán hàng theo lô (áp dụng FIFO/FEFO khi tạo hóa đơn)
+          </label>
           <label className="space-y-2 text-sm text-ink-700">
             <span>Phương thức thanh toán mặc định</span>
             <input
@@ -565,6 +606,37 @@ export function StoreSettings() {
               className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
               disabled={!canManageStore || storeLoading}
             />
+          </label>
+
+          <label className="space-y-2 text-sm text-ink-700">
+            <span>Cho phép trả hàng trong</span>
+            <input
+              type="number"
+              min={0}
+              value={storeSettingsForm.returnWindowValue}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({ ...prev, returnWindowValue: event.target.value }))
+              }
+              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              disabled={!canManageStore || storeLoading}
+            />
+          </label>
+          <label className="space-y-2 text-sm text-ink-700">
+            <span>Đơn vị thời gian trả hàng</span>
+            <select
+              value={storeSettingsForm.returnWindowUnit}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({
+                  ...prev,
+                  returnWindowUnit: event.target.value === 'hour' ? 'hour' : 'day',
+                }))
+              }
+              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              disabled={!canManageStore || storeLoading}
+            >
+              <option value="day">Ngày</option>
+              <option value="hour">Giờ</option>
+            </select>
           </label>
           <label className="space-y-2 text-sm text-ink-700">
             <span>Ngưỡng sắp hết hàng</span>
@@ -600,6 +672,30 @@ export function StoreSettings() {
               value={storeSettingsForm.nearDateDays}
               onChange={(event) =>
                 setStoreSettingsForm((prev) => ({ ...prev, nearDateDays: event.target.value }))
+              }
+              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              disabled={!canManageStore || storeLoading}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-sm text-ink-700">
+            <input
+              type="checkbox"
+              checked={storeSettingsForm.enableFefo}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({ ...prev, enableFefo: event.target.checked }))
+              }
+              disabled={!canManageStore || storeLoading}
+            />
+            Bật FEFO cho lô có HSD ngắn
+          </label>
+          <label className="space-y-2 text-sm text-ink-700">
+            <span>Ngưỡng chuyển FEFO/FIFO (ngày)</span>
+            <input
+              type="number"
+              min={1}
+              value={storeSettingsForm.fefoThresholdDays}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({ ...prev, fefoThresholdDays: event.target.value }))
               }
               className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
               disabled={!canManageStore || storeLoading}

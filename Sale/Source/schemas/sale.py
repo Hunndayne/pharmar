@@ -209,6 +209,7 @@ class InvoiceListItemResponse(BaseModel):
     customer_name: str | None
     customer_phone: str | None
     total_amount: Decimal
+    amount_paid: Decimal
     payment_method: str
     status: str
     cashier_name: str | None

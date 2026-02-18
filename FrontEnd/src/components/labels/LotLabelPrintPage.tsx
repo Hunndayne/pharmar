@@ -188,9 +188,11 @@ export function LotLabelPrintPage({
                 -webkit-box-orient: vertical;
               }
               .qr {
-                width: 1.2mm;
-                height: 10.2mm;
-                image-rendering: pixelated;
+                width: 11.8mm;
+                height: 11.8mm;
+                display: block;
+                object-fit: contain;
+                image-rendering: crisp-edges;
               }
               .price {
                 width: 100%;
