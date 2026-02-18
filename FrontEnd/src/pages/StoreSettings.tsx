@@ -10,6 +10,7 @@ import { ApiError } from '../api/usersService'
 import { storeApi, type StoreInfo, type StoreSettingsMap } from '../api/storeService'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
+import { BANK_OPTIONS } from '../constants/bankList'
 
 type StoreInfoForm = {
   name: string
@@ -94,6 +95,27 @@ const asNumberString = (value: unknown, fallback: number): string => {
   return String(fallback)
 }
 
+const normalizeText = (value: string) =>
+  value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+
+const bankSearchKey = (bank: (typeof BANK_OPTIONS)[number]) =>
+  `${bank.code} ${bank.name} ${bank.bin}`.toLowerCase()
+
+const resolveBankInputValue = (value: string) => {
+  const keyword = normalizeText(value.trim())
+  if (!keyword) return null
+  return (
+    BANK_OPTIONS.find((bank) => bank.code.toLowerCase() === keyword) ??
+    BANK_OPTIONS.find((bank) => bank.name.toLowerCase() === keyword) ??
+    BANK_OPTIONS.find((bank) => bank.bin === value.trim()) ??
+    BANK_OPTIONS.find((bank) => normalizeText(bankSearchKey(bank)).includes(keyword)) ??
+    null
+  )
+}
+
 const mapStoreInfoToForm = (info: StoreInfo): StoreInfoForm => ({
   name: info.name ?? '',
   address: info.address ?? '',
@@ -143,6 +165,17 @@ export function StoreSettings() {
   const [settingsResetting, setSettingsResetting] = useState(false)
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null)
   const [settingsError, setSettingsError] = useState<string | null>(null)
+  const [bankPickerOpen, setBankPickerOpen] = useState(false)
+  const [bankPickerKeyword, setBankPickerKeyword] = useState('')
+  const [qrAccountName, setQrAccountName] = useState('')
+
+  const bankSuggestions = useMemo(() => {
+    const keyword = normalizeText(bankPickerKeyword.trim())
+    const filtered = !keyword
+      ? BANK_OPTIONS
+      : BANK_OPTIONS.filter((bank) => normalizeText(bankSearchKey(bank)).includes(keyword))
+    return filtered
+  }, [bankPickerKeyword])
 
   const loadStoreData = useCallback(async () => {
     setStoreLoading(true)
@@ -167,6 +200,7 @@ export function StoreSettings() {
       setStoreInfo(info)
       setStoreInfoForm(mapStoreInfoToForm(info))
       setStoreSettingsForm(mapSettingsToForm(mergedSettings))
+      setQrAccountName(asString(saleSettings['sale.bank_account_name'], info.owner_name ?? ''))
       setAutoPrintUpdatedAt(autoPrintSetting.updated_at)
     } catch (storeLoadError) {
       if (storeLoadError instanceof ApiError) setStoreError(storeLoadError.message)
@@ -199,6 +233,11 @@ export function StoreSettings() {
     setStoreInfoMessage(null)
 
     try {
+      const selectedBank = resolveBankInputValue(storeInfoForm.bankName)
+      const bankNameToSave = selectedBank
+        ? `${selectedBank.code} - ${selectedBank.name}`
+        : storeInfoForm.bankName.trim()
+
       const response = await storeApi.updateInfo(token.access_token, {
         name: storeInfoForm.name.trim(),
         address: storeInfoForm.address.trim() || null,
@@ -208,9 +247,14 @@ export function StoreSettings() {
         license_number: storeInfoForm.licenseNumber.trim() || null,
         owner_name: storeInfoForm.ownerName.trim() || null,
         bank_account: storeInfoForm.bankAccount.trim() || null,
-        bank_name: storeInfoForm.bankName.trim() || null,
+        bank_name: bankNameToSave || null,
         bank_branch: storeInfoForm.bankBranch.trim() || null,
       })
+      await storeApi.updateSetting(
+        token.access_token,
+        'sale.bank_account_name',
+        qrAccountName.trim(),
+      )
 
       setStoreInfo(response.data)
       setStoreInfoForm(mapStoreInfoToForm(response.data))
@@ -498,14 +542,60 @@ export function StoreSettings() {
               disabled={!canManageStore || storeLoading}
             />
           </label>
+
           <label className="space-y-2 text-sm text-ink-700">
-            <span>Ngân hàng</span>
+            <span>Tên chủ tài khoản (dùng cho QR)</span>
             <input
-              value={storeInfoForm.bankName}
-              onChange={(event) => setStoreInfoForm((prev) => ({ ...prev, bankName: event.target.value }))}
+              value={qrAccountName}
+              onChange={(event) => setQrAccountName(event.target.value)}
               className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              placeholder="Vi du: NGUYEN VAN A"
               disabled={!canManageStore || storeLoading}
             />
+          </label>
+
+          <label className="space-y-2 text-sm text-ink-700">
+            <span>Ngân hàng (mã + tên)</span>
+            <div className="relative">
+              <input
+                value={storeInfoForm.bankName}
+                onFocus={() => {
+                  setBankPickerOpen(true)
+                  setBankPickerKeyword('')
+                }}
+                onBlur={() => window.setTimeout(() => setBankPickerOpen(false), 120)}
+                onChange={(event) => {
+                  setStoreInfoForm((prev) => ({ ...prev, bankName: event.target.value }))
+                  setBankPickerKeyword(event.target.value)
+                  setBankPickerOpen(true)
+                }}
+                className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                placeholder="Tìm theo mã (VCB) hoặc tên (VietcomBank)"
+                disabled={!canManageStore || storeLoading}
+              />
+              {bankPickerOpen && bankSuggestions.length ? (
+                <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-2xl border border-ink-900/10 bg-white p-1 shadow-lift">
+                  {bankSuggestions.map((bank) => (
+                    <button
+                      key={`${bank.code}-${bank.bin}`}
+                      type="button"
+                      onMouseDown={() => {
+                        setStoreInfoForm((prev) => ({
+                          ...prev,
+                          bankName: `${bank.code} - ${bank.name}`,
+                        }))
+                        setBankPickerKeyword('')
+                        setBankPickerOpen(false)
+                      }}
+                      className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm text-ink-800 hover:bg-fog-50"
+                    >
+                      <span className="font-medium">{bank.code} - {bank.name}</span>
+                      <span className="text-xs text-ink-500">{bank.bin}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           </label>
           <label className="space-y-2 text-sm text-ink-700 md:col-span-2">
             <span>Chi nhánh ngân hàng</span>

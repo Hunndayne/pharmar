@@ -6,8 +6,10 @@ import {
   type InventoryMetaDrug,
 } from '../api/inventoryService'
 import { customerApi, type CustomerRecord } from '../api/customerService'
+import { paymentQrApi } from '../api/paymentQrService'
 import { saleApi } from '../api/saleService'
 import { storeApi, type StoreInfo } from '../api/storeService'
+import { findBankOption } from '../constants/bankList'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 
@@ -120,6 +122,24 @@ type LotPolicyConfirmState = {
   orderId: string
   item: PosOrderItem
   message: string
+}
+
+type BankQrState = {
+  orderId: string
+  referenceCode: string
+  amount: number
+  accountNo: string
+  accountName: string
+  acqId: string
+  qrCode: string
+  qrDataURL: string
+}
+
+type CheckoutOptions = {
+  paymentMethod?: 'cash' | 'bank'
+  amountPaid?: number
+  paymentLabel?: string
+  noteSuffix?: string
 }
 
 const formatCurrency = (value: number) => `${Math.max(0, value).toLocaleString('vi-VN')}đ`
@@ -466,6 +486,12 @@ const normalizeSettingBoolean = (value: unknown, fallback: boolean) => {
   return fallback
 }
 
+const normalizeSettingString = (value: unknown, fallback = '') => {
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim()
+  return fallback
+}
+
 const normalizeReturnWindowUnit = (value: unknown): 'day' | 'hour' => {
   const lowered = String(value ?? '').trim().toLowerCase()
   return ['hour', 'hours', 'gio', 'h'].includes(lowered) ? 'hour' : 'day'
@@ -512,6 +538,11 @@ export function Pos() {
   const [sellByLot, setSellByLot] = useState(true)
   const [storeInfo, setStoreInfo] = useState<StoreInfo | null>(null)
   const [returnPolicyText, setReturnPolicyText] = useState('Đổi trả trong 7 ngày với hóa đơn.')
+  const [bankQrAccountNo, setBankQrAccountNo] = useState('')
+  const [bankQrAccountName, setBankQrAccountName] = useState('')
+  const [bankQrAcqId, setBankQrAcqId] = useState('')
+  const [bankQrState, setBankQrState] = useState<BankQrState | null>(null)
+  const [generatingBankQr, setGeneratingBankQr] = useState(false)
 
   const [orders, setOrders] = useState<PosOrder[]>([createEmptyOrder()])
   const [activeOrderId, setActiveOrderId] = useState<string>('')
@@ -656,7 +687,17 @@ export function Pos() {
       )
       setSellByLot(normalizeSettingBoolean(saleSettings['sale.enforce_lot_policy'], true))
       setReturnPolicyText(buildReturnPolicyText(saleSettings))
-      if (store) setStoreInfo(store)
+      if (store) {
+        const bankOption = findBankOption(normalizeSettingString(store.bank_name, ''))
+        setBankQrAccountNo(normalizeSettingString(store.bank_account, ''))
+        setBankQrAccountName(normalizeSettingString(store.owner_name || store.name, ''))
+        setBankQrAcqId(bankOption?.bin ?? '')
+        setStoreInfo(store)
+      } else {
+        setBankQrAccountNo('')
+        setBankQrAccountName('')
+        setBankQrAcqId('')
+      }
     } catch (error) {
       if (error instanceof ApiError) setLoadError(error.message)
       else setLoadError('Không thể tải dữ liệu bán hàng.')
@@ -1690,8 +1731,8 @@ export function Pos() {
     [evaluateLotPolicy],
   )
 
-  const handleCheckout = useCallback(async (skipPolicyCheck = false) => {
-    if (!activeOrder || !token?.access_token) return
+  const handleCheckout = useCallback(async (skipPolicyCheck = false, options?: CheckoutOptions) => {
+    if (!activeOrder || !token?.access_token) return false
 
     setCheckingOut(true)
     setActionError(null)
@@ -1722,7 +1763,7 @@ export function Pos() {
             item: violatingFromCache.item,
             message: violatingFromCache.item.lotPolicyWarning,
           })
-          return
+          return false
         }
 
         const freshViolation = await findFirstPolicyViolation(activeOrder)
@@ -1741,12 +1782,12 @@ export function Pos() {
             item: freshViolation.item,
             message: freshViolation.warning,
           })
-          return
+          return false
         }
       }
 
-      const amountPaid = parseNonNegativeNumber(activeOrder.cashReceived)
-      if (amountPaid < grandTotal) {
+      const amountPaid = options?.amountPaid ?? parseNonNegativeNumber(activeOrder.cashReceived)
+      if (activeOrder.paymentMode === 'cash' && amountPaid < grandTotal) {
         throw new ApiError('Tiền khách đưa chưa đủ để thanh toán.', 400)
       }
       if (activeOrder.customerMode === 'member' && !activeOrder.customerId) {
@@ -1761,6 +1802,7 @@ export function Pos() {
         )
       }
       const debtAmount = Math.max(0, grandTotal - amountPaid)
+      const paymentChange = Math.max(0, amountPaid - grandTotal)
       if (debtAmount > 0) {
         noteParts.push(`Cong no: ${formatCurrency(debtAmount)}`)
       }
@@ -1773,13 +1815,16 @@ export function Pos() {
           noteParts.push(`Khách vãng lai: ${activeOrder.customerName.trim()}`)
         }
       }
+      if (options?.noteSuffix?.trim()) {
+        noteParts.push(options.noteSuffix.trim())
+      }
 
       const invoice = await saleApi.createInvoice(token.access_token, {
         customer_id:
           activeOrder.customerMode === 'member' && activeOrder.customerId
             ? activeOrder.customerId
             : null,
-        payment_method: 'cash',
+        payment_method: options?.paymentMethod ?? 'cash',
         amount_paid: amountPaid,
         note: noteParts.join(' | ') || null,
         items: lines.map((line) => ({
@@ -1840,9 +1885,9 @@ export function Pos() {
         customerName: activeOrder.customerName.trim() || 'Khách vãng lai',
         customerPhone: activeOrder.customerPhone.trim(),
         note: activeOrder.note.trim(),
-        paymentMethod: debtAmount > 0 ? 'Mua no' : 'Tien mat',
+        paymentMethod: debtAmount > 0 ? 'Mua nợ' : (options?.paymentLabel ?? 'Tiền mặt'),
         amountPaid,
-        changeAmount: Math.max(0, changeAmount),
+        changeAmount: paymentChange,
         debtAmount,
         medicineTotal,
         serviceFee: serviceFeeValue,
@@ -1872,15 +1917,89 @@ export function Pos() {
       }))
 
       setActionMessage(
-        `Thanh toán thành công ${invoice.code}. Thành tiền: ${formatCurrency(grandTotal)}. Tiền thừa: ${formatCurrency(Math.max(0, changeAmount))}.`,
+        `Thanh toán thành công ${invoice.code}. Thành tiền: ${formatCurrency(grandTotal)}. Tiền thừa: ${formatCurrency(paymentChange)}.`,
       )
+      return true
     } catch (error) {
       if (error instanceof ApiError) setActionError(error.message)
       else setActionError('Không thể thanh toán hóa đơn.')
+      return false
     } finally {
       setCheckingOut(false)
     }
-  }, [activeOrder, token?.access_token, user, storeInfo, returnPolicyText, buildCheckoutLines, grandTotal, changeAmount, updateOrder, printInvoicePreview, sellByLot, findFirstPolicyViolation])
+  }, [activeOrder, token?.access_token, user, storeInfo, returnPolicyText, buildCheckoutLines, grandTotal, updateOrder, printInvoicePreview, sellByLot, findFirstPolicyViolation])
+
+  const handleGenerateBankQr = useCallback(async () => {
+    if (!activeOrder || !token?.access_token) return
+
+    setActionError(null)
+    setActionMessage(null)
+
+    if (!activeOrder.items.length) {
+      setActionError('Đơn hàng chưa có thuốc để tạo mã QR thanh toán.')
+      return
+    }
+    if (activeOrder.paymentMode === 'debt') {
+      setActionError('Không thể tạo QR ngân hàng cho đơn mua nợ.')
+      return
+    }
+
+    const accountNo = bankQrAccountNo.trim()
+    const accountName = bankQrAccountName.trim()
+    const acqId = bankQrAcqId.trim()
+    if (!accountNo || !accountName || !acqId) {
+      setActionError(
+        'Thiếu cấu hình QR ngân hàng. Cần đủ: Tên chủ tài khoản, Số tài khoản, Ngân hàng trong mục Thông tin cửa hàng.',
+      )
+      return
+    }
+
+    const amount = Math.round(Math.max(0, grandTotal))
+    if (amount <= 0) {
+      setActionError('Số tiền thanh toán không hợp lệ để tạo mã QR.')
+      return
+    }
+
+    const referenceCode = `DH${Date.now()}`
+    setGeneratingBankQr(true)
+    try {
+      const response = await paymentQrApi.generateBankQr(token.access_token, {
+        accountNo,
+        accountName,
+        acqId,
+        addInfo: referenceCode,
+        amount,
+      })
+      setBankQrState({
+        orderId: activeOrder.id,
+        referenceCode,
+        amount,
+        accountNo,
+        accountName,
+        acqId,
+        qrCode: response.data.qrCode,
+        qrDataURL: response.data.qrDataURL,
+      })
+    } catch (error) {
+      if (error instanceof ApiError) setActionError(error.message)
+      else setActionError('Không thể tạo QR ngân hàng.')
+    } finally {
+      setGeneratingBankQr(false)
+    }
+  }, [activeOrder, token?.access_token, bankQrAccountNo, bankQrAccountName, bankQrAcqId, grandTotal])
+
+  const handleCheckoutByBankQr = useCallback(async () => {
+    if (!bankQrState) return
+    const success = await handleCheckout(false, {
+      paymentMethod: 'bank',
+      paymentLabel: 'QR ngân hàng',
+      amountPaid: bankQrState.amount,
+      noteSuffix: `Thanh toán QR ngân hàng, mã tham chiếu: ${bankQrState.referenceCode}`,
+    })
+    if (success) {
+      setBankQrState(null)
+    }
+  }, [bankQrState, handleCheckout])
 
   const policyDescription = sellByLot
     ? (fefoEnabled
@@ -2300,7 +2419,7 @@ export function Pos() {
         </article>
 
         <aside className="glass-card rounded-3xl p-4 sm:p-6">
-          <p className="text-xs uppercase tracking-[0.25em] text-ink-600">Thanh toán tiền mặt</p>
+          <p className="text-xs uppercase tracking-[0.25em] text-ink-600">Thanh toán</p>
           <h3 className="mt-2 text-2xl font-semibold text-ink-900">Đơn đang chọn</h3>
 
           {activeOrder ? (
@@ -2404,10 +2523,95 @@ export function Pos() {
               >
                 {checkingOut ? 'Đang thanh toán...' : 'Thanh toán tiền mặt'}
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void handleGenerateBankQr()
+                }}
+                disabled={
+                  generatingBankQr ||
+                  checkingOut ||
+                  !activeOrder.items.length ||
+                  activeOrder.paymentMode === 'debt'
+                }
+                className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm font-semibold text-ink-900 disabled:opacity-60"
+              >
+                {generatingBankQr ? 'Đang tạo QR ngân hàng...' : 'Thanh toán QR ngân hàng'}
+              </button>
             </div>
           ) : null}
         </aside>
       </section>
+
+      {bankQrState ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4">
+          <div className="flex w-full max-w-lg max-h-[90vh] flex-col overflow-hidden rounded-3xl bg-white shadow-lift">
+            <div className="flex items-center justify-between border-b border-ink-900/10 px-6 py-5">
+              <div>
+                <p className="text-xs uppercase tracking-[0.3em] text-ink-600">QR ngân hàng</p>
+                <h3 className="mt-2 text-xl font-semibold text-ink-900">
+                  Thanh toán {formatCurrency(bankQrState.amount)}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBankQrState(null)}
+                className="rounded-full border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900"
+              >
+                Đóng
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              <div className="rounded-2xl border border-ink-900/10 bg-white p-4">
+                <img
+                  src={bankQrState.qrDataURL}
+                  alt="QR thanh toán ngân hàng"
+                  className="mx-auto h-64 w-64 max-w-full object-contain"
+                />
+              </div>
+
+              <div className="mt-4 space-y-2 text-sm text-ink-700">
+                <p>
+                  <span className="font-semibold text-ink-900">Số tài khoản:</span> {bankQrState.accountNo}
+                </p>
+                <p>
+                  <span className="font-semibold text-ink-900">Tên tài khoản:</span> {bankQrState.accountName}
+                </p>
+                <p>
+                  <span className="font-semibold text-ink-900">Mã tham chiếu:</span> {bankQrState.referenceCode}
+                </p>
+                <p>
+                  <span className="font-semibold text-ink-900">Số tiền:</span> {formatCurrency(bankQrState.amount)}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2 border-t border-ink-900/10 px-6 py-4">
+              <button
+                type="button"
+                onClick={() => {
+                  void handleCheckoutByBankQr()
+                }}
+                disabled={checkingOut}
+                className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                {checkingOut ? 'Đang xử lý...' : 'Đã nhận tiền, hoàn tất hóa đơn'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void handleGenerateBankQr()
+                }}
+                disabled={generatingBankQr}
+                className="rounded-full border border-ink-900/10 bg-white px-5 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
+              >
+                {generatingBankQr ? 'Đang tạo lại QR...' : 'Tạo lại mã QR'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {invoicePreviewOpen && invoicePreview ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4">

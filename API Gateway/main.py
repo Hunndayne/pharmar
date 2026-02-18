@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     STORE_SERVICE_URL: str = "http://store-service:8005"
     CATALOG_SERVICE_URL: str = "http://catalog-service:8006"
     CUSTOMER_SERVICE_URL: str = "http://customer-service:8007"
+    PAYMENT_QR_SERVICE_URL: str = "http://payment-qr-service:8008"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -48,6 +49,7 @@ SERVICE_URLS: dict[str, str] = {
     "store": settings.STORE_SERVICE_URL,
     "catalog": settings.CATALOG_SERVICE_URL,
     "customer": settings.CUSTOMER_SERVICE_URL,
+    "payment-qr": settings.PAYMENT_QR_SERVICE_URL,
 }
 
 HEALTH_TARGETS: dict[str, str] = {
@@ -58,6 +60,7 @@ HEALTH_TARGETS: dict[str, str] = {
     "store": settings.STORE_SERVICE_URL,
     "catalog": settings.CATALOG_SERVICE_URL,
     "customer": settings.CUSTOMER_SERVICE_URL,
+    "payment-qr": settings.PAYMENT_QR_SERVICE_URL,
 }
 
 
