@@ -351,11 +351,11 @@ export const inventoryApi = {
     drug_id?: string
     drug_code?: string
     as_of?: string
-  }) =>
+  }, token?: string) =>
     requestInventoryJson<InventoryIssueSuggestion>(
       '/inventory/batches/suggest-issue',
       { method: 'GET' },
-      undefined,
+      token,
       params,
     ),
 

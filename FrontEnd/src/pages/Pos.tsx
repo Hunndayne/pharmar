@@ -48,6 +48,7 @@ type PosOrderItem = {
   unitPrice: number
   quantity: string
   lotPolicyWarning: string | null
+  lotPolicyAcknowledged: boolean
 }
 
 type PosOrder = {
@@ -838,7 +839,7 @@ export function Pos() {
           drug_id: params.drugId,
           drug_code: params.drugCode,
           quantity: params.baseQuantity,
-        })
+        }, token?.access_token)
         const firstSuggestion = suggestion.allocations[0]
         if (!firstSuggestion) return null
         if (firstSuggestion.batch_id === params.batchId) return null
@@ -848,7 +849,7 @@ export function Pos() {
         return null
       }
     },
-    [sellByLot],
+    [sellByLot, token?.access_token],
   )
 
   const applyItemPolicyCheck = useCallback(
@@ -884,6 +885,10 @@ export function Pos() {
                 ? {
                     ...item,
                     lotPolicyWarning: warning,
+                    lotPolicyAcknowledged:
+                      !!warning &&
+                      item.lotPolicyAcknowledged &&
+                      item.lotPolicyWarning === warning,
                   }
                 : item,
             ),
@@ -916,6 +921,7 @@ export function Pos() {
                     ...current,
                     quantity: String(nextQuantity),
                     lotPolicyWarning: item.lotPolicyWarning,
+                    lotPolicyAcknowledged: item.lotPolicyAcknowledged,
                   }
                 : current,
             ),
@@ -978,6 +984,7 @@ export function Pos() {
         unitPrice: defaultUnit.price,
         quantity: String(quantity),
         lotPolicyWarning: warning,
+        lotPolicyAcknowledged: false,
       }
 
       if (sellByLot && warning) {
@@ -1044,7 +1051,7 @@ export function Pos() {
                 drug_id: barcodeLookup.drug.id,
                 drug_code: barcodeLookup.drug.code,
                 quantity: baseQuantity,
-              })
+              }, token?.access_token)
               const suggestedBatch = suggestion.allocations[0]
               if (!suggestedBatch || suggestion.shortage > 0) {
                 throw new ApiError(`Không đủ tồn kho cho ${barcodeLookup.drug.name}.`, 409)
@@ -1281,7 +1288,7 @@ export function Pos() {
       const suggestion = await inventoryApi.suggestIssueByDrug({
         drug_id: selectedDrug.id,
         quantity: baseQuantity,
-      })
+      }, token?.access_token)
       const suggestedBatch = suggestion.allocations[0]
       if (!suggestedBatch || suggestion.shortage > 0) {
         throw new ApiError(`Không đủ tồn kho cho ${selectedDrug.name}.`, 409)
@@ -1295,7 +1302,7 @@ export function Pos() {
     } finally {
       setAddingByDrug(false)
     }
-  }, [activeOrder, selectedDrug, selectedUnit, selectedQuantity, buildItemFromBatch])
+  }, [activeOrder, selectedDrug, selectedUnit, selectedQuantity, buildItemFromBatch, token?.access_token])
 
   const updateActiveOrder = useCallback(
     (updater: (order: PosOrder) => PosOrder) => {
@@ -1562,6 +1569,35 @@ export function Pos() {
     [],
   )
 
+  const findFirstPolicyViolation = useCallback(
+    async (order: PosOrder) => {
+      for (const item of order.items) {
+        const quantity = parsePositiveInt(item.quantity, 0)
+        if (quantity <= 0) continue
+
+        const warning = await evaluateLotPolicy({
+          drugId: item.drugId,
+          drugCode: item.drugCode,
+          batchId: item.batchId,
+          batchCode: item.batchCode,
+          lotNumber: item.lotNumber,
+          baseQuantity: quantity * Math.max(item.conversion, 1),
+        })
+
+        if (!warning) continue
+        if (item.lotPolicyAcknowledged && item.lotPolicyWarning === warning) {
+          continue
+        }
+
+        if (warning) {
+          return { item, warning }
+        }
+      }
+      return null
+    },
+    [evaluateLotPolicy],
+  )
+
   const handleCheckout = useCallback(async (skipPolicyCheck = false) => {
     if (!activeOrder || !token?.access_token) return
 
@@ -1583,13 +1619,35 @@ export function Pos() {
       }
 
       if (sellByLot && !skipPolicyCheck) {
-        const violating = lines.find((line) => !!line.item.lotPolicyWarning)
-        if (violating?.item.lotPolicyWarning) {
+        const violatingFromCache = lines.find((line) => !!line.item.lotPolicyWarning)
+        if (
+          violatingFromCache?.item.lotPolicyWarning &&
+          !violatingFromCache.item.lotPolicyAcknowledged
+        ) {
           setLotPolicyConfirm({
             mode: 'checkout',
             orderId: activeOrder.id,
-            item: violating.item,
-            message: violating.item.lotPolicyWarning,
+            item: violatingFromCache.item,
+            message: violatingFromCache.item.lotPolicyWarning,
+          })
+          return
+        }
+
+        const freshViolation = await findFirstPolicyViolation(activeOrder)
+        if (freshViolation) {
+          updateOrder(activeOrder.id, (order) => ({
+            ...order,
+            items: order.items.map((row) =>
+              row.id === freshViolation.item.id
+                ? { ...row, lotPolicyWarning: freshViolation.warning }
+                : row,
+            ),
+          }))
+          setLotPolicyConfirm({
+            mode: 'checkout',
+            orderId: activeOrder.id,
+            item: freshViolation.item,
+            message: freshViolation.warning,
           })
           return
         }
@@ -1730,7 +1788,7 @@ export function Pos() {
     } finally {
       setCheckingOut(false)
     }
-  }, [activeOrder, token?.access_token, user, storeInfo, returnPolicyText, buildCheckoutLines, grandTotal, changeAmount, updateOrder, printInvoicePreview, sellByLot])
+  }, [activeOrder, token?.access_token, user, storeInfo, returnPolicyText, buildCheckoutLines, grandTotal, changeAmount, updateOrder, printInvoicePreview, sellByLot, findFirstPolicyViolation])
 
   const policyDescription = sellByLot
     ? (fefoEnabled
@@ -2431,12 +2489,25 @@ export function Pos() {
                   if (pending.mode === 'add') {
                     addItemToOrder(pending.orderId, {
                       ...pending.item,
-                      lotPolicyWarning: null,
+                      lotPolicyWarning: pending.message,
+                      lotPolicyAcknowledged: true,
                     })
                     setActionMessage(`Đã giữ lô ${pending.item.batchCode} trong đơn hàng.`)
                     return
                   }
 
+                  updateOrder(pending.orderId, (order) => ({
+                    ...order,
+                    items: order.items.map((item) =>
+                      item.id === pending.item.id
+                        ? {
+                            ...item,
+                            lotPolicyWarning: pending.message,
+                            lotPolicyAcknowledged: true,
+                          }
+                        : item,
+                    ),
+                  }))
                   void handleCheckout(true)
                 }}
                 className="rounded-full bg-ink-900 px-4 py-2 text-sm font-semibold text-white"
