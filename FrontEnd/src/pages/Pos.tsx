@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   inventoryApi,
+  type InventoryBatch,
   type InventoryBatchDetail,
   type InventoryMetaDrug,
 } from '../api/inventoryService'
@@ -378,6 +379,71 @@ const toIsoDate = (value: string | null | undefined) => {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toISOString().slice(0, 10)
+}
+
+const DAY_IN_MS = 24 * 60 * 60 * 1000
+
+const parseDateOnly = (value: string | null | undefined) => {
+  if (!value) return null
+  const normalized = value.length === 10 ? `${value}T00:00:00` : value
+  const parsed = new Date(normalized)
+  if (Number.isNaN(parsed.getTime())) return null
+  return parsed
+}
+
+const compareDatesAsc = (
+  left: string | null | undefined,
+  right: string | null | undefined,
+  fallback = 0,
+) => {
+  const leftDate = parseDateOnly(left)
+  const rightDate = parseDateOnly(right)
+  if (!leftDate || !rightDate) return fallback
+  return leftDate.getTime() - rightDate.getTime()
+}
+
+const getIssueStrategy = (
+  batch: Pick<InventoryBatch, 'exp_date'>,
+  today: Date,
+  fefoEnabled: boolean,
+  fefoThresholdDays: number,
+) => {
+  if (!fefoEnabled) return 'fifo' as const
+  const expDate = parseDateOnly(batch.exp_date)
+  if (!expDate) return 'fifo' as const
+  const daysToExpiry = Math.floor((expDate.getTime() - today.getTime()) / DAY_IN_MS)
+  return daysToExpiry < fefoThresholdDays ? ('fefo' as const) : ('fifo' as const)
+}
+
+const compareByLotIssuePolicy = (
+  left: InventoryBatch,
+  right: InventoryBatch,
+  today: Date,
+  fefoEnabled: boolean,
+  fefoThresholdDays: number,
+) => {
+  const leftStrategy = getIssueStrategy(left, today, fefoEnabled, fefoThresholdDays)
+  const rightStrategy = getIssueStrategy(right, today, fefoEnabled, fefoThresholdDays)
+  if (leftStrategy !== rightStrategy) return leftStrategy === 'fefo' ? -1 : 1
+
+  if (leftStrategy === 'fefo') {
+    const byExpDate = compareDatesAsc(left.exp_date, right.exp_date)
+    if (byExpDate !== 0) return byExpDate
+
+    const byReceived = compareDatesAsc(left.received_date, right.received_date)
+    if (byReceived !== 0) return byReceived
+  } else {
+    const byReceived = compareDatesAsc(left.received_date, right.received_date)
+    if (byReceived !== 0) return byReceived
+
+    const byExpDate = compareDatesAsc(left.exp_date, right.exp_date)
+    if (byExpDate !== 0) return byExpDate
+  }
+
+  const byCreated = compareDatesAsc(left.created_at, right.created_at)
+  if (byCreated !== 0) return byCreated
+
+  return left.batch_code.localeCompare(right.batch_code, 'vi-VN')
 }
 
 const normalizeSettingNumber = (value: unknown, fallback: number) => {
@@ -834,22 +900,48 @@ export function Pos() {
     }) => {
       if (!sellByLot) return null
       if (params.baseQuantity <= 0) return null
-      try {
-        const suggestion = await inventoryApi.suggestIssueByDrug({
-          drug_id: params.drugId,
-          drug_code: params.drugCode,
-          quantity: params.baseQuantity,
-        }, token?.access_token)
-        const firstSuggestion = suggestion.allocations[0]
-        if (!firstSuggestion) return null
-        if (firstSuggestion.batch_id === params.batchId) return null
 
-        return `Lô ${params.batchCode || params.lotNumber} chưa theo ${firstSuggestion.strategy.toUpperCase()}. Gợi ý: ${firstSuggestion.batch_code}.`
+      try {
+        const normalizedDrugCode = normalizeBarcodeText(params.drugCode)
+        const relatedBatches = await inventoryApi.listBatches({
+          search: params.drugCode,
+          status: 'active',
+        })
+
+        const activeCandidates = relatedBatches.filter((batch) => {
+          if (batch.qty_remaining <= 0) return false
+          if (batch.id === params.batchId) return true
+          if (!normalizedDrugCode) return false
+          return normalizeBarcodeText(batch.drug_code) === normalizedDrugCode
+        })
+
+        if (!activeCandidates.length) return null
+
+        const today = new Date()
+        today.setHours(0, 0, 0, 0)
+
+        const sortedCandidates = activeCandidates
+          .slice()
+          .sort((left, right) =>
+            compareByLotIssuePolicy(left, right, today, fefoEnabled, fefoThresholdDays),
+          )
+
+        const recommended = sortedCandidates[0]
+        if (!recommended || recommended.id === params.batchId) return null
+
+        const recommendedStrategy = getIssueStrategy(
+          recommended,
+          today,
+          fefoEnabled,
+          fefoThresholdDays,
+        )
+
+        return `L\u00f4 ${params.batchCode || params.lotNumber} ch\u01b0a theo ${recommendedStrategy.toUpperCase()}. G\u1ee3i \u00fd: ${recommended.batch_code}.`
       } catch {
         return null
       }
     },
-    [sellByLot, token?.access_token],
+    [sellByLot, fefoEnabled, fefoThresholdDays],
   )
 
   const applyItemPolicyCheck = useCallback(

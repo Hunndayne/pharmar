@@ -45,6 +45,9 @@ DEFAULT_INVENTORY_SETTINGS: dict[str, Any] = {
     "inventory.fefo_threshold_days": settings.FEFO_THRESHOLD_DAYS,
 }
 
+LEGACY_DEMO_DRUG_IDS = {"d1", "d2", "d3", "d4", "d5"}
+LEGACY_DEMO_SUPPLIER_IDS = {"s1", "s2", "s3", "s4"}
+
 
 def _to_non_negative_int(value: Any, default: int) -> int:
     try:
@@ -340,11 +343,11 @@ def _to_float(value: Any, default: float = 0.0) -> float:
 
 async def fetch_catalog_json(
     path: str,
-    token: str,
+    token: str | None,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     url = f"{settings.CATALOG_SERVICE_URL.rstrip('/')}{path}"
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     timeout = httpx.Timeout(settings.CATALOG_SYNC_TIMEOUT_SECONDS)
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -355,6 +358,8 @@ async def fetch_catalog_json(
     if response.status_code == 404:
         return None
     if response.status_code in {401, 403}:
+        if not token:
+            return None
         raise HTTPException(status_code=response.status_code, detail="Unauthorized to sync catalog metadata")
     if response.status_code >= 400:
         return None
@@ -362,7 +367,11 @@ async def fetch_catalog_json(
     return payload if isinstance(payload, dict) else None
 
 
-def upsert_drug_from_catalog_product(product: dict[str, Any]) -> dict[str, Any] | None:
+def upsert_drug_from_catalog_product(
+    product: dict[str, Any],
+    target: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    target_map = target if target is not None else runtime_state.drugs
     product_id = str(product.get("id") or "").strip()
     product_code = normalize_code(str(product.get("code") or ""))
     product_name = str(product.get("name") or "").strip()
@@ -404,13 +413,16 @@ def upsert_drug_from_catalog_product(product: dict[str, Any]) -> dict[str, Any] 
     group = product.get("group") if isinstance(product.get("group"), dict) else None
     group_name = str(group.get("name") or "Khac") if isinstance(group, dict) else "Khac"
 
-    existing = runtime_state.drugs.get(product_id)
+    existing = target_map.get(product_id) or runtime_state.drugs.get(product_id)
     existing_aliases = list(existing.get("sku_aliases", [])) if isinstance(existing, dict) else []
     aliases = [product_code]
+    normalized_aliases = {normalize_key(product_code)}
     for alias in existing_aliases:
         alias_text = str(alias).strip()
-        if alias_text and normalize_key(alias_text) not in {normalize_key(item) for item in aliases}:
+        normalized_alias = normalize_key(alias_text)
+        if alias_text and normalized_alias not in normalized_aliases:
             aliases.append(alias_text)
+            normalized_aliases.add(normalized_alias)
 
     drug = {
         "id": product_id,
@@ -423,7 +435,7 @@ def upsert_drug_from_catalog_product(product: dict[str, Any]) -> dict[str, Any] 
         "unit_prices": unit_prices,
         "sku_aliases": aliases,
     }
-    runtime_state.drugs[product_id] = drug
+    target_map[product_id] = drug
     return drug
 
 
@@ -466,10 +478,12 @@ async def sync_drug_from_catalog(
     return upsert_drug_from_catalog_product(product)
 
 
-async def sync_all_drugs_from_catalog(token: str) -> int:
+async def sync_all_drugs_from_catalog(token: str | None) -> int:
     page = 1
     pages = 1
     upserted = 0
+    synced_drugs: dict[str, dict[str, Any]] = {}
+    has_page = False
 
     while page <= pages:
         listing = await fetch_catalog_json(
@@ -482,6 +496,7 @@ async def sync_all_drugs_from_catalog(token: str) -> int:
         )
         if listing is None:
             break
+        has_page = True
 
         items = listing.get("items", [])
         if not isinstance(items, list):
@@ -496,11 +511,34 @@ async def sync_all_drugs_from_catalog(token: str) -> int:
             detail = await fetch_catalog_json(f"/api/v1/catalog/products/{product_id}", token)
             if detail is None:
                 continue
-            if upsert_drug_from_catalog_product(detail) is not None:
+            if upsert_drug_from_catalog_product(detail, target=synced_drugs) is not None:
                 upserted += 1
 
         pages = _to_positive_int(listing.get("pages"), default=1)
         page += 1
+
+    if has_page:
+        preserve_drug_ids = {
+            str(batch.get("drug_id"))
+            for batch in runtime_state.batches.values()
+            if isinstance(batch, dict) and batch.get("drug_id")
+        }
+        preserve_drug_ids.update(
+            str(line.get("drug_id"))
+            for receipt in runtime_state.receipts.values()
+            if isinstance(receipt, dict)
+            for line in receipt.get("lines", [])
+            if isinstance(line, dict) and line.get("drug_id")
+        )
+
+        for drug_id in preserve_drug_ids:
+            if drug_id in synced_drugs:
+                continue
+            legacy = runtime_state.drugs.get(drug_id)
+            if legacy:
+                synced_drugs[drug_id] = legacy
+
+        runtime_state.drugs = synced_drugs
 
     runtime_state.catalog_drugs_last_sync_at = utc_now()
     await save_runtime_state_safe()
@@ -541,7 +579,7 @@ async def sync_supplier_from_catalog(token: str, supplier_id: str) -> dict[str, 
     return upsert_supplier_from_catalog_item(payload)
 
 
-async def sync_all_suppliers_from_catalog(token: str) -> int:
+async def sync_all_suppliers_from_catalog(token: str | None) -> int:
     page = 1
     pages = 1
     upserted = 0
@@ -600,29 +638,27 @@ async def sync_all_suppliers_from_catalog(token: str) -> int:
 
 
 async def maybe_sync_catalog_suppliers(token: str | None, force: bool = False) -> int:
-    if not token:
-        return 0
     last_sync_at = getattr(
         runtime_state,
         "catalog_suppliers_last_sync_at",
         datetime.fromtimestamp(0, tz=timezone.utc),
     )
     elapsed_seconds = (utc_now() - last_sync_at).total_seconds()
-    if not force and elapsed_seconds < settings.CATALOG_SYNC_TTL_SECONDS:
+    has_legacy_seed = any(supplier_id in runtime_state.suppliers for supplier_id in LEGACY_DEMO_SUPPLIER_IDS)
+    if not force and elapsed_seconds < settings.CATALOG_SYNC_TTL_SECONDS and not has_legacy_seed:
         return 0
     return await sync_all_suppliers_from_catalog(token)
 
 
 async def maybe_sync_catalog_drugs(token: str | None, force: bool = False) -> int:
-    if not token:
-        return 0
     last_sync_at = getattr(
         runtime_state,
         "catalog_drugs_last_sync_at",
         datetime.fromtimestamp(0, tz=timezone.utc),
     )
     elapsed_seconds = (utc_now() - last_sync_at).total_seconds()
-    if not force and elapsed_seconds < settings.CATALOG_SYNC_TTL_SECONDS:
+    has_legacy_seed = any(drug_id in runtime_state.drugs for drug_id in LEGACY_DEMO_DRUG_IDS)
+    if not force and elapsed_seconds < settings.CATALOG_SYNC_TTL_SECONDS and not has_legacy_seed:
         return 0
     return await sync_all_drugs_from_catalog(token)
 
@@ -1384,26 +1420,45 @@ def seed_demo_data() -> None:
     runtime_state.catalog_drugs_last_sync_at = datetime.fromtimestamp(0, tz=timezone.utc)
     runtime_state.catalog_suppliers_last_sync_at = datetime.fromtimestamp(0, tz=timezone.utc)
 
-    suppliers = [
-        {"id": "s1", "name": "Phuong Dong", "contact_name": "Nguyen Minh Ha", "phone": "028 3838 8899", "address": "Q1, HCMC"},
-        {"id": "s2", "name": "Phu Hung", "contact_name": "Tran Quoc Bao", "phone": "028 3799 1166", "address": "Binh Thanh, HCMC"},
-        {"id": "s3", "name": "Mediphar", "contact_name": "Le My Anh", "phone": "028 3877 5555", "address": "Thu Duc, HCMC"},
-        {"id": "s4", "name": "An Khang", "contact_name": "Pham Thanh Tung", "phone": "028 3666 3322", "address": "Tan Binh, HCMC"},
-    ]
-    for supplier in suppliers:
-        runtime_state.suppliers[supplier["id"]] = supplier
 
-    drugs = [
-        {"id": "d1", "code": "T0001", "name": "Panadol Extra", "group": "Giam dau", "base_unit": "Vien", "reorder_level": 200, "units": [{"id": "d1-u3", "name": "Hop", "conversion": 100, "barcode": "8936012345003"}, {"id": "d1-u2", "name": "Vi", "conversion": 10, "barcode": "8936012345002"}, {"id": "d1-u1", "name": "Vien", "conversion": 1, "barcode": "8936012345001"}], "unit_prices": [{"unit_id": "d1-u3", "price": 320000}, {"unit_id": "d1-u2", "price": 28000}, {"unit_id": "d1-u1", "price": 3000}], "sku_aliases": ["PANADOL"]},
-        {"id": "d2", "code": "T0034", "name": "Vitamin C 1000", "group": "Vitamin", "base_unit": "Vien", "reorder_level": 120, "units": [{"id": "d2-u2", "name": "Chai", "conversion": 30, "barcode": "8936017777002"}, {"id": "d2-u1", "name": "Vien", "conversion": 1, "barcode": "8936017777001"}], "unit_prices": [{"unit_id": "d2-u2", "price": 185000}, {"unit_id": "d2-u1", "price": 6000}], "sku_aliases": ["VITC1000"]},
-        {"id": "d3", "code": "T0088", "name": "Amoxicillin 500mg", "group": "Khang sinh", "base_unit": "Vien", "reorder_level": 150, "units": [{"id": "d3-u2", "name": "Vi", "conversion": 10, "barcode": "8936011111002"}, {"id": "d3-u1", "name": "Vien", "conversion": 1, "barcode": "8936011111001"}], "unit_prices": [{"unit_id": "d3-u2", "price": 42000}, {"unit_id": "d3-u1", "price": 4200}], "sku_aliases": ["AMOX500"]},
-        {"id": "d4", "code": "T0104", "name": "Oresol", "group": "Tieu hoa", "base_unit": "Goi", "reorder_level": 80, "units": [{"id": "d4-u1", "name": "Goi", "conversion": 1, "barcode": "8936013333001"}], "unit_prices": [{"unit_id": "d4-u1", "price": 6000}], "sku_aliases": ["ORESOL"]},
-        {"id": "d5", "code": "T0145", "name": "Nuoc muoi sinh ly", "group": "Cham soc", "base_unit": "Chai", "reorder_level": 60, "units": [{"id": "d5-u1", "name": "Chai", "conversion": 1, "barcode": "8936014444001"}], "unit_prices": [{"unit_id": "d5-u1", "price": 12000}], "sku_aliases": ["SALINE"]},
-    ]
-    for drug in drugs:
-        runtime_state.drugs[drug["id"]] = drug
-    # Không seed phiếu nhập/lô tồn kho mẫu.
-    # Dữ liệu phát sinh từ thao tác nghiệp vụ thực tế qua API.
+def cleanup_legacy_seed_data() -> bool:
+    changed = False
+
+    referenced_drug_ids = {
+        str(batch.get("drug_id"))
+        for batch in runtime_state.batches.values()
+        if isinstance(batch, dict) and batch.get("drug_id")
+    }
+    referenced_drug_ids.update(
+        str(line.get("drug_id"))
+        for receipt in runtime_state.receipts.values()
+        if isinstance(receipt, dict)
+        for line in receipt.get("lines", [])
+        if isinstance(line, dict) and line.get("drug_id")
+    )
+
+    for drug_id in list(runtime_state.drugs.keys()):
+        if drug_id in LEGACY_DEMO_DRUG_IDS and drug_id not in referenced_drug_ids:
+            runtime_state.drugs.pop(drug_id, None)
+            changed = True
+
+    referenced_supplier_ids = {
+        str(batch.get("supplier_id"))
+        for batch in runtime_state.batches.values()
+        if isinstance(batch, dict) and batch.get("supplier_id")
+    }
+    referenced_supplier_ids.update(
+        str(receipt.get("supplier_id"))
+        for receipt in runtime_state.receipts.values()
+        if isinstance(receipt, dict) and receipt.get("supplier_id")
+    )
+
+    for supplier_id in list(runtime_state.suppliers.keys()):
+        if supplier_id in LEGACY_DEMO_SUPPLIER_IDS and supplier_id not in referenced_supplier_ids:
+            runtime_state.suppliers.pop(supplier_id, None)
+            changed = True
+
+    return changed
 
 
 async def consume_sale_events() -> None:
@@ -1437,7 +1492,10 @@ async def startup_event() -> None:
         "fetched_at": datetime.fromtimestamp(0, tz=timezone.utc),
     }
     loaded = await load_runtime_state_safe()
-    if not loaded:
+    if loaded:
+        if cleanup_legacy_seed_data():
+            await save_runtime_state_safe()
+    else:
         seed_demo_data()
         await save_runtime_state_safe()
     await fetch_inventory_settings(force=True)
@@ -1458,13 +1516,15 @@ async def get_events() -> list[dict[str, Any]]:
 
 
 @router.get("/meta/drugs")
-async def get_drugs(token: str | None = Depends(optional_oauth2_scheme)) -> list[dict[str, Any]]:
+async def get_drugs(token: str = Depends(oauth2_scheme)) -> list[dict[str, Any]]:
+    get_current_subject(token)
     await maybe_sync_catalog_drugs(token)
     return list(runtime_state.drugs.values())
 
 
 @router.get("/meta/suppliers")
-async def get_suppliers(token: str | None = Depends(optional_oauth2_scheme)) -> list[dict[str, Any]]:
+async def get_suppliers(token: str = Depends(oauth2_scheme)) -> list[dict[str, Any]]:
+    get_current_subject(token)
     await maybe_sync_catalog_suppliers(token, force=True)
     return list(runtime_state.suppliers.values())
 
