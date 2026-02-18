@@ -123,6 +123,15 @@ export type SaleInvoiceListParams = {
   size?: number
 }
 
+export type SaleStatsTodayResponse = {
+  date: string
+  total_invoices: number
+  total_sales: string | number
+  total_returns: string | number
+  total_cancelled: string | number
+  net_sales: string | number
+}
+
 export type SaleInvoiceCancelResponse = {
   message: string
   invoice: {
@@ -332,5 +341,12 @@ export const saleApi = {
       {
         method: 'POST',
       },
+    ),
+
+  getStatsToday: (token: string) =>
+    requestSaleJson<SaleStatsTodayResponse>(
+      '/sale/stats/today',
+      token,
+      { method: 'GET' },
     ),
 }
