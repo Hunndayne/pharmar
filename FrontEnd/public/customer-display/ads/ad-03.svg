@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <defs>
+    <linearGradient id="bg3" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#7c2d12" />
+      <stop offset="100%" stop-color="#f97316" />
+    </linearGradient>
+  </defs>
+  <rect width="1920" height="1080" fill="url(#bg3)" />
+  <polygon points="0,0 900,0 300,1080 0,1080" fill="rgba(255,255,255,0.08)" />
+  <text x="120" y="360" fill="#fff7ed" font-size="76" font-weight="700" font-family="Segoe UI, Arial, sans-serif">
+    Tích điểm thành viên - Nhận ưu đãi hấp dẫn
+  </text>
+  <text x="120" y="465" fill="#ffedd5" font-size="42" font-family="Segoe UI, Arial, sans-serif">
+    Mua hàng tích điểm, nhận nhiều ưu đãi hấp dẫn tại Nhà thuốc Thanh Huy
+  </text>
+  <text x="120" y="700" fill="#ffffff" font-size="56" font-weight="700" font-family="Segoe UI, Arial, sans-serif">
+    Cảm ơn quý khách!
+  </text>
+</svg>

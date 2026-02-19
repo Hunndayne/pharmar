@@ -18,6 +18,7 @@ type ServiceFeeMode = 'split' | 'separate'
 type CustomerMode = 'walk_in' | 'member'
 type PaymentMode = 'cash' | 'debt'
 type BankQrAddInfoMode = 'order_code' | 'custom'
+type AdsTransition = 'none' | 'fade' | 'slide'
 
 type PosDrugUnit = {
   id: string
@@ -147,6 +148,10 @@ type CustomerDisplayPayload = {
   settings: {
     showPrice: boolean
     showTotal: boolean
+    ads: string[]
+    adsIntervalSeconds: number
+    adsTransition: AdsTransition
+    adsTransitionMs: number
   }
   order: {
     id: string
@@ -534,6 +539,37 @@ const normalizeSettingString = (value: unknown, fallback = '') => {
   return fallback
 }
 
+const normalizeSettingStringArray = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item ?? '').trim()).filter(Boolean)
+  }
+  if (typeof value === 'string') {
+    const raw = value.trim()
+    if (!raw) return []
+    if (raw.startsWith('[') && raw.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(raw) as unknown
+        if (Array.isArray(parsed)) {
+          return parsed.map((item) => String(item ?? '').trim()).filter(Boolean)
+        }
+      } catch {
+        // fallback to line based parsing
+      }
+    }
+    return raw
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+  }
+  return []
+}
+
+const normalizeAdsTransition = (value: unknown): AdsTransition => {
+  const lowered = normalizeSettingString(value, 'fade').toLowerCase()
+  if (lowered === 'none' || lowered === 'slide') return lowered
+  return 'fade'
+}
+
 const normalizeReturnWindowUnit = (value: unknown): 'day' | 'hour' => {
   const lowered = String(value ?? '').trim().toLowerCase()
   return ['hour', 'hours', 'gio', 'h'].includes(lowered) ? 'hour' : 'day'
@@ -587,6 +623,10 @@ export function Pos() {
   const [bankQrAddInfoCustom, setBankQrAddInfoCustom] = useState('')
   const [customerDisplayShowPrice, setCustomerDisplayShowPrice] = useState(true)
   const [customerDisplayShowTotal, setCustomerDisplayShowTotal] = useState(true)
+  const [customerDisplayAds, setCustomerDisplayAds] = useState<string[]>([])
+  const [customerDisplayAdsIntervalSeconds, setCustomerDisplayAdsIntervalSeconds] = useState(8)
+  const [customerDisplayAdsTransition, setCustomerDisplayAdsTransition] = useState<AdsTransition>('fade')
+  const [customerDisplayAdsTransitionMs, setCustomerDisplayAdsTransitionMs] = useState(650)
   const [bankQrState, setBankQrState] = useState<BankQrState | null>(null)
   const [generatingBankQr, setGeneratingBankQr] = useState(false)
 
@@ -749,6 +789,22 @@ export function Pos() {
       )
       setCustomerDisplayShowTotal(
         normalizeSettingBoolean(saleSettings['sale.customer_display_show_total'], true),
+      )
+      setCustomerDisplayAds(normalizeSettingStringArray(saleSettings['sale.customer_display_ads']))
+      setCustomerDisplayAdsIntervalSeconds(
+        Math.max(
+          1,
+          normalizeSettingNumber(saleSettings['sale.customer_display_ads_interval_seconds'], 8),
+        ),
+      )
+      setCustomerDisplayAdsTransition(
+        normalizeAdsTransition(saleSettings['sale.customer_display_ads_transition']),
+      )
+      setCustomerDisplayAdsTransitionMs(
+        Math.max(
+          0,
+          normalizeSettingNumber(saleSettings['sale.customer_display_ads_transition_ms'], 650),
+        ),
       )
       if (store) {
         const bankOption = findBankOption(normalizeSettingString(store.bank_name, ''))
@@ -1768,6 +1824,10 @@ export function Pos() {
       settings: {
         showPrice: customerDisplayShowPrice,
         showTotal: customerDisplayShowTotal,
+        ads: customerDisplayAds,
+        adsIntervalSeconds: customerDisplayAdsIntervalSeconds,
+        adsTransition: customerDisplayAdsTransition,
+        adsTransitionMs: customerDisplayAdsTransitionMs,
       },
       order: {
         id: activeOrder?.id ?? '',
@@ -1793,6 +1853,10 @@ export function Pos() {
     activeOrder?.id,
     activeOrderLineDetails,
     bankQrState,
+    customerDisplayAds,
+    customerDisplayAdsIntervalSeconds,
+    customerDisplayAdsTransition,
+    customerDisplayAdsTransitionMs,
     customerDisplayShowPrice,
     customerDisplayShowTotal,
     grandTotal,

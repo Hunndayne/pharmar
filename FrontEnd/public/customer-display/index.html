@@ -53,6 +53,7 @@
       width: 100%;
       height: 100%;
       background: #f8fafc;
+      position: relative;
       display: grid;
       place-items: center;
       overflow: hidden;
@@ -62,6 +63,33 @@
       height: 100%;
       object-fit: cover;
       display: block;
+    }
+    .ads-image {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      will-change: transform, opacity;
+    }
+    .ads-image.transition-fade {
+      animation: ads-fade-in var(--ads-transition-ms, 650ms) ease-out;
+    }
+    .ads-image.transition-slide {
+      animation: ads-slide-in var(--ads-transition-ms, 650ms) ease-out;
+    }
+    @keyframes ads-fade-in {
+      from { opacity: 0.25; }
+      to { opacity: 1; }
+    }
+    @keyframes ads-slide-in {
+      from {
+        opacity: 0.6;
+        transform: translateX(2.2%);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(0);
+      }
     }
     .ads-empty {
       color: #64748b;
@@ -264,6 +292,14 @@
           : '';
       const buildApiUrl = (path) => `${API_BASE}${path}`;
       let lastRemoteUpdatedAt = '';
+      const DEFAULT_ADS = [
+        '/customer-display/ads/ad-01.svg',
+        '/customer-display/ads/ad-02.svg',
+        '/customer-display/ads/ad-03.svg',
+      ];
+      const DEFAULT_ADS_INTERVAL_SECONDS = 8;
+      const DEFAULT_ADS_TRANSITION = 'fade';
+      const DEFAULT_ADS_TRANSITION_MS = 650;
 
       const els = {
         clock: document.getElementById('clock'),
@@ -344,30 +380,122 @@
         }
       };
 
-      const adList = queryAds().length ? queryAds() : localAds();
+      const parseAdsFromSettings = (value) => {
+        if (Array.isArray(value)) {
+          return value.map((item) => String(item || '').trim()).filter(Boolean);
+        }
+        if (typeof value === 'string') {
+          const raw = value.trim();
+          if (!raw) return [];
+          if (raw.startsWith('[') && raw.endsWith(']')) {
+            try {
+              const parsed = JSON.parse(raw);
+              if (Array.isArray(parsed)) {
+                return parsed.map((item) => String(item || '').trim()).filter(Boolean);
+              }
+            } catch (_) {
+              // fallback to newline split
+            }
+          }
+          return raw
+            .split(/\r?\n/)
+            .map((item) => item.trim())
+            .filter(Boolean);
+        }
+        return [];
+      };
+
+      const normalizePositiveInt = (value, fallback) => {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+        return Math.max(1, Math.trunc(parsed));
+      };
+
+      const normalizeNonNegativeInt = (value, fallback) => {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+        return Math.max(0, Math.trunc(parsed));
+      };
+
+      const normalizeAdsTransition = (value) => {
+        const normalized = String(value || '').trim().toLowerCase();
+        if (normalized === 'none' || normalized === 'slide') return normalized;
+        return DEFAULT_ADS_TRANSITION;
+      };
+
+      const listEquals = (left, right) =>
+        left.length === right.length && left.every((item, index) => item === right[index]);
+
+      const queryAdsList = queryAds();
+      const localAdsList = localAds();
+      let fallbackAds = queryAdsList.length
+        ? queryAdsList
+        : localAdsList.length
+          ? localAdsList
+          : DEFAULT_ADS;
+
+      let adsList = fallbackAds.slice();
       let adIndex = 0;
+      let adIntervalMs = DEFAULT_ADS_INTERVAL_SECONDS * 1000;
+      let adTransition = DEFAULT_ADS_TRANSITION;
+      let adTransitionMs = DEFAULT_ADS_TRANSITION_MS;
+      let adsTimer = null;
 
       const renderAds = () => {
-        if (!adList.length) {
+        if (!adsList.length) {
           els.adsMedia.innerHTML = '<div class="ads-empty">Chưa có ảnh quảng cáo</div>';
           return;
         }
-        const src = adList[adIndex % adList.length];
+        const src = adsList[adIndex % adsList.length];
         els.adsMedia.innerHTML = '';
         const img = document.createElement('img');
+        img.className = 'ads-image';
+        if (adTransition !== 'none') {
+          img.classList.add(`transition-${adTransition}`);
+          img.style.setProperty('--ads-transition-ms', `${adTransitionMs}ms`);
+        }
         img.src = src;
         img.alt = 'Quảng cáo';
         img.loading = 'lazy';
         els.adsMedia.appendChild(img);
       };
 
-      renderAds();
-      if (adList.length > 1) {
-        setInterval(() => {
-          adIndex = (adIndex + 1) % adList.length;
+      const restartAdsTimer = () => {
+        if (adsTimer !== null) {
+          window.clearInterval(adsTimer);
+          adsTimer = null;
+        }
+        if (adsList.length <= 1) return;
+        adsTimer = window.setInterval(() => {
+          adIndex = (adIndex + 1) % adsList.length;
           renderAds();
-        }, 8000);
-      }
+        }, adIntervalMs);
+      };
+
+      const updateAdsConfig = (settings) => {
+        const incomingAds = parseAdsFromSettings(settings && settings.ads);
+        const nextAds = incomingAds.length ? incomingAds : fallbackAds;
+        const nextIntervalMs =
+          normalizePositiveInt(settings && settings.adsIntervalSeconds, DEFAULT_ADS_INTERVAL_SECONDS) * 1000;
+        const nextTransition = normalizeAdsTransition(settings && settings.adsTransition);
+        const nextTransitionMs = normalizeNonNegativeInt(settings && settings.adsTransitionMs, DEFAULT_ADS_TRANSITION_MS);
+
+        const listChanged = !listEquals(nextAds, adsList);
+        const intervalChanged = nextIntervalMs !== adIntervalMs;
+        const transitionChanged = nextTransition !== adTransition || nextTransitionMs !== adTransitionMs;
+
+        if (!listChanged && !intervalChanged && !transitionChanged) return;
+
+        adsList = nextAds.slice();
+        adIntervalMs = nextIntervalMs;
+        adTransition = nextTransition;
+        adTransitionMs = nextTransitionMs;
+        if (listChanged) adIndex = 0;
+        renderAds();
+        restartAdsTimer();
+      };
+
+      updateAdsConfig(null);
 
       const render = (state) => {
         const safe = state || {};
@@ -378,6 +506,7 @@
 
         const showPrice = settings.showPrice !== false;
         const showTotal = settings.showTotal !== false;
+        updateAdsConfig(settings);
 
         const itemCount = Number(order.itemCount || lines.length || 0);
         const hasQr = Boolean(paymentQr && paymentQr.active && paymentQr.qrDataURL);
@@ -459,6 +588,17 @@
       void pullRemoteState();
 
       window.addEventListener('storage', (event) => {
+        if (event.key === ADS_KEY) {
+          const latestLocalAds = localAds();
+          fallbackAds = queryAdsList.length
+            ? queryAdsList
+            : latestLocalAds.length
+              ? latestLocalAds
+              : DEFAULT_ADS;
+          const latestState = readState();
+          updateAdsConfig(latestState && latestState.settings ? latestState.settings : null);
+          return;
+        }
         if (event.key !== STORAGE_KEY) return;
         onStateUpdate(readState());
       });

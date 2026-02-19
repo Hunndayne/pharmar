@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <defs>
+    <linearGradient id="bg1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#1d4ed8" />
+    </linearGradient>
+  </defs>
+  <rect width="1920" height="1080" fill="url(#bg1)" />
+  <circle cx="1640" cy="180" r="220" fill="rgba(255,255,255,0.08)" />
+  <circle cx="260" cy="860" r="290" fill="rgba(255,255,255,0.08)" />
+  <text x="120" y="360" fill="#ffffff" font-size="84" font-weight="700" font-family="Segoe UI, Arial, sans-serif">
+    Nhà thuốc Thanh Huy
+  </text>
+  <text x="120" y="460" fill="#e2e8f0" font-size="44" font-family="Segoe UI, Arial, sans-serif">
+    Chính hãng, giá tốt, tận tâm phục vụ
+  </text>
+  <text x="120" y="640" fill="#f8fafc" font-size="56" font-weight="700" font-family="Segoe UI, Arial, sans-serif">
+
+  </text>
+</svg>

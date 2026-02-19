@@ -26,6 +26,7 @@ type StoreInfoForm = {
 }
 
 type BankQrAddInfoMode = 'order_code' | 'custom'
+type AdsTransition = 'none' | 'fade' | 'slide'
 
 type StoreSettingsForm = {
   autoPrint: boolean
@@ -35,6 +36,10 @@ type StoreSettingsForm = {
   bankQrAddInfoCustom: string
   customerDisplayShowPrice: boolean
   customerDisplayShowTotal: boolean
+  customerDisplayAds: string
+  customerDisplayAdsIntervalSeconds: string
+  customerDisplayAdsTransition: AdsTransition
+  customerDisplayAdsTransitionMs: string
   returnWindowValue: string
   returnWindowUnit: 'day' | 'hour'
   lowStockThreshold: string
@@ -67,6 +72,10 @@ const defaultStoreSettings: StoreSettingsForm = {
   bankQrAddInfoCustom: '',
   customerDisplayShowPrice: true,
   customerDisplayShowTotal: true,
+  customerDisplayAds: '',
+  customerDisplayAdsIntervalSeconds: '8',
+  customerDisplayAdsTransition: 'fade',
+  customerDisplayAdsTransitionMs: '650',
   returnWindowValue: '7',
   returnWindowUnit: 'day',
   lowStockThreshold: '10',
@@ -107,6 +116,39 @@ const asNumberString = (value: unknown, fallback: number): string => {
 
 const normalizeBankQrAddInfoMode = (value: unknown): BankQrAddInfoMode =>
   asString(value, 'order_code').toLowerCase() === 'custom' ? 'custom' : 'order_code'
+
+const normalizeAdsTransition = (value: unknown): AdsTransition => {
+  const next = asString(value, 'fade').toLowerCase()
+  if (next === 'none' || next === 'slide') return next
+  return 'fade'
+}
+
+const settingValueToStringArray = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item ?? '').trim())
+      .filter(Boolean)
+  }
+  if (typeof value === 'string') {
+    const raw = value.trim()
+    if (!raw) return []
+    if (raw.startsWith('[') && raw.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed)) {
+          return parsed.map((item) => String(item ?? '').trim()).filter(Boolean)
+        }
+      } catch {
+        // fallback as plain line-based value
+      }
+    }
+    return raw
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+  }
+  return []
+}
 
 const normalizeText = (value: string) =>
   value
@@ -158,6 +200,16 @@ const mapSettingsToForm = (settings: StoreSettingsMap): StoreSettingsForm => ({
   bankQrAddInfoCustom: asString(settings['sale.bank_qr_add_info_custom'], ''),
   customerDisplayShowPrice: asBoolean(settings['sale.customer_display_show_price'], true),
   customerDisplayShowTotal: asBoolean(settings['sale.customer_display_show_total'], true),
+  customerDisplayAds: settingValueToStringArray(settings['sale.customer_display_ads']).join('\n'),
+  customerDisplayAdsIntervalSeconds: asNumberString(
+    settings['sale.customer_display_ads_interval_seconds'],
+    8,
+  ),
+  customerDisplayAdsTransition: normalizeAdsTransition(settings['sale.customer_display_ads_transition']),
+  customerDisplayAdsTransitionMs: asNumberString(
+    settings['sale.customer_display_ads_transition_ms'],
+    650,
+  ),
   returnWindowValue: asNumberString(settings['sale.return_window_value'], 7),
   returnWindowUnit: asString(settings['sale.return_window_unit'], 'day').toLowerCase() === 'hour' ? 'hour' : 'day',
   lowStockThreshold: asNumberString(settings['inventory.low_stock_threshold'], 10),
@@ -363,6 +415,12 @@ export function StoreSettings() {
     const nearDateDays = Number(storeSettingsForm.nearDateDays)
     const fefoThresholdDays = Number(storeSettingsForm.fefoThresholdDays)
     const returnWindowValue = Number(storeSettingsForm.returnWindowValue)
+    const adsIntervalSeconds = Number(storeSettingsForm.customerDisplayAdsIntervalSeconds)
+    const adsTransitionMs = Number(storeSettingsForm.customerDisplayAdsTransitionMs)
+    const adsList = storeSettingsForm.customerDisplayAds
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean)
 
     if (!Number.isFinite(lowStock) || lowStock < 0) {
       setSettingsError('Ngưỡng sắp hết hàng không hợp lệ.')
@@ -385,6 +443,15 @@ export function StoreSettings() {
       return
     }
 
+    if (!Number.isFinite(adsIntervalSeconds) || adsIntervalSeconds < 1) {
+      setSettingsError('Thoi gian chuyen ads phai lon hon hoac bang 1 giay.')
+      return
+    }
+    if (!Number.isFinite(adsTransitionMs) || adsTransitionMs < 0) {
+      setSettingsError('Thoi gian transition ads khong hop le.')
+      return
+    }
+
     setSettingsSubmitting(true)
     setSettingsError(null)
     setSettingsMessage(null)
@@ -399,6 +466,10 @@ export function StoreSettings() {
           'sale.bank_qr_add_info_custom': bankQrAddInfoCustom,
           'sale.customer_display_show_price': storeSettingsForm.customerDisplayShowPrice,
           'sale.customer_display_show_total': storeSettingsForm.customerDisplayShowTotal,
+          'sale.customer_display_ads': adsList,
+          'sale.customer_display_ads_interval_seconds': Math.trunc(adsIntervalSeconds),
+          'sale.customer_display_ads_transition': storeSettingsForm.customerDisplayAdsTransition,
+          'sale.customer_display_ads_transition_ms': Math.trunc(adsTransitionMs),
           'sale.return_window_value': Math.trunc(returnWindowValue),
           'sale.return_window_unit': storeSettingsForm.returnWindowUnit,
           'inventory.low_stock_threshold': Math.trunc(lowStock),
@@ -793,6 +864,79 @@ export function StoreSettings() {
               disabled={!canManageStore || storeLoading}
             />
             Man hinh khach: hien tong tien
+          </label>
+
+          <label className="space-y-2 text-sm text-ink-700 md:col-span-2">
+            <span>Danh sach ads man hinh khach (moi dong 1 URL hinh)</span>
+            <textarea
+              value={storeSettingsForm.customerDisplayAds}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({
+                  ...prev,
+                  customerDisplayAds: event.target.value,
+                }))
+              }
+              className="min-h-[120px] w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              placeholder="/customer-display/ads/ad-01.svg&#10;/customer-display/ads/ad-02.svg"
+              disabled={!canManageStore || storeLoading}
+            />
+            <p className="text-xs text-ink-500">
+              Co the dung link tuyet doi (https://...) hoac duong dan static tu public/.
+            </p>
+          </label>
+
+          <label className="space-y-2 text-sm text-ink-700">
+            <span>Kieu transition ads</span>
+            <select
+              value={storeSettingsForm.customerDisplayAdsTransition}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({
+                  ...prev,
+                  customerDisplayAdsTransition:
+                    (event.target.value === 'none' || event.target.value === 'slide' ? event.target.value : 'fade') as AdsTransition,
+                }))
+              }
+              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              disabled={!canManageStore || storeLoading}
+            >
+              <option value="fade">Fade</option>
+              <option value="slide">Slide</option>
+              <option value="none">None</option>
+            </select>
+          </label>
+
+          <label className="space-y-2 text-sm text-ink-700">
+            <span>Chu ky doi ads (giay)</span>
+            <input
+              type="number"
+              min={1}
+              value={storeSettingsForm.customerDisplayAdsIntervalSeconds}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({
+                  ...prev,
+                  customerDisplayAdsIntervalSeconds: event.target.value,
+                }))
+              }
+              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              disabled={!canManageStore || storeLoading}
+            />
+          </label>
+
+          <label className="space-y-2 text-sm text-ink-700">
+            <span>Thoi gian transition (ms)</span>
+            <input
+              type="number"
+              min={0}
+              value={storeSettingsForm.customerDisplayAdsTransitionMs}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({
+                  ...prev,
+                  customerDisplayAdsTransitionMs: event.target.value,
+                }))
+              }
+              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              disabled={!canManageStore || storeLoading}
+            />
           </label>
 
           <label className="space-y-2 text-sm text-ink-700">
