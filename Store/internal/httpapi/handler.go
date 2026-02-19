@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -73,6 +74,20 @@ func (h *Handler) routes() http.Handler {
 		r.With(auth.OwnerOnly(h.cfg)).Post("/drug-groups", h.createDrugGroup)
 		r.With(auth.OwnerOnly(h.cfg)).Put("/drug-groups/{groupID}", h.updateDrugGroup)
 		r.With(auth.OwnerOnly(h.cfg)).Delete("/drug-groups/{groupID}", h.deleteDrugGroup)
+
+		r.Route("/backup", func(r chi.Router) {
+			r.With(auth.OwnerOnly(h.cfg)).Get("/list", h.listBackups)
+			r.With(auth.OwnerOnly(h.cfg)).Post("/create", h.createBackup)
+			r.With(auth.OwnerOnly(h.cfg)).Get("/download/{backupID}", h.downloadBackup)
+			r.With(auth.OwnerOnly(h.cfg)).Delete("/{backupID}", h.deleteBackup)
+			r.With(auth.OwnerOnly(h.cfg)).Post("/upload", h.uploadBackup)
+			r.With(auth.OwnerOnly(h.cfg)).Post("/restore/{backupID}", h.restoreBackup)
+			r.With(auth.OwnerOnly(h.cfg)).Post("/sync/push", h.syncPush)
+			r.With(auth.OwnerOnly(h.cfg)).Post("/sync/pull", h.syncPull)
+			// Sync endpoints - API key auth (no JWT)
+			r.Post("/receive", h.receiveBackup)
+			r.Get("/latest/download", h.downloadLatestBackup)
+		})
 	})
 
 	return r
@@ -460,9 +475,201 @@ func (h *Handler) handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, app.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, app.ErrForbidden):
+		writeError(w, http.StatusForbidden, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "Internal server error")
 	}
+}
+
+// --- Backup handlers ---
+
+func (h *Handler) listBackups(w http.ResponseWriter, r *http.Request) {
+	records, err := h.svc.ListBackups(r.Context())
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":       records,
+		"total":       len(records),
+		"pg_dump_ok":  app.PgDumpAvailable(),
+	})
+}
+
+func (h *Handler) createBackup(w http.ResponseWriter, r *http.Request) {
+	if !app.PgDumpAvailable() {
+		writeError(w, http.StatusServiceUnavailable, "pg_dump is not installed on this server")
+		return
+	}
+
+	var payload struct {
+		Note string `json:"note"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&payload)
+
+	actor := getActorSubject(r)
+	record, err := h.svc.CreateBackup(r.Context(), payload.Note, actor)
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"message": "Backup created",
+		"data":    record,
+	})
+}
+
+func (h *Handler) downloadBackup(w http.ResponseWriter, r *http.Request) {
+	backupID := chi.URLParam(r, "backupID")
+	filePath, filename, err := h.svc.GetBackupFilePath(r.Context(), backupID)
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to open backup file")
+		return
+	}
+	defer file.Close()
+
+	fi, err := file.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to stat backup file")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	w.Header().Set("X-Backup-Filename", filename)
+	http.ServeContent(w, r, filename, fi.ModTime(), file)
+}
+
+func (h *Handler) deleteBackup(w http.ResponseWriter, r *http.Request) {
+	backupID := chi.URLParam(r, "backupID")
+	if err := h.svc.DeleteBackup(r.Context(), backupID); err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Backup deleted",
+		"id":      backupID,
+	})
+}
+
+func (h *Handler) uploadBackup(w http.ResponseWriter, r *http.Request) {
+	const maxUpload = int64(100 << 20) // 100 MB
+	r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
+
+	if err := r.ParseMultipartForm(maxUpload); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid multipart form or file too large")
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Missing backup file in form field 'file'")
+		return
+	}
+	defer file.Close()
+
+	actor := getActorSubject(r)
+	record, err := h.svc.SaveUploadedBackup(r.Context(), file, header.Filename, actor)
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"message": "Backup uploaded",
+		"data":    record,
+	})
+}
+
+func (h *Handler) restoreBackup(w http.ResponseWriter, r *http.Request) {
+	backupID := chi.URLParam(r, "backupID")
+	if err := h.svc.RestoreFromBackupID(r.Context(), backupID); err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Backup restored successfully",
+	})
+}
+
+func (h *Handler) syncPush(w http.ResponseWriter, r *http.Request) {
+	actor := getActorSubject(r)
+	if err := h.svc.SyncPush(r.Context(), actor); err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Backup pushed to remote server",
+	})
+}
+
+func (h *Handler) syncPull(w http.ResponseWriter, r *http.Request) {
+	actor := getActorSubject(r)
+	if err := h.svc.SyncPull(r.Context(), actor); err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Backup pulled from remote server",
+	})
+}
+
+func (h *Handler) receiveBackup(w http.ResponseWriter, r *http.Request) {
+	apiKey := strings.TrimSpace(r.Header.Get("X-Sync-API-Key"))
+	filename := r.Header.Get("X-Backup-Filename")
+	if filename == "" {
+		filename = "received.sql.gz"
+	}
+
+	if err := h.svc.ReceiveBackup(r.Context(), apiKey, r.Body, filename); err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Backup received",
+	})
+}
+
+func (h *Handler) downloadLatestBackup(w http.ResponseWriter, r *http.Request) {
+	apiKey := strings.TrimSpace(r.Header.Get("X-Sync-API-Key"))
+	expectedKey := h.svc.GetSyncAPIKeyPublic(r.Context())
+	if expectedKey == "" || apiKey != expectedKey {
+		writeError(w, http.StatusForbidden, "Invalid or missing sync API key")
+		return
+	}
+
+	filePath, filename, err := h.svc.GetLatestBackupFilePath(r.Context())
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to open backup file")
+		return
+	}
+	defer file.Close()
+
+	fi, err := file.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to stat backup file")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	w.Header().Set("X-Backup-Filename", filename)
+	http.ServeContent(w, r, filename, fi.ModTime(), file)
 }
 
 func getActorSubject(r *http.Request) string {
@@ -502,7 +709,7 @@ func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 				w.Header().Set("Vary", "Origin")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Requested-With")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Requested-With,X-Sync-API-Key,X-Backup-Filename")
 
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusOK)
