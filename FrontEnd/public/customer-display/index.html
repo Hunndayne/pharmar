@@ -427,10 +427,7 @@
       };
 
       const onStateUpdate = (nextState) => {
-        if (!nextState || typeof nextState !== 'object') {
-          render(null);
-          return;
-        }
+        if (!nextState || typeof nextState !== 'object') return;
         render(nextState);
       };
 
@@ -476,7 +473,10 @@
       }
 
       setInterval(() => {
-        onStateUpdate(readState());
+        const localState = readState();
+        if (localState && typeof localState === 'object') {
+          onStateUpdate(localState);
+        }
         void pullRemoteState();
       }, 1200);
     })();
