@@ -7,7 +7,7 @@ from ..db.models import UserRole
 
 class LoginRequest(BaseModel):
     username: str = Field(min_length=3, max_length=50)
-    password: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
 
 
 class TokenResponse(BaseModel):
@@ -46,7 +46,7 @@ class AuthResponse(BaseModel):
 
 class UserCreateRequest(BaseModel):
     username: str = Field(min_length=3, max_length=50)
-    password: str = Field(min_length=4, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
     full_name: str = Field(min_length=1, max_length=255)
     email: EmailStr | None = None
     phone: str | None = Field(default=None, max_length=20)
@@ -63,12 +63,12 @@ class UserUpdateRequest(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str = Field(min_length=1, max_length=128)
-    new_password: str = Field(min_length=4, max_length=128)
+    current_password: str = Field(min_length=8, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class ResetPasswordRequest(BaseModel):
-    new_password: str = Field(min_length=4, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class LoginHistoryResponse(BaseModel):

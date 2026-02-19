@@ -1,11 +1,11 @@
-﻿services:
+services:
   postgres:
     image: postgres:16-alpine
     container_name: pharmar-postgres
     environment:
       POSTGRES_DB: pharmar_auth
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
       - "5432:5432"
     volumes:
@@ -22,7 +22,7 @@
     image: postgres:16-alpine
     container_name: pharmar-db-bootstrap
     environment:
-      PGPASSWORD: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
     command: >
       sh -c "psql -h postgres -U postgres -d postgres -f /scripts/01-create-databases.sql"
     volumes:
@@ -44,11 +44,13 @@
       dockerfile: dockerfile
     container_name: pharmar-users-service
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/pharmar_auth
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_auth
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
       REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173}
     ports:
       - "8001:8001"
     depends_on:
@@ -64,8 +66,9 @@
       dockerfile: dockerfile
     container_name: pharmar-inventory-service
     environment:
+      APP_ENV: ${APP_ENV:-development}
       REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/pharmar_inventory
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_inventory
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       STATE_PERSISTENCE: postgres
@@ -91,8 +94,9 @@
       dockerfile: dockerfile
     container_name: pharmar-sale-service
     environment:
+      APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8003
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/pharmar_sale
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_sale
       STORE_SERVICE_URL: http://store-service:8005
       CATALOG_SERVICE_URL: http://catalog-service:8006
       INVENTORY_SERVICE_URL: http://inventory-service:8002
@@ -102,8 +106,9 @@
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       HELD_ORDER_EXPIRE_MINUTES: ${HELD_ORDER_EXPIRE_MINUTES:-30}
       ENABLE_HELD_ORDER_CLEANUP_JOB: ${ENABLE_HELD_ORDER_CLEANUP_JOB:-true}
-      REQUIRE_SHIFT_FOR_SALE: ${REQUIRE_SHIFT_FOR_SALE:-true}
+      REQUIRE_SHIFT_FOR_SALE: ${REQUIRE_SHIFT_FOR_SALE:-false}
       DEFAULT_COMMISSION_RATE: ${DEFAULT_COMMISSION_RATE:-1.5}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173}
     ports:
       - "8003:8003"
     depends_on:
@@ -143,14 +148,16 @@
       dockerfile: dockerfile
     container_name: pharmar-store-service
     environment:
+      APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8005
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/pharmar_store?sslmode=disable
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_store?sslmode=disable
       REDIS_URL: redis://redis:6379/0
       SETTINGS_CACHE_TTL_SECONDS: 300
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       LOGO_UPLOAD_DIR: /app/uploads
       DEFAULT_STORE_NAME: Nha thuoc Pharmar
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173}
     ports:
       - "8005:8005"
     depends_on:
@@ -168,11 +175,13 @@
       dockerfile: dockerfile
     container_name: pharmar-catalog-service
     environment:
+      APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8006
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/pharmar_catalog
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_catalog
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       INVENTORY_SERVICE_URL: http://inventory-service:8002
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173}
     ports:
       - "8006:8006"
     depends_on:
@@ -190,14 +199,16 @@
       dockerfile: dockerfile
     container_name: pharmar-customer-service
     environment:
+      APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8007
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/pharmar_customer
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_customer
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       INTERNAL_API_KEY: ${CUSTOMER_INTERNAL_API_KEY:-change-this-internal-key}
       STORE_SERVICE_URL: http://store-service:8005
       ENABLE_POINTS_EXPIRY_JOB: ${ENABLE_POINTS_EXPIRY_JOB:-true}
       POINTS_EXPIRY_JOB_INTERVAL_HOURS: ${POINTS_EXPIRY_JOB_INTERVAL_HOURS:-24}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173}
     ports:
       - "8007:8007"
     depends_on:
@@ -217,6 +228,7 @@
     env_file:
       - ./Payment QR Service/.env
     environment:
+      APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8008
       VIETQR_URL: ${VIETQR_URL:-https://api.vietqr.io/v2/generate}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
@@ -230,7 +242,7 @@
       context: ./FrontEnd
       dockerfile: dockerfile
       args:
-        VITE_API_BASE_URL: http://localhost:8000
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/}
     container_name: pharmar-frontend
     ports:
       - "3000:80"
@@ -253,6 +265,7 @@
       CATALOG_SERVICE_URL: http://catalog-service:8006
       CUSTOMER_SERVICE_URL: http://customer-service:8007
       PAYMENT_QR_SERVICE_URL: http://payment-qr-service:8008
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173}
     ports:
       - "8000:8000"
     depends_on:

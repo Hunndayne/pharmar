@@ -22,6 +22,10 @@ class Settings(BaseSettings):
 settings = Settings()
 app = FastAPI(title=settings.APP_NAME, version="0.1.0")
 
+_SUMMARY_KEY = "report:summary"
+_EVENTS_KEY = "report:events"
+_MAX_EVENTS = 100
+
 
 async def consume_sale_events() -> None:
     while True:
@@ -34,12 +38,15 @@ async def consume_sale_events() -> None:
                 if message and message.get("type") == "message":
                     payload = json.loads(message["data"])
                     total_amount = float(payload.get("total_amount", 0))
-                    app.state.summary["total_sales"] += 1
-                    app.state.summary["total_revenue"] = round(
-                        app.state.summary["total_revenue"] + total_amount, 2
-                    )
-                    app.state.events.append(payload)
-                    app.state.events = app.state.events[-100:]
+
+                    # Atomic increment in Redis
+                    pipe = app.state.redis.pipeline()
+                    pipe.hincrbyfloat(_SUMMARY_KEY, "total_revenue", total_amount)
+                    pipe.hincrby(_SUMMARY_KEY, "total_sales", 1)
+                    pipe.lpush(_EVENTS_KEY, json.dumps(payload))
+                    pipe.ltrim(_EVENTS_KEY, 0, _MAX_EVENTS - 1)
+                    await pipe.execute()
+
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             break
@@ -53,8 +60,14 @@ async def consume_sale_events() -> None:
 @app.on_event("startup")
 async def startup_event() -> None:
     app.state.redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
-    app.state.summary = {"total_sales": 0, "total_revenue": 0.0}
-    app.state.events = []
+
+    # Load persisted summary from Redis on startup
+    saved = await app.state.redis.hgetall(_SUMMARY_KEY)
+    app.state.summary = {
+        "total_sales": int(saved.get("total_sales", 0)),
+        "total_revenue": round(float(saved.get("total_revenue", 0.0)), 2),
+    }
+
     app.state.consumer_task = asyncio.create_task(consume_sale_events())
 
 
@@ -72,9 +85,14 @@ async def health() -> dict[str, str]:
 
 @app.get("/api/v1/report/summary")
 async def summary() -> dict[str, float | int]:
-    return app.state.summary
+    saved = await app.state.redis.hgetall(_SUMMARY_KEY)
+    return {
+        "total_sales": int(saved.get("total_sales", 0)),
+        "total_revenue": round(float(saved.get("total_revenue", 0.0)), 2),
+    }
 
 
 @app.get("/api/v1/report/events")
 async def events() -> list[dict[str, object]]:
-    return app.state.events
+    raw_events = await app.state.redis.lrange(_EVENTS_KEY, 0, _MAX_EVENTS - 1)
+    return [json.loads(e) for e in raw_events]

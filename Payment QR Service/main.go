@@ -88,14 +88,33 @@ func main() {
 	}
 }
 
+var weakSecrets = map[string]bool{
+	"change-this-secret":       true,
+	"change-this-internal-key": true,
+	"secret":                   true,
+	"password":                 true,
+	"changeme":                 true,
+	"":                         true,
+}
+
 func loadConfig() config {
+	appEnv := getenv("APP_ENV", "development")
+	jwtSecret := getenv("JWT_SECRET_KEY", "change-this-secret")
+
+	if weakSecrets[jwtSecret] || len(jwtSecret) < 16 {
+		if appEnv == "production" {
+			log.Fatal("JWT_SECRET_KEY is a weak or default value; set a strong secret before running in production")
+		}
+		log.Printf("WARNING: JWT_SECRET_KEY is using a weak/default value. Change before production deploy.")
+	}
+
 	return config{
 		AppName:      getenv("APP_NAME", "Payment QR Service"),
 		AppPort:      getenv("APP_PORT", "8008"),
 		VietQRURL:    getenv("VIETQR_URL", "https://api.vietqr.io/v2/generate"),
 		VietQRClient: strings.TrimSpace(os.Getenv("VIETQR_CLIENT_ID")),
 		VietQRKey:    strings.TrimSpace(os.Getenv("VIETQR_API_KEY")),
-		JWTSecretKey: getenv("JWT_SECRET_KEY", "change-this-secret"),
+		JWTSecretKey: jwtSecret,
 		JWTAlgorithm: getenv("JWT_ALGORITHM", "HS256"),
 	}
 }
@@ -288,7 +307,8 @@ func handleGenerateVietQR(w http.ResponseWriter, r *http.Request, cfg config, cl
 
 	upstreamResp, err := client.Do(upstreamReq)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("VietQR request failed: %v", err))
+		log.Printf("VietQR upstream request failed: %v", err)
+		writeError(w, http.StatusBadGateway, "Payment service temporarily unavailable")
 		return
 	}
 	defer upstreamResp.Body.Close()
