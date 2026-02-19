@@ -1,3 +1,36 @@
-Payment QR Service/.env
+# Environment files - NEVER commit secrets
+*.env
+.env
+.env.*
+!*.env.example
+!*.env.template
+
 Bank Name and Bank Code mapping list
 banklist.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# Node / Frontend
+node_modules/
+FrontEnd/dist/
+FrontEnd/.vite/
+
+# Go build
+Store/store
+"Payment QR Service/paymentqr"
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

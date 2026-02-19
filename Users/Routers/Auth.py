@@ -1,6 +1,8 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from Source.Auth import (
@@ -22,6 +24,8 @@ from Source.schemas.auth import (
     UserResponse,
 )
 
+limiter = Limiter(key_func=get_remote_address)
+
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -41,6 +45,7 @@ def _extract_client_ip(request: Request) -> str | None:
 
 
 @router.post("/login", response_model=AuthResponse)
+@limiter.limit("10/minute")
 async def login(payload: LoginRequest, request: Request, db: DbSession) -> AuthResponse:
     user, access_token, refresh_token = await login_user_with_metadata(
         payload,
@@ -58,7 +63,8 @@ async def login(payload: LoginRequest, request: Request, db: DbSession) -> AuthR
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh(payload: RefreshTokenRequest, db: DbSession) -> TokenResponse:
+@limiter.limit("30/minute")
+async def refresh(payload: RefreshTokenRequest, request: Request, db: DbSession) -> TokenResponse:
     _, access_token, refresh_token = await refresh_user_tokens(payload.refresh_token, db)
     return TokenResponse(
         access_token=access_token,

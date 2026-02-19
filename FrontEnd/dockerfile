@@ -8,7 +8,7 @@ RUN npm ci
 COPY . .
 
 # Build-time API endpoint for browser code
-ARG VITE_API_BASE_URL=https://2mc932t2-8000.asse.devtunnels.ms/
+ARG VITE_API_BASE_URL=/
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 
 RUN npm run build
