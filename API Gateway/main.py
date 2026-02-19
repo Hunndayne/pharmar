@@ -67,6 +67,7 @@ HEALTH_TARGETS: dict[str, str] = {
 @app.on_event("startup")
 async def startup_event() -> None:
     app.state.http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+    app.state.customer_display_states: dict[str, dict[str, Any]] = {}
 
 
 @app.on_event("shutdown")
@@ -135,6 +136,46 @@ async def services_health() -> dict[str, Any]:
             "degraded": degraded_count,
             "down": down_count,
         },
+    }
+
+
+@app.post("/api/v1/system/customer-display/state")
+async def set_customer_display_state(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid payload")
+
+    screen_id = str(payload.get("screen_id", "default")).strip() or "default"
+    if len(screen_id) > 64:
+        raise HTTPException(status_code=400, detail="screen_id is too long")
+
+    state = payload.get("state")
+    if not isinstance(state, dict):
+        raise HTTPException(status_code=400, detail="state must be an object")
+
+    updated_at = datetime.now(timezone.utc).isoformat()
+    app.state.customer_display_states[screen_id] = {
+        "screen_id": screen_id,
+        "updated_at": updated_at,
+        "state": state,
+    }
+    return {
+        "message": "customer display state updated",
+        "screen_id": screen_id,
+        "updated_at": updated_at,
+    }
+
+
+@app.get("/api/v1/system/customer-display/state")
+async def get_customer_display_state(screen_id: str = "default") -> dict[str, Any]:
+    normalized = screen_id.strip() or "default"
+    current = app.state.customer_display_states.get(normalized)
+    if current:
+        return current
+    return {
+        "screen_id": normalized,
+        "updated_at": None,
+        "state": None,
     }
 
 

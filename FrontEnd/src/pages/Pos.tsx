@@ -10,7 +10,7 @@ import { paymentQrApi } from '../api/paymentQrService'
 import { saleApi } from '../api/saleService'
 import { storeApi, type StoreInfo } from '../api/storeService'
 import { findBankOption } from '../constants/bankList'
-import { ApiError } from '../api/usersService'
+import { ApiError, buildUsersApiUrl } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 
 type UnitRole = 'single' | 'import' | 'intermediate' | 'retail'
@@ -137,6 +137,42 @@ type BankQrState = {
   qrDataURL: string
 }
 
+type CustomerDisplayPayload = {
+  updatedAt: string
+  store: {
+    name: string
+    phone: string
+    address: string
+  }
+  settings: {
+    showPrice: boolean
+    showTotal: boolean
+  }
+  order: {
+    id: string
+    customerName: string
+    itemCount: number
+    subtotal: number
+    serviceFee: number
+    total: number
+    lines: Array<{
+      id: string
+      name: string
+      unit: string
+      quantity: number
+      unitPrice: number
+      lineTotal: number
+    }>
+  }
+  paymentQr: {
+    active: boolean
+    amount: number
+    referenceCode: string
+    transferContent: string
+    qrDataURL: string
+  } | null
+}
+
 type CheckoutOptions = {
   paymentMethod?: 'cash' | 'bank'
   amountPaid?: number
@@ -233,6 +269,10 @@ const HTML5_QR_SCRIPT_CANDIDATES = [
   'https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js',
   'https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js',
 ]
+
+const CUSTOMER_DISPLAY_STORAGE_KEY = 'pharmar:customer-display:state'
+const CUSTOMER_DISPLAY_CHANNEL = 'pharmar-customer-display'
+const CUSTOMER_DISPLAY_SCREEN_ID = 'default'
 
 let html5QrcodeLoader: Promise<void> | null = null
 
@@ -545,6 +585,8 @@ export function Pos() {
   const [bankQrAcqId, setBankQrAcqId] = useState('')
   const [bankQrAddInfoMode, setBankQrAddInfoMode] = useState<BankQrAddInfoMode>('order_code')
   const [bankQrAddInfoCustom, setBankQrAddInfoCustom] = useState('')
+  const [customerDisplayShowPrice, setCustomerDisplayShowPrice] = useState(true)
+  const [customerDisplayShowTotal, setCustomerDisplayShowTotal] = useState(true)
   const [bankQrState, setBankQrState] = useState<BankQrState | null>(null)
   const [generatingBankQr, setGeneratingBankQr] = useState(false)
 
@@ -579,6 +621,8 @@ export function Pos() {
   const scanEngineRef = useRef<any>(null)
   const scanActiveRef = useRef(false)
   const scanProcessingRef = useRef(false)
+  const customerDisplayChannelRef = useRef<BroadcastChannel | null>(null)
+  const customerDisplaySyncTimerRef = useRef<number | null>(null)
 
   const activeOrder = useMemo(
     () => orders.find((order) => order.id === activeOrderId) ?? orders[0] ?? null,
@@ -700,6 +744,12 @@ export function Pos() {
       setBankQrAddInfoCustom(
         normalizeSettingString(saleSettings['sale.bank_qr_add_info_custom'], ''),
       )
+      setCustomerDisplayShowPrice(
+        normalizeSettingBoolean(saleSettings['sale.customer_display_show_price'], true),
+      )
+      setCustomerDisplayShowTotal(
+        normalizeSettingBoolean(saleSettings['sale.customer_display_show_total'], true),
+      )
       if (store) {
         const bankOption = findBankOption(normalizeSettingString(store.bank_name, ''))
         setBankQrAccountNo(normalizeSettingString(store.bank_account, ''))
@@ -727,6 +777,16 @@ export function Pos() {
   useEffect(() => {
     void loadPosData()
   }, [loadPosData])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('BroadcastChannel' in window)) return
+    const channel = new BroadcastChannel(CUSTOMER_DISPLAY_CHANNEL)
+    customerDisplayChannelRef.current = channel
+    return () => {
+      customerDisplayChannelRef.current = null
+      channel.close()
+    }
+  }, [])
 
   const updateOrder = useCallback((orderId: string, updater: (order: PosOrder) => PosOrder) => {
     setOrders((prev) => prev.map((order) => (order.id === orderId ? updater(order) : order)))
@@ -1688,6 +1748,106 @@ export function Pos() {
   const changeAmount = cashReceived - grandTotal
   const outstandingAmount = Math.max(0, grandTotal - cashReceived)
 
+  const customerDisplayPayload = useMemo<CustomerDisplayPayload>(() => {
+    const lines = activeOrderLineDetails.map((row) => ({
+      id: row.item.id,
+      name: row.item.drugName,
+      unit: row.item.unitName,
+      quantity: row.quantity,
+      unitPrice: row.item.unitPrice,
+      lineTotal: row.lineTotal,
+    }))
+
+    return {
+      updatedAt: new Date().toISOString(),
+      store: {
+        name: storeInfo?.name?.trim() || 'Nhà thuốc',
+        phone: storeInfo?.phone?.trim() || '',
+        address: storeInfo?.address?.trim() || '',
+      },
+      settings: {
+        showPrice: customerDisplayShowPrice,
+        showTotal: customerDisplayShowTotal,
+      },
+      order: {
+        id: activeOrder?.id ?? '',
+        customerName: activeOrder?.customerName?.trim() || 'Khách vãng lai',
+        itemCount: lines.length,
+        subtotal,
+        serviceFee,
+        total: grandTotal,
+        lines,
+      },
+      paymentQr: bankQrState
+        ? {
+            active: true,
+            amount: bankQrState.amount,
+            referenceCode: bankQrState.referenceCode,
+            transferContent: bankQrState.transferContent,
+            qrDataURL: bankQrState.qrDataURL,
+          }
+        : null,
+    }
+  }, [
+    activeOrder?.customerName,
+    activeOrder?.id,
+    activeOrderLineDetails,
+    bankQrState,
+    customerDisplayShowPrice,
+    customerDisplayShowTotal,
+    grandTotal,
+    serviceFee,
+    storeInfo?.address,
+    storeInfo?.name,
+    storeInfo?.phone,
+    subtotal,
+  ])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    try {
+      window.localStorage.setItem(CUSTOMER_DISPLAY_STORAGE_KEY, JSON.stringify(customerDisplayPayload))
+    } catch {
+      // ignore storage failures on restricted environments
+    }
+    try {
+      customerDisplayChannelRef.current?.postMessage(customerDisplayPayload)
+    } catch {
+      // ignore channel failures
+    }
+
+    if (customerDisplaySyncTimerRef.current !== null) {
+      window.clearTimeout(customerDisplaySyncTimerRef.current)
+      customerDisplaySyncTimerRef.current = null
+    }
+
+    customerDisplaySyncTimerRef.current = window.setTimeout(() => {
+      const headers = new Headers({ 'Content-Type': 'application/json' })
+      if (token?.access_token) {
+        headers.set('Authorization', `Bearer ${token.access_token}`)
+      }
+
+      void fetch(buildUsersApiUrl('/system/customer-display/state'), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          screen_id: CUSTOMER_DISPLAY_SCREEN_ID,
+          state: customerDisplayPayload,
+        }),
+      }).catch(() => {
+        // fallback to local transport if remote sync unavailable
+      })
+    }, 200)
+
+    return () => {
+      if (customerDisplaySyncTimerRef.current !== null) {
+        window.clearTimeout(customerDisplaySyncTimerRef.current)
+        customerDisplaySyncTimerRef.current = null
+      }
+    }
+  }, [customerDisplayPayload, token?.access_token])
+
   const buildCheckoutLines = useCallback(
     (order: PosOrder): CheckoutLine[] => {
       const lineItems = order.items
@@ -2028,11 +2188,11 @@ export function Pos() {
     if (!bankQrState) return
     const noteSuffix =
       bankQrState.transferContent === bankQrState.referenceCode
-        ? `Thanh to\u00e1n QR ng\u00e2n h\u00e0ng, m\u00e3 tham chi\u1ebfu: ${bankQrState.referenceCode}`
-        : `Thanh to\u00e1n QR ng\u00e2n h\u00e0ng, n\u1ed9i dung: ${bankQrState.transferContent} (m\u00e3 \u0111\u01a1n: ${bankQrState.referenceCode})`
+        ? `Thanh toan QR ngan hang, ma tham chieu: ${bankQrState.referenceCode}`
+        : `Thanh toan QR ngan hang, noi dung: ${bankQrState.transferContent} (ma don: ${bankQrState.referenceCode})`
     const success = await handleCheckout(false, {
       paymentMethod: 'bank',
-      paymentLabel: 'QR ng\u00e2n h\u00e0ng',
+      paymentLabel: 'QR ngan hang',
       amountPaid: bankQrState.amount,
       noteSuffix,
     })

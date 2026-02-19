@@ -230,7 +230,7 @@
       context: ./FrontEnd
       dockerfile: dockerfile
       args:
-        VITE_API_BASE_URL: http://localhost:8000
+        VITE_API_BASE_URL: https://2mc932t2-8000.asse.devtunnels.ms/
     container_name: pharmar-frontend
     ports:
       - "3000:80"

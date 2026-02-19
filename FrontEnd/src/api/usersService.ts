@@ -92,6 +92,16 @@ const API_PREFIX = sanitizePrefix(import.meta.env.VITE_USERS_API_PREFIX ?? '/api
 const API_BASE = sanitizeBase(import.meta.env.VITE_API_BASE_URL ?? '')
 
 const buildApiRoot = () => {
+  const isLikelyDevFrontendPort =
+    typeof window !== 'undefined' &&
+    ['3000', '4173', '5173', '5174'].includes(window.location.port)
+
+  if (!API_BASE && isLikelyDevFrontendPort) {
+    const protocol = window.location.protocol || 'http:'
+    const hostname = window.location.hostname || 'localhost'
+    return `${protocol}//${hostname}:8000${API_PREFIX}`
+  }
+
   if (!API_BASE) return API_PREFIX
   if (!API_PREFIX) return API_BASE
 

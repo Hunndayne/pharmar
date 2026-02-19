@@ -75,6 +75,22 @@ func DefaultSettings() map[string]DefaultSetting {
 			IsPublic:    true,
 		},
 		{
+			Key:         "sale.customer_display_show_price",
+			Value:       true,
+			GroupName:   "sale",
+			DataType:    "boolean",
+			Description: "Man hinh khach hien gia tung dong",
+			IsPublic:    true,
+		},
+		{
+			Key:         "sale.customer_display_show_total",
+			Value:       true,
+			GroupName:   "sale",
+			DataType:    "boolean",
+			Description: "Man hinh khach hien tong tien",
+			IsPublic:    true,
+		},
+		{
 			Key:         "sale.enforce_lot_policy",
 			Value:       true,
 			GroupName:   "sale",

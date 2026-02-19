@@ -1,0 +1,485 @@
+﻿<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Man Hinh Khach</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Segoe UI", Arial, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #f1f5f9; color: #0f172a; }
+    .page {
+      min-height: 100vh;
+      position: relative;
+    }
+    .clock {
+      font-size: 22px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .clock-floating {
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      z-index: 20;
+      border: 1px solid #dbe2ef;
+      background: #ffffffd9;
+      padding: 6px 10px;
+      border-radius: 10px;
+      backdrop-filter: blur(4px);
+    }
+    .stage {
+      padding: 12px;
+      min-height: 100vh;
+      display: grid;
+    }
+    .screen {
+      display: none;
+      min-height: 0;
+      border-radius: 12px;
+      border: 1px solid #dbe2ef;
+      background: #fff;
+      overflow: hidden;
+    }
+    .screen.active {
+      display: grid;
+    }
+
+    .ads-screen { grid-template-rows: 1fr; }
+    .ads-media {
+      width: 100%;
+      height: 100%;
+      background: #f8fafc;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+    .ads-media img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .ads-empty {
+      color: #64748b;
+      font-size: 18px;
+      text-align: center;
+      padding: 20px;
+    }
+    .cart-screen {
+      grid-template-rows: auto 1fr auto;
+      padding: 14px;
+      gap: 10px;
+    }
+    .cart-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8px;
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 8px;
+    }
+    .order-code {
+      font-size: 18px;
+      font-weight: 700;
+    }
+    .customer-name {
+      color: #334155;
+      font-size: 16px;
+    }
+    .table-wrap {
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      overflow: auto;
+      min-height: 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 16px;
+      background: #fff;
+    }
+    thead {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #eef2ff;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid #edf2f7;
+    }
+    th.right, td.right {
+      text-align: right;
+      white-space: nowrap;
+    }
+    .cart-empty {
+      color: #64748b;
+      text-align: center;
+      padding: 18px;
+      font-size: 16px;
+    }
+    .totals {
+      border-top: 1px solid #e2e8f0;
+      padding-top: 10px;
+      display: grid;
+      gap: 6px;
+      font-size: 18px;
+    }
+    .totals-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .totals-row strong {
+      font-size: 30px;
+      color: #0f172a;
+    }
+
+    .qr-screen {
+      grid-template-rows: auto 1fr auto;
+      align-content: start;
+      justify-items: center;
+      padding: 20px;
+      gap: 12px;
+      text-align: center;
+    }
+    .qr-title {
+      font-size: 22px;
+      font-weight: 700;
+    }
+    .qr-sub {
+      color: #334155;
+      font-size: 15px;
+    }
+    .qr-image {
+      width: min(66vh, 82vw);
+      height: min(66vh, 82vw);
+      object-fit: contain;
+      border: 1px solid #dbe2ef;
+      border-radius: 12px;
+      background: #fff;
+      padding: 10px;
+    }
+    .qr-amount {
+      font-size: 34px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+    .qr-meta {
+      color: #334155;
+      font-size: 15px;
+      line-height: 1.6;
+      word-break: break-word;
+      max-width: 860px;
+    }
+
+    @media (max-width: 1024px) {
+      .clock { font-size: 18px; }
+      .qr-amount { font-size: 28px; }
+      .qr-image { width: min(56vh, 88vw); height: min(56vh, 88vw); }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div id="clock" class="clock clock-floating"></div>
+
+    <main class="stage">
+      <section id="screenAds" class="screen ads-screen active">
+        <div id="adsMedia" class="ads-media">
+          <div class="ads-empty">Chưa có ảnh quảng cáo</div>
+        </div>
+      </section>
+
+      <section id="screenCart" class="screen cart-screen">
+        <div class="cart-head">
+          <div id="orderCode" class="order-code">Giỏ hàng</div>
+          <div id="customerName" class="customer-name">Khách vãng lai</div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Sản phẩm</th>
+                <th>Đơn vị</th>
+                <th class="right">SL</th>
+                <th id="colPrice" class="right">Đơn giá</th>
+                <th id="colLineTotal" class="right">Thành tiền</th>
+              </tr>
+            </thead>
+            <tbody id="cartRows"></tbody>
+          </table>
+          <div id="cartEmpty" class="cart-empty">Giỏ hàng trống</div>
+        </div>
+
+        <div id="totalsBlock" class="totals">
+          <div class="totals-row">
+            <span>Tạm tính</span>
+            <span id="subtotalText">0đ</span>
+          </div>
+          <div id="serviceFeeRow" class="totals-row">
+            <span>Phí dịch vụ</span>
+            <span id="serviceFeeText">0đ</span>
+          </div>
+          <div class="totals-row">
+            <span>Tổng thanh toán</span>
+            <strong id="totalText">0đ</strong>
+          </div>
+        </div>
+      </section>
+
+      <section id="screenQr" class="screen qr-screen">
+        <div>
+          <div class="qr-title">Quét mã QR để thanh toán</div>
+          <div class="qr-sub">Vui lòng chuyển khoản đúng nội dung</div>
+        </div>
+        <img id="qrImage" class="qr-image" alt="QR thanh toán" />
+        <div class="qr-amount" id="qrAmount">0đ</div>
+        <div class="qr-meta" id="qrMeta"></div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    (function () {
+      const STORAGE_KEY = 'pharmar:customer-display:state';
+      const ADS_KEY = 'pharmar:customer-display:ads';
+      const CHANNEL_NAME = 'pharmar-customer-display';
+      const API_STATE_PATH = '/api/v1/system/customer-display/state';
+      const query = new URLSearchParams(window.location.search);
+      const screenId = query.get('screen_id') || query.get('screen') || 'default';
+      const queryApiBase = (query.get('api_base') || query.get('api') || '').trim();
+      const isLikelyDevFrontendPort = ['3000', '4173', '5173', '5174'].includes(window.location.port);
+      const API_BASE = queryApiBase
+        ? queryApiBase.replace(/\/+$/, '')
+        : isLikelyDevFrontendPort
+          ? `${window.location.protocol}//${window.location.hostname}:8000`
+          : '';
+      const buildApiUrl = (path) => `${API_BASE}${path}`;
+      let lastRemoteUpdatedAt = '';
+
+      const els = {
+        clock: document.getElementById('clock'),
+
+        screenAds: document.getElementById('screenAds'),
+        screenCart: document.getElementById('screenCart'),
+        screenQr: document.getElementById('screenQr'),
+
+        adsMedia: document.getElementById('adsMedia'),
+
+        orderCode: document.getElementById('orderCode'),
+        customerName: document.getElementById('customerName'),
+        cartRows: document.getElementById('cartRows'),
+        cartEmpty: document.getElementById('cartEmpty'),
+        totalsBlock: document.getElementById('totalsBlock'),
+        serviceFeeRow: document.getElementById('serviceFeeRow'),
+        subtotalText: document.getElementById('subtotalText'),
+        serviceFeeText: document.getElementById('serviceFeeText'),
+        totalText: document.getElementById('totalText'),
+        colPrice: document.getElementById('colPrice'),
+        colLineTotal: document.getElementById('colLineTotal'),
+
+        qrImage: document.getElementById('qrImage'),
+        qrAmount: document.getElementById('qrAmount'),
+        qrMeta: document.getElementById('qrMeta'),
+      };
+
+      const formatMoney = (value) => {
+        const n = Number.isFinite(value) ? value : Number(value) || 0;
+        return Math.max(0, n).toLocaleString('vi-VN') + 'đ';
+      };
+
+      const setClock = () => {
+        const now = new Date();
+        els.clock.textContent = now.toLocaleTimeString('vi-VN', {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        });
+      };
+      setClock();
+      setInterval(setClock, 1000);
+
+      const setMode = (mode) => {
+        els.screenAds.classList.toggle('active', mode === 'ads');
+        els.screenCart.classList.toggle('active', mode === 'cart');
+        els.screenQr.classList.toggle('active', mode === 'qr');
+      };
+
+      const readState = () => {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (!raw) return null;
+          return JSON.parse(raw);
+        } catch (_) {
+          return null;
+        }
+      };
+
+      const queryAds = () => {
+        const value = new URLSearchParams(window.location.search).get('ads');
+        if (!value) return [];
+        return value
+          .split(/[|,]/)
+          .map((item) => item.trim())
+          .filter(Boolean);
+      };
+
+      const localAds = () => {
+        try {
+          const raw = localStorage.getItem(ADS_KEY);
+          if (!raw) return [];
+          const data = JSON.parse(raw);
+          if (!Array.isArray(data)) return [];
+          return data.map((item) => String(item || '').trim()).filter(Boolean);
+        } catch (_) {
+          return [];
+        }
+      };
+
+      const adList = queryAds().length ? queryAds() : localAds();
+      let adIndex = 0;
+
+      const renderAds = () => {
+        if (!adList.length) {
+          els.adsMedia.innerHTML = '<div class="ads-empty">Chưa có ảnh quảng cáo</div>';
+          return;
+        }
+        const src = adList[adIndex % adList.length];
+        els.adsMedia.innerHTML = '';
+        const img = document.createElement('img');
+        img.src = src;
+        img.alt = 'Quảng cáo';
+        img.loading = 'lazy';
+        els.adsMedia.appendChild(img);
+      };
+
+      renderAds();
+      if (adList.length > 1) {
+        setInterval(() => {
+          adIndex = (adIndex + 1) % adList.length;
+          renderAds();
+        }, 8000);
+      }
+
+      const render = (state) => {
+        const safe = state || {};
+        const settings = safe.settings || {};
+        const order = safe.order || {};
+        const paymentQr = safe.paymentQr || null;
+        const lines = Array.isArray(order.lines) ? order.lines : [];
+
+        const showPrice = settings.showPrice !== false;
+        const showTotal = settings.showTotal !== false;
+
+        const itemCount = Number(order.itemCount || lines.length || 0);
+        const hasQr = Boolean(paymentQr && paymentQr.active && paymentQr.qrDataURL);
+        const mode = hasQr ? 'qr' : itemCount > 0 ? 'cart' : 'ads';
+        setMode(mode);
+
+        els.orderCode.textContent = order.id ? `Giỏ hàng: ${order.id}` : 'Giỏ hàng';
+        els.customerName.textContent = order.customerName || 'Khách vãng lai';
+
+        els.colPrice.style.display = showPrice ? '' : 'none';
+        els.colLineTotal.style.display = showPrice ? '' : 'none';
+        els.cartRows.innerHTML = '';
+
+        if (!lines.length) {
+          els.cartEmpty.style.display = 'block';
+        } else {
+          els.cartEmpty.style.display = 'none';
+          lines.forEach((line) => {
+            const tr = document.createElement('tr');
+            tr.innerHTML =
+              `<td>${line.name || ''}</td>` +
+              `<td>${line.unit || ''}</td>` +
+              `<td class="right">${Number(line.quantity || 0).toLocaleString('vi-VN')}</td>` +
+              `<td class="right" style="${showPrice ? '' : 'display:none'}">${formatMoney(line.unitPrice || 0)}</td>` +
+              `<td class="right" style="${showPrice ? '' : 'display:none'}">${formatMoney(line.lineTotal || 0)}</td>`;
+            els.cartRows.appendChild(tr);
+          });
+        }
+
+        els.subtotalText.textContent = formatMoney(order.subtotal || 0);
+        els.serviceFeeText.textContent = formatMoney(order.serviceFee || 0);
+        els.totalText.textContent = formatMoney(order.total || 0);
+        els.serviceFeeRow.style.display = Number(order.serviceFee || 0) > 0 ? 'flex' : 'none';
+        els.totalsBlock.style.display = showTotal ? 'grid' : 'none';
+
+        if (hasQr) {
+          els.qrImage.src = paymentQr.qrDataURL;
+          els.qrAmount.textContent = formatMoney(paymentQr.amount || order.total || 0);
+          els.qrMeta.innerHTML =
+            `<div><strong>Mã tham chiếu:</strong> ${paymentQr.referenceCode || '-'}</div>` +
+            `<div><strong>Nội dung:</strong> ${paymentQr.transferContent || '-'}</div>`;
+        } else {
+          els.qrImage.removeAttribute('src');
+          els.qrAmount.textContent = '0đ';
+          els.qrMeta.textContent = '';
+        }
+      };
+
+      const onStateUpdate = (nextState) => {
+        if (!nextState || typeof nextState !== 'object') {
+          render(null);
+          return;
+        }
+        render(nextState);
+      };
+
+      const pullRemoteState = async () => {
+        try {
+          const url = `${buildApiUrl(API_STATE_PATH)}?screen_id=${encodeURIComponent(screenId)}`;
+          const response = await fetch(url, {
+            cache: 'no-store',
+            headers: { Accept: 'application/json' },
+          });
+          if (!response.ok) return;
+          const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+          if (!contentType.includes('application/json')) return;
+          const payload = await response.json();
+          if (!payload || typeof payload !== 'object') return;
+          if (!payload.state || typeof payload.state !== 'object') return;
+
+          const updatedAt = typeof payload.updated_at === 'string' ? payload.updated_at : '';
+          if (updatedAt && updatedAt === lastRemoteUpdatedAt) return;
+
+          if (updatedAt) lastRemoteUpdatedAt = updatedAt;
+          onStateUpdate(payload.state);
+        } catch (_) {
+          // ignore network errors; local fallback still works on same device
+        }
+      };
+
+      render(readState());
+      void pullRemoteState();
+
+      window.addEventListener('storage', (event) => {
+        if (event.key !== STORAGE_KEY) return;
+        onStateUpdate(readState());
+      });
+
+      if ('BroadcastChannel' in window) {
+        try {
+          const channel = new BroadcastChannel(CHANNEL_NAME);
+          channel.onmessage = (event) => onStateUpdate(event.data);
+        } catch (_) {
+          // ignore runtime limitation
+        }
+      }
+
+      setInterval(() => {
+        onStateUpdate(readState());
+        void pullRemoteState();
+      }, 1200);
+    })();
+  </script>
+</body>
+</html>

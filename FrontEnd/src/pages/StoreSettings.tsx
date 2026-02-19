@@ -33,6 +33,8 @@ type StoreSettingsForm = {
   defaultPaymentMethod: string
   bankQrAddInfoMode: BankQrAddInfoMode
   bankQrAddInfoCustom: string
+  customerDisplayShowPrice: boolean
+  customerDisplayShowTotal: boolean
   returnWindowValue: string
   returnWindowUnit: 'day' | 'hour'
   lowStockThreshold: string
@@ -63,6 +65,8 @@ const defaultStoreSettings: StoreSettingsForm = {
   defaultPaymentMethod: 'cash',
   bankQrAddInfoMode: 'order_code',
   bankQrAddInfoCustom: '',
+  customerDisplayShowPrice: true,
+  customerDisplayShowTotal: true,
   returnWindowValue: '7',
   returnWindowUnit: 'day',
   lowStockThreshold: '10',
@@ -152,6 +156,8 @@ const mapSettingsToForm = (settings: StoreSettingsMap): StoreSettingsForm => ({
   defaultPaymentMethod: asString(settings['sale.default_payment_method'], 'cash'),
   bankQrAddInfoMode: normalizeBankQrAddInfoMode(settings['sale.bank_qr_add_info_mode']),
   bankQrAddInfoCustom: asString(settings['sale.bank_qr_add_info_custom'], ''),
+  customerDisplayShowPrice: asBoolean(settings['sale.customer_display_show_price'], true),
+  customerDisplayShowTotal: asBoolean(settings['sale.customer_display_show_total'], true),
   returnWindowValue: asNumberString(settings['sale.return_window_value'], 7),
   returnWindowUnit: asString(settings['sale.return_window_unit'], 'day').toLowerCase() === 'hour' ? 'hour' : 'day',
   lowStockThreshold: asNumberString(settings['inventory.low_stock_threshold'], 10),
@@ -391,6 +397,8 @@ export function StoreSettings() {
           'sale.default_payment_method': storeSettingsForm.defaultPaymentMethod.trim() || 'cash',
           'sale.bank_qr_add_info_mode': bankQrAddInfoMode,
           'sale.bank_qr_add_info_custom': bankQrAddInfoCustom,
+          'sale.customer_display_show_price': storeSettingsForm.customerDisplayShowPrice,
+          'sale.customer_display_show_total': storeSettingsForm.customerDisplayShowTotal,
           'sale.return_window_value': Math.trunc(returnWindowValue),
           'sale.return_window_unit': storeSettingsForm.returnWindowUnit,
           'inventory.low_stock_threshold': Math.trunc(lowStock),
@@ -756,6 +764,35 @@ export function StoreSettings() {
               placeholder="Ví dụ: Thanh toán đơn thuốc"
               disabled={!canManageStore || storeLoading || storeSettingsForm.bankQrAddInfoMode !== "custom"}
             />
+          </label>
+
+          <label className="flex items-center gap-2 text-sm text-ink-700 md:col-span-2">
+            <input
+              type="checkbox"
+              checked={storeSettingsForm.customerDisplayShowPrice}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({
+                  ...prev,
+                  customerDisplayShowPrice: event.target.checked,
+                }))
+              }
+              disabled={!canManageStore || storeLoading}
+            />
+            Man hinh khach: hien gia tung dong thuoc
+          </label>
+          <label className="flex items-center gap-2 text-sm text-ink-700 md:col-span-2">
+            <input
+              type="checkbox"
+              checked={storeSettingsForm.customerDisplayShowTotal}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({
+                  ...prev,
+                  customerDisplayShowTotal: event.target.checked,
+                }))
+              }
+              disabled={!canManageStore || storeLoading}
+            />
+            Man hinh khach: hien tong tien
           </label>
 
           <label className="space-y-2 text-sm text-ink-700">
