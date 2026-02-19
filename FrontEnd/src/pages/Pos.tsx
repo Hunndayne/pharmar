@@ -690,12 +690,17 @@ export function Pos() {
       if (store) {
         const bankOption = findBankOption(normalizeSettingString(store.bank_name, ''))
         setBankQrAccountNo(normalizeSettingString(store.bank_account, ''))
-        setBankQrAccountName(normalizeSettingString(store.owner_name || store.name, ''))
+        setBankQrAccountName(
+          normalizeSettingString(
+            saleSettings['sale.bank_account_name'],
+            normalizeSettingString(store.owner_name || store.name, ''),
+          ),
+        )
         setBankQrAcqId(bankOption?.bin ?? '')
         setStoreInfo(store)
       } else {
         setBankQrAccountNo('')
-        setBankQrAccountName('')
+        setBankQrAccountName(normalizeSettingString(saleSettings['sale.bank_account_name'], ''))
         setBankQrAcqId('')
       }
     } catch (error) {
@@ -1948,8 +1953,12 @@ export function Pos() {
     const accountName = bankQrAccountName.trim()
     const acqId = bankQrAcqId.trim()
     if (!accountNo || !accountName || !acqId) {
+      const missing: string[] = []
+      if (!accountName) missing.push('Tên chủ tài khoản')
+      if (!accountNo) missing.push('Số tài khoản')
+      if (!acqId) missing.push('Ngân hàng')
       setActionError(
-        'Thiếu cấu hình QR ngân hàng. Cần đủ: Tên chủ tài khoản, Số tài khoản, Ngân hàng trong mục Thông tin cửa hàng.',
+        `Thiếu cấu hình QR ngân hàng: ${missing.join(', ')}. Vui lòng cập nhật trong mục Thông tin cửa hàng.`,
       )
       return
     }

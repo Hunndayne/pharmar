@@ -33,10 +33,11 @@ class PaginationMeta:
 DEFAULT_PAYMENT_METHODS: list[dict[str, Any]] = [
     {"code": "cash", "name": "Tien mat", "display_order": 1, "requires_reference": False},
     {"code": "card", "name": "The", "display_order": 2, "requires_reference": True},
-    {"code": "transfer", "name": "Chuyen khoan", "display_order": 3, "requires_reference": True},
-    {"code": "momo", "name": "MoMo", "display_order": 4, "requires_reference": True},
-    {"code": "zalopay", "name": "ZaloPay", "display_order": 5, "requires_reference": True},
-    {"code": "vnpay", "name": "VNPay", "display_order": 6, "requires_reference": True},
+    {"code": "bank", "name": "Ngan hang", "display_order": 3, "requires_reference": True},
+    {"code": "transfer", "name": "Chuyen khoan", "display_order": 4, "requires_reference": True},
+    {"code": "momo", "name": "MoMo", "display_order": 5, "requires_reference": True},
+    {"code": "zalopay", "name": "ZaloPay", "display_order": 6, "requires_reference": True},
+    {"code": "vnpay", "name": "VNPay", "display_order": 7, "requires_reference": True},
 ]
 
 
@@ -216,7 +217,7 @@ def update_shift_sales_by_method(shift: Shift, method: str, amount: Decimal) -> 
         shift.cash_sales = quantize_money(shift.cash_sales + amount)
     elif method == "card":
         shift.card_sales = quantize_money(shift.card_sales + amount)
-    elif method == "transfer":
+    elif method in {"transfer", "bank"}:
         shift.transfer_sales = quantize_money(shift.transfer_sales + amount)
     elif method == "momo":
         shift.momo_sales = quantize_money(shift.momo_sales + amount)

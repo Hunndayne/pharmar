@@ -100,17 +100,25 @@ const normalizeText = (value: string) =>
     .toLowerCase()
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
+    .replace(/đ/g, 'd')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
 
 const bankSearchKey = (bank: (typeof BANK_OPTIONS)[number]) =>
   `${bank.code} ${bank.name} ${bank.bin}`.toLowerCase()
 
 const resolveBankInputValue = (value: string) => {
-  const keyword = normalizeText(value.trim())
+  const raw = value.trim()
+  const keyword = normalizeText(raw)
   if (!keyword) return null
+  const codeCandidate = raw.split('-')[0]?.trim()
   return (
+    (codeCandidate
+      ? BANK_OPTIONS.find((bank) => bank.code.toLowerCase() === codeCandidate.toLowerCase())
+      : null) ??
     BANK_OPTIONS.find((bank) => bank.code.toLowerCase() === keyword) ??
-    BANK_OPTIONS.find((bank) => bank.name.toLowerCase() === keyword) ??
-    BANK_OPTIONS.find((bank) => bank.bin === value.trim()) ??
+    BANK_OPTIONS.find((bank) => bank.name.toLowerCase() === raw.toLowerCase()) ??
+    BANK_OPTIONS.find((bank) => bank.bin === raw) ??
     BANK_OPTIONS.find((bank) => normalizeText(bankSearchKey(bank)).includes(keyword)) ??
     null
   )

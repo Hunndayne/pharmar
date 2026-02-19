@@ -13,10 +13,11 @@ INSERT INTO sale.payment_methods (code, name, display_order, requires_reference)
 VALUES
 ('cash', 'Tien mat', 1, FALSE),
 ('card', 'The', 2, TRUE),
-('transfer', 'Chuyen khoan', 3, TRUE),
-('momo', 'MoMo', 4, TRUE),
-('zalopay', 'ZaloPay', 5, TRUE),
-('vnpay', 'VNPay', 6, TRUE)
+('bank', 'Ngan hang', 3, TRUE),
+('transfer', 'Chuyen khoan', 4, TRUE),
+('momo', 'MoMo', 5, TRUE),
+('zalopay', 'ZaloPay', 6, TRUE),
+('vnpay', 'VNPay', 7, TRUE)
 ON CONFLICT (code) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS sale.invoices (

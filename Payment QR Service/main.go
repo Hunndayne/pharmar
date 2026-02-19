@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -12,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -49,9 +51,9 @@ type vietQRImageData struct {
 type vietQRGeneratePayload struct {
 	AccountNo   string `json:"accountNo"`
 	AccountName string `json:"accountName"`
-	AcqID       string `json:"acqId"`
+	AcqID       int64  `json:"acqId"`
 	AddInfo     string `json:"addInfo"`
-	Amount      string `json:"amount"`
+	Amount      int64  `json:"amount"`
 	Template    string `json:"template"`
 }
 
@@ -61,7 +63,10 @@ type vietQRUpstreamResponse struct {
 	Data vietQRImageData `json:"data"`
 }
 
+var sanitizeVietQRRegexp = regexp.MustCompile(`[^A-Z0-9 ]+`)
+
 func main() {
+	loadDotEnv(".env")
 	cfg := loadConfig()
 	client := &http.Client{Timeout: 20 * time.Second}
 
@@ -210,8 +215,24 @@ func toInt64Claim(value any) (int64, bool) {
 }
 
 func handleGenerateVietQR(w http.ResponseWriter, r *http.Request, cfg config, client *http.Client) {
-	if cfg.VietQRClient == "" || cfg.VietQRKey == "" {
-		writeError(w, http.StatusServiceUnavailable, "VietQR credentials are not configured")
+	clientID := strings.TrimSpace(cfg.VietQRClient)
+	apiKey := strings.TrimSpace(cfg.VietQRKey)
+	if clientID == "" {
+		clientID = strings.TrimSpace(os.Getenv("VIETQR_CLIENT_ID"))
+	}
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv("VIETQR_API_KEY"))
+	}
+
+	missing := make([]string, 0, 2)
+	if clientID == "" {
+		missing = append(missing, "VIETQR_CLIENT_ID")
+	}
+	if apiKey == "" {
+		missing = append(missing, "VIETQR_API_KEY")
+	}
+	if len(missing) > 0 {
+		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("VietQR credentials are not configured (%s)", strings.Join(missing, ", ")))
 		return
 	}
 
@@ -236,13 +257,18 @@ func handleGenerateVietQR(w http.ResponseWriter, r *http.Request, cfg config, cl
 		writeError(w, http.StatusBadRequest, "accountNo, accountName, acqId are required")
 		return
 	}
+	acqIDNum, err := strconv.ParseInt(acqID, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "acqId must be numeric")
+		return
+	}
 
 	upstreamPayload := vietQRGeneratePayload{
 		AccountNo:   accountNo,
 		AccountName: accountName,
-		AcqID:       acqID,
+		AcqID:       acqIDNum,
 		AddInfo:     addInfo,
-		Amount:      strconv.FormatInt(amount, 10),
+		Amount:      amount,
 		Template:    "compact",
 	}
 	upstreamBody, err := json.Marshal(upstreamPayload)
@@ -257,8 +283,8 @@ func handleGenerateVietQR(w http.ResponseWriter, r *http.Request, cfg config, cl
 		return
 	}
 	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("x-client-id", cfg.VietQRClient)
-	upstreamReq.Header.Set("x-api-key", cfg.VietQRKey)
+	upstreamReq.Header.Set("x-client-id", clientID)
+	upstreamReq.Header.Set("x-api-key", apiKey)
 
 	upstreamResp, err := client.Do(upstreamReq)
 	if err != nil {
@@ -370,3 +396,35 @@ func getenv(key, fallback string) string {
 	return value
 }
 
+func loadDotEnv(path string) {
+	file, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "export ") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		value = strings.Trim(value, `"'`)
+		if key == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+		_ = os.Setenv(key, value)
+	}
+}

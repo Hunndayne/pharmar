@@ -468,12 +468,19 @@ const normalizeBankKeyword = (value: string) =>
     .toLowerCase()
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
+    .replace(/đ/g, 'd')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
 
 export const findBankOption = (raw: string): BankOption | null => {
   const keyword = raw.trim()
   if (!keyword) return null
   const normalized = normalizeBankKeyword(keyword)
+  const codeCandidate = keyword.split('-')[0]?.trim()
   return (
+    (codeCandidate
+      ? BANK_OPTIONS.find((bank) => bank.code.toLowerCase() === codeCandidate.toLowerCase())
+      : null) ??
     BANK_OPTIONS.find((bank) => bank.code.toLowerCase() === keyword.toLowerCase()) ??
     BANK_OPTIONS.find((bank) => bank.bin === keyword) ??
     BANK_OPTIONS.find((bank) => bank.name.toLowerCase() === keyword.toLowerCase()) ??
