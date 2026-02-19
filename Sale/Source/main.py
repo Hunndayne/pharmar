@@ -58,6 +58,8 @@ async def _seed_default_payment_methods() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    settings.validate_secrets()
+
     async with engine.begin() as connection:
         await connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_NAME}"))
         await connection.run_sync(Base.metadata.create_all)
@@ -88,10 +90,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
 
 app.include_router(payment_methods_router, prefix="/api/v1")

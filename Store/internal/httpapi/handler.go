@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -42,7 +44,7 @@ func (h *Handler) routes() http.Handler {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
-	r.Use(corsMiddleware)
+	r.Use(corsMiddleware(h.cfg.CORSAllowedOrigins))
 
 	r.Get("/health", h.health)
 
@@ -111,6 +113,13 @@ func (h *Handler) updateStoreInfo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+var allowedImageTypes = map[string]string{
+	"image/jpeg": ".jpg",
+	"image/png":  ".png",
+	"image/gif":  ".gif",
+	"image/webp": ".webp",
+}
+
 func (h *Handler) uploadLogo(w http.ResponseWriter, r *http.Request) {
 	const maxUploadSize = int64(10 << 20) // 10MB
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
@@ -120,14 +129,31 @@ func (h *Handler) uploadLogo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	file, header, err := r.FormFile("file")
+	file, _, err := r.FormFile("file")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "Missing logo file in form field 'file'")
 		return
 	}
 	defer file.Close()
 
-	info, err := h.svc.SaveLogo(r.Context(), file, header.Filename)
+	// Detect MIME type via magic bytes (first 512 bytes)
+	sniffBuf := make([]byte, 512)
+	n, err := file.Read(sniffBuf)
+	if err != nil && err != io.EOF {
+		writeError(w, http.StatusBadRequest, "Failed to read file")
+		return
+	}
+	detectedType := http.DetectContentType(sniffBuf[:n])
+	ext, ok := allowedImageTypes[detectedType]
+	if !ok {
+		writeError(w, http.StatusBadRequest, "Only JPEG, PNG, GIF, and WebP images are allowed")
+		return
+	}
+
+	// Reconstruct full reader from already-read bytes + remainder
+	combined := io.MultiReader(bytes.NewReader(sniffBuf[:n]), file)
+
+	info, err := h.svc.SaveLogo(r.Context(), combined, "logo"+ext)
 	if err != nil {
 		h.handleServiceError(w, err)
 		return
@@ -461,19 +487,31 @@ func decodeJSON(r *http.Request, dst any) error {
 	return nil
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type")
+func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
+	originSet := make(map[string]bool, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		originSet[strings.TrimSpace(o)] = true
+	}
 
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			if origin != "" && originSet[origin] {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Set("Vary", "Origin")
+			}
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Requested-With")
 
-		next.ServeHTTP(w, r)
-	})
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func fileServer(r chi.Router, routePath string, root http.FileSystem) {

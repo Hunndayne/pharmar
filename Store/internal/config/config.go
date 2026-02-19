@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -9,15 +10,26 @@ import (
 )
 
 type Config struct {
-	AppName          string
-	AppPort          int
-	DatabaseURL      string
-	RedisURL         string
-	SettingsCacheTTL time.Duration
-	JWTSecretKey     string
-	JWTAlgorithm     string
-	LogoUploadDir    string
-	DefaultStoreName string
+	AppName            string
+	AppEnv             string
+	AppPort            int
+	DatabaseURL        string
+	RedisURL           string
+	SettingsCacheTTL   time.Duration
+	JWTSecretKey       string
+	JWTAlgorithm       string
+	LogoUploadDir      string
+	DefaultStoreName   string
+	CORSAllowedOrigins []string
+}
+
+var weakSecrets = map[string]bool{
+	"change-this-secret":       true,
+	"change-this-internal-key": true,
+	"secret":                   true,
+	"password":                 true,
+	"changeme":                 true,
+	"":                         true,
 }
 
 func Load() (Config, error) {
@@ -34,20 +46,38 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("SETTINGS_CACHE_TTL_SECONDS must be >= 0")
 	}
 
+	corsRaw := getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
+	var corsOrigins []string
+	for _, o := range strings.Split(corsRaw, ",") {
+		o = strings.TrimSpace(o)
+		if o != "" {
+			corsOrigins = append(corsOrigins, o)
+		}
+	}
+
 	cfg := Config{
-		AppName:          getEnv("APP_NAME", "Store Service"),
-		AppPort:          appPort,
-		DatabaseURL:      getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/pharmar_store?sslmode=disable"),
-		RedisURL:         getEnv("REDIS_URL", "redis://localhost:6379/0"),
-		SettingsCacheTTL: time.Duration(settingsCacheTTLSeconds) * time.Second,
-		JWTSecretKey:     getEnv("JWT_SECRET_KEY", "change-this-secret"),
-		JWTAlgorithm:     getEnv("JWT_ALGORITHM", "HS256"),
-		LogoUploadDir:    getEnv("LOGO_UPLOAD_DIR", "./uploads"),
-		DefaultStoreName: getEnv("DEFAULT_STORE_NAME", "Nha thuoc Pharmar"),
+		AppName:            getEnv("APP_NAME", "Store Service"),
+		AppEnv:             getEnv("APP_ENV", "development"),
+		AppPort:            appPort,
+		DatabaseURL:        getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/pharmar_store?sslmode=disable"),
+		RedisURL:           getEnv("REDIS_URL", "redis://localhost:6379/0"),
+		SettingsCacheTTL:   time.Duration(settingsCacheTTLSeconds) * time.Second,
+		JWTSecretKey:       getEnv("JWT_SECRET_KEY", "change-this-secret"),
+		JWTAlgorithm:       getEnv("JWT_ALGORITHM", "HS256"),
+		LogoUploadDir:      getEnv("LOGO_UPLOAD_DIR", "./uploads"),
+		DefaultStoreName:   getEnv("DEFAULT_STORE_NAME", "Nha thuoc Pharmar"),
+		CORSAllowedOrigins: corsOrigins,
 	}
 
 	if strings.TrimSpace(cfg.DatabaseURL) == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
+	}
+
+	if weakSecrets[cfg.JWTSecretKey] || len(cfg.JWTSecretKey) < 16 {
+		if cfg.AppEnv == "production" {
+			return Config{}, fmt.Errorf("JWT_SECRET_KEY is a weak or default value; set a strong secret before running in production")
+		}
+		log.Printf("WARNING: JWT_SECRET_KEY is using a weak/default value. Change before production deploy.")
 	}
 
 	return cfg, nil

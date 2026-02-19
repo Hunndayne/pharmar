@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     CUSTOMER_SERVICE_URL: str = "http://customer-service:8007"
     PAYMENT_QR_SERVICE_URL: str = "http://payment-qr-service:8008"
 
+    CORS_ALLOWED_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+    ]
+
+    MAX_REQUEST_BODY_SIZE: int = 20 * 1024 * 1024  # 20MB
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -33,10 +40,10 @@ settings = Settings()
 app = FastAPI(title=settings.APP_NAME, version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.CORS_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
 
 
@@ -192,6 +199,10 @@ async def proxy(service: str, request: Request, resource_path: str = "") -> Resp
     if target_service_url is None:
         raise HTTPException(status_code=404, detail=f"Unknown service '{service}'")
 
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > settings.MAX_REQUEST_BODY_SIZE:
+        raise HTTPException(status_code=413, detail="Request body too large")
+
     base_path = f"{target_service_url.rstrip('/')}/api/v1/{service}"
     target_url = f"{base_path}/{resource_path}" if resource_path else base_path
 
@@ -212,7 +223,9 @@ async def proxy(service: str, request: Request, resource_path: str = "") -> Resp
             headers=filtered_headers,
         )
     except httpx.RequestError as exc:
-        raise HTTPException(status_code=502, detail=f"Upstream request failed: {exc}") from exc
+        import logging
+        logging.getLogger("api_gateway").error("Upstream error for service=%s: %s", service, exc)
+        raise HTTPException(status_code=502, detail="Service temporarily unavailable") from exc
 
     response_headers = {
         key: value
