@@ -96,7 +96,7 @@ const buildApiRoot = () => {
     typeof window !== 'undefined' &&
     ['3000', '4173', '5173', '5174'].includes(window.location.port)
 
-  if (!API_BASE && isLikelyDevFrontendPort) {
+  if (!API_BASE && import.meta.env.DEV && isLikelyDevFrontendPort) {
     const protocol = window.location.protocol || 'http:'
     const hostname = window.location.hostname || 'localhost'
     return `${protocol}//${hostname}:8000${API_PREFIX}`

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -46,12 +47,24 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("SETTINGS_CACHE_TTL_SECONDS must be >= 0")
 	}
 
-	corsRaw := getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
+	corsRaw := strings.TrimSpace(getEnv("CORS_ALLOWED_ORIGINS", `["http://localhost:3000","http://localhost:5173"]`))
 	var corsOrigins []string
-	for _, o := range strings.Split(corsRaw, ",") {
-		o = strings.TrimSpace(o)
-		if o != "" {
-			corsOrigins = append(corsOrigins, o)
+	if strings.HasPrefix(corsRaw, "[") {
+		var parsed []string
+		if err := json.Unmarshal([]byte(corsRaw), &parsed); err == nil {
+			for _, o := range parsed {
+				o = strings.TrimSpace(o)
+				if o != "" {
+					corsOrigins = append(corsOrigins, o)
+				}
+			}
+		}
+	} else {
+		for _, o := range strings.Split(corsRaw, ",") {
+			o = strings.TrimSpace(o)
+			if o != "" {
+				corsOrigins = append(corsOrigins, o)
+			}
 		}
 	}
 
