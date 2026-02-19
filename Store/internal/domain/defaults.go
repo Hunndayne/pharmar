@@ -59,6 +59,22 @@ func DefaultSettings() map[string]DefaultSetting {
 			IsPublic:    true,
 		},
 		{
+			Key:         "sale.bank_qr_add_info_mode",
+			Value:       "order_code",
+			GroupName:   "sale",
+			DataType:    "string",
+			Description: "Noi dung chuyen khoan QR (order_code/custom)",
+			IsPublic:    true,
+		},
+		{
+			Key:         "sale.bank_qr_add_info_custom",
+			Value:       "",
+			GroupName:   "sale",
+			DataType:    "string",
+			Description: "Noi dung chuyen khoan QR tuy chinh",
+			IsPublic:    true,
+		},
+		{
 			Key:         "sale.enforce_lot_policy",
 			Value:       true,
 			GroupName:   "sale",

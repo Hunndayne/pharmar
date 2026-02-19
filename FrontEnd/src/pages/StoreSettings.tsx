@@ -25,10 +25,14 @@ type StoreInfoForm = {
   bankBranch: string
 }
 
+type BankQrAddInfoMode = 'order_code' | 'custom'
+
 type StoreSettingsForm = {
   autoPrint: boolean
   sellByLot: boolean
   defaultPaymentMethod: string
+  bankQrAddInfoMode: BankQrAddInfoMode
+  bankQrAddInfoCustom: string
   returnWindowValue: string
   returnWindowUnit: 'day' | 'hour'
   lowStockThreshold: string
@@ -57,6 +61,8 @@ const defaultStoreSettings: StoreSettingsForm = {
   autoPrint: true,
   sellByLot: true,
   defaultPaymentMethod: 'cash',
+  bankQrAddInfoMode: 'order_code',
+  bankQrAddInfoCustom: '',
   returnWindowValue: '7',
   returnWindowUnit: 'day',
   lowStockThreshold: '10',
@@ -94,6 +100,9 @@ const asNumberString = (value: unknown, fallback: number): string => {
   }
   return String(fallback)
 }
+
+const normalizeBankQrAddInfoMode = (value: unknown): BankQrAddInfoMode =>
+  asString(value, 'order_code').toLowerCase() === 'custom' ? 'custom' : 'order_code'
 
 const normalizeText = (value: string) =>
   value
@@ -141,6 +150,8 @@ const mapSettingsToForm = (settings: StoreSettingsMap): StoreSettingsForm => ({
   autoPrint: asBoolean(settings['sale.auto_print'], true),
   sellByLot: asBoolean(settings['sale.enforce_lot_policy'], true),
   defaultPaymentMethod: asString(settings['sale.default_payment_method'], 'cash'),
+  bankQrAddInfoMode: normalizeBankQrAddInfoMode(settings['sale.bank_qr_add_info_mode']),
+  bankQrAddInfoCustom: asString(settings['sale.bank_qr_add_info_custom'], ''),
   returnWindowValue: asNumberString(settings['sale.return_window_value'], 7),
   returnWindowUnit: asString(settings['sale.return_window_unit'], 'day').toLowerCase() === 'hour' ? 'hour' : 'day',
   lowStockThreshold: asNumberString(settings['inventory.low_stock_threshold'], 10),
@@ -334,6 +345,13 @@ export function StoreSettings() {
       return
     }
 
+    const bankQrAddInfoMode = storeSettingsForm.bankQrAddInfoMode
+    const bankQrAddInfoCustom = storeSettingsForm.bankQrAddInfoCustom.trim()
+    if (bankQrAddInfoMode === 'custom' && !bankQrAddInfoCustom) {
+      setSettingsError('Vui l\u00f2ng nh\u1eadp n\u1ed9i dung chuy\u1ec3n kho\u1ea3n t\u00f9y ch\u1ec9nh.')
+      return
+    }
+
     const lowStock = Number(storeSettingsForm.lowStockThreshold)
     const expiryDays = Number(storeSettingsForm.expiryWarningDays)
     const nearDateDays = Number(storeSettingsForm.nearDateDays)
@@ -371,6 +389,8 @@ export function StoreSettings() {
         storeApi.updateSettingsBulk(token.access_token, {
           'sale.enforce_lot_policy': storeSettingsForm.sellByLot,
           'sale.default_payment_method': storeSettingsForm.defaultPaymentMethod.trim() || 'cash',
+          'sale.bank_qr_add_info_mode': bankQrAddInfoMode,
+          'sale.bank_qr_add_info_custom': bankQrAddInfoCustom,
           'sale.return_window_value': Math.trunc(returnWindowValue),
           'sale.return_window_unit': storeSettingsForm.returnWindowUnit,
           'inventory.low_stock_threshold': Math.trunc(lowStock),
@@ -703,6 +723,38 @@ export function StoreSettings() {
               }
               className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
               disabled={!canManageStore || storeLoading}
+            />
+          </label>
+          <label className="space-y-2 text-sm text-ink-700">
+            <span>Nội dung chuyển khoản QR</span>
+            <select
+              value={storeSettingsForm.bankQrAddInfoMode}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({
+                  ...prev,
+                  bankQrAddInfoMode: event.target.value === "custom" ? "custom" : "order_code",
+                }))
+              }
+              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              disabled={!canManageStore || storeLoading}
+            >
+              <option value="order_code">Mã đơn hàng</option>
+              <option value="custom">Nội dung tùy chỉnh</option>
+            </select>
+          </label>
+          <label className="space-y-2 text-sm text-ink-700 md:col-span-2">
+            <span>Nội dung chuyển khoản tùy chỉnh</span>
+            <input
+              value={storeSettingsForm.bankQrAddInfoCustom}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({
+                  ...prev,
+                  bankQrAddInfoCustom: event.target.value,
+                }))
+              }
+              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              placeholder="Ví dụ: Thanh toán đơn thuốc"
+              disabled={!canManageStore || storeLoading || storeSettingsForm.bankQrAddInfoMode !== "custom"}
             />
           </label>
 

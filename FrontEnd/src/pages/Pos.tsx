@@ -17,6 +17,7 @@ type UnitRole = 'single' | 'import' | 'intermediate' | 'retail'
 type ServiceFeeMode = 'split' | 'separate'
 type CustomerMode = 'walk_in' | 'member'
 type PaymentMode = 'cash' | 'debt'
+type BankQrAddInfoMode = 'order_code' | 'custom'
 
 type PosDrugUnit = {
   id: string
@@ -127,6 +128,7 @@ type LotPolicyConfirmState = {
 type BankQrState = {
   orderId: string
   referenceCode: string
+  transferContent: string
   amount: number
   accountNo: string
   accountName: string
@@ -541,6 +543,8 @@ export function Pos() {
   const [bankQrAccountNo, setBankQrAccountNo] = useState('')
   const [bankQrAccountName, setBankQrAccountName] = useState('')
   const [bankQrAcqId, setBankQrAcqId] = useState('')
+  const [bankQrAddInfoMode, setBankQrAddInfoMode] = useState<BankQrAddInfoMode>('order_code')
+  const [bankQrAddInfoCustom, setBankQrAddInfoCustom] = useState('')
   const [bankQrState, setBankQrState] = useState<BankQrState | null>(null)
   const [generatingBankQr, setGeneratingBankQr] = useState(false)
 
@@ -687,6 +691,15 @@ export function Pos() {
       )
       setSellByLot(normalizeSettingBoolean(saleSettings['sale.enforce_lot_policy'], true))
       setReturnPolicyText(buildReturnPolicyText(saleSettings))
+      setBankQrAddInfoMode(
+        normalizeSettingString(saleSettings['sale.bank_qr_add_info_mode'], 'order_code')
+          .toLowerCase() === 'custom'
+          ? 'custom'
+          : 'order_code',
+      )
+      setBankQrAddInfoCustom(
+        normalizeSettingString(saleSettings['sale.bank_qr_add_info_custom'], ''),
+      )
       if (store) {
         const bankOption = findBankOption(normalizeSettingString(store.bank_name, ''))
         setBankQrAccountNo(normalizeSettingString(store.bank_account, ''))
@@ -1970,18 +1983,23 @@ export function Pos() {
     }
 
     const referenceCode = `DH${Date.now()}`
+    const transferContent =
+      bankQrAddInfoMode === 'custom' && bankQrAddInfoCustom.trim()
+        ? bankQrAddInfoCustom.trim()
+        : referenceCode
     setGeneratingBankQr(true)
     try {
       const response = await paymentQrApi.generateBankQr(token.access_token, {
         accountNo,
         accountName,
         acqId,
-        addInfo: referenceCode,
+        addInfo: transferContent,
         amount,
       })
       setBankQrState({
         orderId: activeOrder.id,
         referenceCode,
+        transferContent,
         amount,
         accountNo,
         accountName,
@@ -1995,15 +2013,28 @@ export function Pos() {
     } finally {
       setGeneratingBankQr(false)
     }
-  }, [activeOrder, token?.access_token, bankQrAccountNo, bankQrAccountName, bankQrAcqId, grandTotal])
+  }, [
+    activeOrder,
+    token?.access_token,
+    bankQrAccountNo,
+    bankQrAccountName,
+    bankQrAcqId,
+    bankQrAddInfoMode,
+    bankQrAddInfoCustom,
+    grandTotal,
+  ])
 
   const handleCheckoutByBankQr = useCallback(async () => {
     if (!bankQrState) return
+    const noteSuffix =
+      bankQrState.transferContent === bankQrState.referenceCode
+        ? `Thanh to\u00e1n QR ng\u00e2n h\u00e0ng, m\u00e3 tham chi\u1ebfu: ${bankQrState.referenceCode}`
+        : `Thanh to\u00e1n QR ng\u00e2n h\u00e0ng, n\u1ed9i dung: ${bankQrState.transferContent} (m\u00e3 \u0111\u01a1n: ${bankQrState.referenceCode})`
     const success = await handleCheckout(false, {
       paymentMethod: 'bank',
-      paymentLabel: 'QR ngân hàng',
+      paymentLabel: 'QR ng\u00e2n h\u00e0ng',
       amountPaid: bankQrState.amount,
-      noteSuffix: `Thanh toán QR ngân hàng, mã tham chiếu: ${bankQrState.referenceCode}`,
+      noteSuffix,
     })
     if (success) {
       setBankQrState(null)
@@ -2589,6 +2620,9 @@ export function Pos() {
                 </p>
                 <p>
                   <span className="font-semibold text-ink-900">Mã tham chiếu:</span> {bankQrState.referenceCode}
+                </p>
+                <p>
+                  <span className="font-semibold text-ink-900">Nội dung chuyển khoản:</span> {bankQrState.transferContent}
                 </p>
                 <p>
                   <span className="font-semibold text-ink-900">Số tiền:</span> {formatCurrency(bankQrState.amount)}
