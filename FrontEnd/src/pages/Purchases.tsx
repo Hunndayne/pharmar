@@ -963,6 +963,8 @@ export function Purchases() {
   const scanActiveRef = useRef(false)
   const scanStabilityRef = useRef<{ value: string; count: number; lastSeen: number } | null>(null)
   const receiptExtrasRef = useRef(receiptExtras)
+  const formFieldRefs = useRef<Record<string, HTMLElement | null>>({})
+  const pendingNewLineIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     receiptExtrasRef.current = receiptExtras
@@ -977,6 +979,24 @@ export function Purchases() {
     } catch {
       // ignore local storage errors
     }
+  }, [])
+
+  const setFormFieldRef = useCallback(
+    (key: string) => (element: HTMLElement | null) => {
+      if (element) formFieldRefs.current[key] = element
+      else delete formFieldRefs.current[key]
+    },
+    [],
+  )
+
+  const focusAndScrollField = useCallback((key: string) => {
+    const target = formFieldRefs.current[key]
+    if (!target) return false
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    if ('focus' in target && typeof target.focus === 'function') {
+      target.focus()
+    }
+    return true
   }, [])
 
   const getApiErrorMessage = useCallback((error: unknown, fallback: string) => {
@@ -1190,6 +1210,15 @@ export function Purchases() {
     if (current) next.add(current)
     return Array.from(next)
   }, [orders, form.shippingCarrier])
+
+  const selectedLineDrugNames = useMemo(() => {
+    const names = new Set<string>()
+    form.lines.forEach((line) => {
+      const name = drugMap.get(line.drugId)?.name?.trim()
+      if (name) names.add(name)
+    })
+    return Array.from(names)
+  }, [drugMap, form.lines])
 
   const filtered = useMemo(() => {
     const keyword = search.trim().toLowerCase()
@@ -1409,12 +1438,66 @@ export function Purchases() {
     }))
   }
 
+  const focusFirstInvalidField = useCallback(
+    (nextErrors: Record<string, string>) => {
+      const firstKey = Object.keys(nextErrors)[0]
+      if (!firstKey) return
+
+      if (firstKey === 'date') {
+        void focusAndScrollField('field-date')
+        return
+      }
+      if (firstKey === 'supplierId') {
+        void focusAndScrollField('field-supplier')
+        return
+      }
+      if (firstKey === 'shippingCarrier') {
+        void focusAndScrollField('field-shippingCarrier')
+        return
+      }
+      if (firstKey === 'lines') {
+        void focusAndScrollField('action-add-line')
+        return
+      }
+
+      const retailPriceMatch = firstKey.match(/^line-retail-price-(\d+)-(.+)$/)
+      if (retailPriceMatch) {
+        const lineIndex = Number(retailPriceMatch[1])
+        const unitId = retailPriceMatch[2]
+        const lineId = form.lines[lineIndex]?.id
+        if (!lineId) return
+        if (focusAndScrollField(`line-retail-${lineId}-${unitId}`)) return
+        void focusAndScrollField(`line-retail-first-${lineId}`)
+        return
+      }
+
+      const lineMatch = firstKey.match(/^line-(drug|lot|qty|mfg|exp|price|promo-buy|promo-get|promo-discount|retail-prices)-(\d+)$/)
+      if (!lineMatch) return
+      const field = lineMatch[1]
+      const lineIndex = Number(lineMatch[2])
+      const lineId = form.lines[lineIndex]?.id
+      if (!lineId) return
+
+      if (field === 'retail-prices') {
+        void focusAndScrollField(`line-retail-first-${lineId}`)
+        return
+      }
+      void focusAndScrollField(`line-${field}-${lineId}`)
+    },
+    [focusAndScrollField, form.lines],
+  )
+
   const addLine = () => {
+    const newLineId = `line-${Date.now()}-${Math.max(1, form.lines.length + 1)}`
+    pendingNewLineIdRef.current = newLineId
     setForm((prev) => ({
       ...prev,
       lines: [
         ...prev.lines,
-        createLine(prev.lines.length + 1),
+        {
+          ...createLine(prev.lines.length + 1),
+          id: newLineId,
+        },
       ],
     }))
   }
@@ -1425,6 +1508,18 @@ export function Purchases() {
       lines: prev.lines.length > 1 ? prev.lines.filter((line) => line.id !== id) : prev.lines,
     }))
   }
+
+  useEffect(() => {
+    const pendingLineId = pendingNewLineIdRef.current
+    if (!pendingLineId) return
+    const exists = form.lines.some((line) => line.id === pendingLineId)
+    if (!exists) {
+      pendingNewLineIdRef.current = null
+      return
+    }
+    const focused = focusAndScrollField(`line-drug-${pendingLineId}`)
+    if (focused) pendingNewLineIdRef.current = null
+  }, [focusAndScrollField, form.lines])
 
   const validate = () => {
     const next: Record<string, string> = {}
@@ -1470,11 +1565,18 @@ export function Purchases() {
     })
 
     setErrors(next)
-    return Object.keys(next).length === 0
+    return {
+      ok: Object.keys(next).length === 0,
+      nextErrors: next,
+    }
   }
 
   const saveOrder = async () => {
-    if (!validate()) return
+    const validation = validate()
+    if (!validation.ok) {
+      focusFirstInvalidField(validation.nextErrors)
+      return
+    }
 
     if (!accessToken) {
       setAlert('Bạn cần đăng nhập để lưu phiếu nhập.')
@@ -2636,7 +2738,24 @@ export function Purchases() {
                 <p className="text-xs uppercase tracking-[0.3em] text-ink-600">
                   {editingId ? 'Chỉnh sửa phiếu nhập' : 'Tạo phiếu nhập mới'}
                 </p>
-                <h3 className="mt-2 text-2xl font-semibold text-ink-900">{form.code}</h3>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="rounded-full border border-ink-900/10 bg-fog-50 px-3 py-1 text-xs font-semibold text-ink-700">
+                    Mã phiếu: {form.code}
+                  </span>
+                  {selectedLineDrugNames.length ? (
+                    selectedLineDrugNames.map((name) => (
+                      <span
+                        key={name}
+                        className="max-w-[220px] truncate rounded-full border border-brand-500/20 bg-brand-500/10 px-3 py-1 text-xs font-medium text-brand-700"
+                        title={name}
+                      >
+                        {name}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-xs text-ink-500">Chưa có thuốc trong phiếu</span>
+                  )}
+                </div>
               </div>
               <button onClick={closeModal} className="rounded-full border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900">
                 Đóng
@@ -2646,11 +2765,12 @@ export function Purchases() {
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="space-y-2 text-sm text-ink-700">
                   <span>Mã phiếu nhập</span>
-                  <input value={form.code} disabled className="w-full rounded-2xl border border-ink-900/10 bg-fog-50 px-4 py-2 text-sm text-ink-500" />
+                  <input value={form.code} disabled className="w-full rounded-2xl border border-ink-900/10 bg-fog-50 px-4 py-2 text-xs text-ink-500" />
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">
                   <span>Ngày nhập *</span>
                   <input
+                    ref={setFormFieldRef('field-date')}
                     value={form.date}
                     onChange={(event) => handleDateChange(event.target.value)}
                     type="date"
@@ -2661,6 +2781,7 @@ export function Purchases() {
                 <label className="space-y-2 text-sm text-ink-700">
                   <span>Nhà phân phối *</span>
                   <select
+                    ref={setFormFieldRef('field-supplier')}
                     value={form.supplierId}
                     onChange={(event) => updateForm('supplierId', event.target.value)}
                     className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
@@ -2672,20 +2793,9 @@ export function Purchases() {
                   {errors.supplierId ? <span className="text-xs text-coral-500">{errors.supplierId}</span> : null}
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">
-                  <span>Liên hệ của nhà phân phối</span>
-                  <input
-                    value={
-                      supplierMap.get(form.supplierId)
-                        ? `${supplierMap.get(form.supplierId)?.contactName} - ${supplierMap.get(form.supplierId)?.phone}`
-                        : ''
-                    }
-                    disabled
-                    className="w-full rounded-2xl border border-ink-900/10 bg-fog-50 px-4 py-2 text-sm text-ink-500"
-                  />
-                </label>
-                <label className="space-y-2 text-sm text-ink-700">
                   <span>Đơn vị vận chuyển</span>
                   <input
+                    ref={setFormFieldRef('field-shippingCarrier')}
                     list="shipping-carrier-options"
                     value={form.shippingCarrier}
                     onChange={(event) => updateForm('shippingCarrier', event.target.value)}
@@ -2750,9 +2860,9 @@ export function Purchases() {
                       <div key={line.id} className="rounded-2xl bg-fog-50 p-4 space-y-4">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div>
-                            <p className="text-xs uppercase tracking-[0.25em] text-ink-500">Mã lô</p>
+                            <p className="text-xs uppercase tracking-[0.25em] text-ink-500">Số thứ tự lô</p>
                             <p className="text-sm font-semibold text-ink-900">
-                              {line.batchCode || 'Server tự sinh khi lưu'}
+                              #{index + 1}
                             </p>
                           </div>
                           <div className="flex flex-wrap gap-2">
@@ -2773,10 +2883,11 @@ export function Purchases() {
                           </div>
                         </div>
 
-                        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-                          <label className="space-y-1 text-xs text-ink-600">
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <label className="space-y-1 text-xs text-ink-600 md:col-span-2">
                             Thuốc *
                             <select
+                              ref={setFormFieldRef(`line-drug-${line.id}`)}
                               value={line.drugId}
                               onChange={(event) => handleDrugChange(line.id, event.target.value)}
                               className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
@@ -2805,6 +2916,7 @@ export function Purchases() {
                           <label className="space-y-1 text-xs text-ink-600">
                             Barcode
                             <input
+                              ref={setFormFieldRef(`line-barcode-${line.id}`)}
                               value={line.barcode}
                               onChange={(event) => updateLine(line.id, 'barcode', event.target.value)}
                               className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
@@ -2815,6 +2927,7 @@ export function Purchases() {
                           <label className="space-y-1 text-xs text-ink-600">
                             Số lô *
                             <input
+                              ref={setFormFieldRef(`line-lot-${line.id}`)}
                               value={line.lotNumber}
                               onChange={(event) => updateLine(line.id, 'lotNumber', event.target.value)}
                               className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
@@ -2828,6 +2941,7 @@ export function Purchases() {
                           <label className="space-y-1 text-xs text-ink-600">
                             Số lượng nhập (đơn vị nhập) *
                             <input
+                              ref={setFormFieldRef(`line-qty-${line.id}`)}
                               value={line.quantity}
                               onChange={(event) => updateLine(line.id, 'quantity', event.target.value)}
                               className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
@@ -2843,6 +2957,7 @@ export function Purchases() {
                           <label className="space-y-1 text-xs text-ink-600">
                             Giá nhập *
                             <input
+                              ref={setFormFieldRef(`line-price-${line.id}`)}
                               value={line.price}
                               onChange={(event) => updateLine(line.id, 'price', event.target.value)}
                               className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
@@ -2853,16 +2968,22 @@ export function Purchases() {
                             ) : null}
                           </label>
 
-                          <div className="space-y-2 text-xs text-ink-600 md:col-span-2 lg:col-span-3">
+                          <div className="space-y-2 text-xs text-ink-600 md:col-span-2">
                             <p>Giá bán lẻ theo từng đơn vị *</p>
                             {line.unitRetailPrices.length ? (
                               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                                {line.unitRetailPrices.map((unitPrice) => (
+                                {line.unitRetailPrices.map((unitPrice, unitIndex) => (
                                   <label key={unitPrice.unitId} className="space-y-1 rounded-xl border border-ink-900/10 bg-white p-3">
                                     <span className="text-[11px] text-ink-600">
                                       {unitPrice.unitName} ({unitPrice.conversion} đơn vị gốc)
                                     </span>
                                     <input
+                                      ref={(element) => {
+                                        setFormFieldRef(`line-retail-${line.id}-${unitPrice.unitId}`)(element)
+                                        if (unitIndex === 0) {
+                                          setFormFieldRef(`line-retail-first-${line.id}`)(element)
+                                        }
+                                      }}
                                       value={unitPrice.price}
                                       onChange={(event) =>
                                         updateLineRetailPrice(line.id, unitPrice.unitId, event.target.value)
@@ -2902,12 +3023,14 @@ export function Purchases() {
                               Mua X tặng Y
                               <div className="mt-1 grid grid-cols-2 gap-2">
                                 <input
+                                  ref={setFormFieldRef(`line-promo-buy-${line.id}`)}
                                   value={line.promoBuyQty}
                                   onChange={(event) => updateLine(line.id, 'promoBuyQty', event.target.value)}
                                   className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
                                   placeholder="Mua X"
                                 />
                                 <input
+                                  ref={setFormFieldRef(`line-promo-get-${line.id}`)}
                                   value={line.promoGetQty}
                                   onChange={(event) => updateLine(line.id, 'promoGetQty', event.target.value)}
                                   className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
@@ -2926,6 +3049,7 @@ export function Purchases() {
                             <label className="space-y-1 text-xs text-ink-600">
                               Giảm %
                               <input
+                                ref={setFormFieldRef(`line-promo-discount-${line.id}`)}
                                 value={line.promoDiscountPercent}
                                 onChange={(event) => updateLine(line.id, 'promoDiscountPercent', event.target.value)}
                                 className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
@@ -2937,7 +3061,7 @@ export function Purchases() {
                             </label>
                           ) : null}
 
-                          <label className="space-y-1 text-xs text-ink-600">
+                          <label className="space-y-1 text-xs text-ink-600 md:col-span-2">
                             Số lượng sau khuyến mãi
                             <input
                               value={pricing.quantityAfterPromo.toLocaleString('vi-VN')}
@@ -2967,6 +3091,7 @@ export function Purchases() {
                           <label className="space-y-1 text-xs text-ink-600">
                             NSX *
                             <input
+                              ref={setFormFieldRef(`line-mfg-${line.id}`)}
                               value={line.mfgDate}
                               onChange={(event) => updateLine(line.id, 'mfgDate', event.target.value)}
                               type="date"
@@ -2980,6 +3105,7 @@ export function Purchases() {
                           <label className="space-y-1 text-xs text-ink-600">
                             HSD *
                             <input
+                              ref={setFormFieldRef(`line-exp-${line.id}`)}
                               value={line.expDate}
                               onChange={(event) => updateLine(line.id, 'expDate', event.target.value)}
                               type="date"
@@ -3015,6 +3141,7 @@ export function Purchases() {
               <div className="flex flex-wrap gap-3">
                 <button
                   type="button"
+                  ref={setFormFieldRef('action-add-line')}
                   onClick={addLine}
                   className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900"
                 >

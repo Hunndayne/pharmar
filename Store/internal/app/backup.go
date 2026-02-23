@@ -272,17 +272,19 @@ func (s *Service) RestoreBackup(ctx context.Context, reader io.Reader, filename 
 
 	env := append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", connInfo.Password))
 	sections := splitByDatabase(string(sqlData))
+	if len(sections) == 0 {
+		return fmt.Errorf("%w: invalid backup file format (missing database sections)", ErrBadRequest)
+	}
 
-	for db, sql := range sections {
-		known := false
-		for _, d := range backupDatabases {
-			if d == db {
-				known = true
-				break
-			}
+	// Restore in deterministic order to avoid partial/implicit behavior by map iteration.
+	for _, db := range backupDatabases {
+		sql, ok := sections[db]
+		if !ok {
+			log.Printf("restore: skip database %q (section not found in backup)", db)
+			continue
 		}
-		if !known {
-			log.Printf("restore: skipping unknown database %q", db)
+		if strings.TrimSpace(sql) == "" {
+			log.Printf("restore: skip database %q (empty SQL section)", db)
 			continue
 		}
 
@@ -292,6 +294,7 @@ func (s *Service) RestoreBackup(ctx context.Context, reader io.Reader, filename 
 			"-U", connInfo.User,
 			"-d", db,
 			"-v", "ON_ERROR_STOP=1",
+			"--single-transaction",
 		)
 		cmd.Env = env
 		cmd.Stdin = strings.NewReader(sql)
@@ -312,6 +315,11 @@ func (s *Service) RestoreFromBackupID(ctx context.Context, backupID string) erro
 	filePath, filename, err := s.GetBackupFilePath(ctx, backupID)
 	if err != nil {
 		return err
+	}
+
+	// Safety snapshot before restore so current state can be recovered if needed.
+	if _, err := s.CreateBackup(ctx, fmt.Sprintf("Pre-restore snapshot (source backup: %s)", backupID), "system"); err != nil {
+		return fmt.Errorf("create pre-restore backup: %w", err)
 	}
 
 	file, err := os.Open(filePath)
