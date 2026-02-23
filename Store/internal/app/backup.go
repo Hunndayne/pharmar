@@ -1,0 +1,651 @@
+package app
+
+import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"store-service/internal/domain"
+)
+
+var backupDatabases = []string{
+	"pharmar_auth",
+	"pharmar_store",
+	"pharmar_sale",
+	"pharmar_inventory",
+	"pharmar_catalog",
+	"pharmar_customer",
+}
+
+type pgConnInfo struct {
+	Host     string
+	Port     string
+	User     string
+	Password string
+}
+
+func parsePgConnInfo(databaseURL string) (pgConnInfo, error) {
+	u, err := url.Parse(databaseURL)
+	if err != nil {
+		return pgConnInfo{}, fmt.Errorf("parse DATABASE_URL: %w", err)
+	}
+	host := u.Hostname()
+	port := u.Port()
+	if port == "" {
+		port = "5432"
+	}
+	user := u.User.Username()
+	password, _ := u.User.Password()
+	return pgConnInfo{Host: host, Port: port, User: user, Password: password}, nil
+}
+
+// PgDumpAvailable checks whether the pg_dump CLI tool is installed.
+func PgDumpAvailable() bool {
+	_, err := exec.LookPath("pg_dump")
+	return err == nil
+}
+
+// CreateBackup dumps all databases to a compressed .sql.gz file.
+func (s *Service) CreateBackup(ctx context.Context, note string, actor string) (domain.BackupRecord, error) {
+	connInfo, err := parsePgConnInfo(s.cfg.DatabaseURL)
+	if err != nil {
+		return domain.BackupRecord{}, err
+	}
+
+	backupID := uuid.NewString()
+	timestamp := time.Now().Format("20060102-150405")
+	filename := fmt.Sprintf("backup_%s_%s.sql.gz", timestamp, backupID[:8])
+	filePath := filepath.Join(s.cfg.BackupDir, filename)
+
+	file, err := os.Create(filePath)
+	if err != nil {
+		return domain.BackupRecord{}, fmt.Errorf("create backup file: %w", err)
+	}
+
+	gzw := gzip.NewWriter(file)
+
+	header := fmt.Sprintf("-- Pharmar Database Backup\n-- Created: %s\n-- Databases: %s\n\n",
+		time.Now().Format(time.RFC3339),
+		strings.Join(backupDatabases, ", "),
+	)
+	if _, err := gzw.Write([]byte(header)); err != nil {
+		gzw.Close()
+		file.Close()
+		os.Remove(filePath)
+		return domain.BackupRecord{}, fmt.Errorf("write header: %w", err)
+	}
+
+	env := append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", connInfo.Password))
+
+	for _, db := range backupDatabases {
+		separator := fmt.Sprintf("\n-- ===== Database: %s =====\n\\connect %s\n\n", db, db)
+		if _, err := gzw.Write([]byte(separator)); err != nil {
+			gzw.Close()
+			file.Close()
+			os.Remove(filePath)
+			return domain.BackupRecord{}, fmt.Errorf("write separator: %w", err)
+		}
+
+		cmd := exec.CommandContext(ctx, "pg_dump",
+			"-h", connInfo.Host,
+			"-p", connInfo.Port,
+			"-U", connInfo.User,
+			"--no-owner",
+			"--no-acl",
+			"--clean",
+			"--if-exists",
+			db,
+		)
+		cmd.Env = env
+
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+
+		output, err := cmd.Output()
+		if err != nil {
+			gzw.Close()
+			file.Close()
+			os.Remove(filePath)
+			return domain.BackupRecord{}, fmt.Errorf("pg_dump %s: %s: %w", db, stderr.String(), err)
+		}
+
+		if _, err := gzw.Write(output); err != nil {
+			gzw.Close()
+			file.Close()
+			os.Remove(filePath)
+			return domain.BackupRecord{}, fmt.Errorf("write dump data: %w", err)
+		}
+	}
+
+	if err := gzw.Close(); err != nil {
+		file.Close()
+		os.Remove(filePath)
+		return domain.BackupRecord{}, fmt.Errorf("close gzip: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(filePath)
+		return domain.BackupRecord{}, fmt.Errorf("close file: %w", err)
+	}
+
+	fi, err := os.Stat(filePath)
+	if err != nil {
+		os.Remove(filePath)
+		return domain.BackupRecord{}, fmt.Errorf("stat backup file: %w", err)
+	}
+
+	actorUUID := parseActorUUID(actor)
+	notePtr := normalizeOptionalText(&note)
+	row := s.pool.QueryRow(ctx,
+		`INSERT INTO store.backups (id, filename, size_bytes, databases, note, created_by)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id::text, filename, size_bytes, databases, note, created_at, created_by::text`,
+		backupID, filename, fi.Size(), backupDatabases, notePtr, actorUUID,
+	)
+
+	record, err := scanBackupRecord(row)
+	if err != nil {
+		os.Remove(filePath)
+		return domain.BackupRecord{}, err
+	}
+
+	go s.cleanupOldBackups(context.Background())
+	return record, nil
+}
+
+// ListBackups returns all backup records ordered by newest first.
+func (s *Service) ListBackups(ctx context.Context) ([]domain.BackupRecord, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id::text, filename, size_bytes, databases, note, created_at, created_by::text
+		   FROM store.backups
+		  ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	records := make([]domain.BackupRecord, 0)
+	for rows.Next() {
+		record, err := scanBackupRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
+// GetBackupRecord fetches a single backup record by ID.
+func (s *Service) GetBackupRecord(ctx context.Context, backupID string) (domain.BackupRecord, error) {
+	id := strings.TrimSpace(backupID)
+	if id == "" {
+		return domain.BackupRecord{}, fmt.Errorf("%w: backup_id is required", ErrBadRequest)
+	}
+	if _, err := uuid.Parse(id); err != nil {
+		return domain.BackupRecord{}, fmt.Errorf("%w: invalid backup_id", ErrBadRequest)
+	}
+
+	row := s.pool.QueryRow(ctx,
+		`SELECT id::text, filename, size_bytes, databases, note, created_at, created_by::text
+		   FROM store.backups WHERE id = $1`, id,
+	)
+	record, err := scanBackupRecord(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.BackupRecord{}, fmt.Errorf("%w: backup not found", ErrNotFound)
+		}
+		return domain.BackupRecord{}, err
+	}
+	return record, nil
+}
+
+// GetBackupFilePath returns the absolute file path and display name for a backup.
+func (s *Service) GetBackupFilePath(ctx context.Context, backupID string) (string, string, error) {
+	record, err := s.GetBackupRecord(ctx, backupID)
+	if err != nil {
+		return "", "", err
+	}
+	filePath := filepath.Join(s.cfg.BackupDir, filepath.Base(record.Filename))
+	if _, err := os.Stat(filePath); err != nil {
+		return "", "", fmt.Errorf("%w: backup file not found on disk", ErrNotFound)
+	}
+	return filePath, record.Filename, nil
+}
+
+// DeleteBackup removes a backup record and its file.
+func (s *Service) DeleteBackup(ctx context.Context, backupID string) error {
+	record, err := s.GetBackupRecord(ctx, backupID)
+	if err != nil {
+		return err
+	}
+
+	cmdTag, err := s.pool.Exec(ctx, `DELETE FROM store.backups WHERE id = $1`, backupID)
+	if err != nil {
+		return err
+	}
+	if cmdTag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: backup not found", ErrNotFound)
+	}
+
+	filePath := filepath.Join(s.cfg.BackupDir, filepath.Base(record.Filename))
+	_ = os.Remove(filePath)
+	return nil
+}
+
+// RestoreBackup reads a .sql or .sql.gz file and replays it into each database.
+func (s *Service) RestoreBackup(ctx context.Context, reader io.Reader, filename string) error {
+	connInfo, err := parsePgConnInfo(s.cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+
+	var rawData io.Reader
+	if strings.HasSuffix(strings.ToLower(filename), ".gz") {
+		gzr, err := gzip.NewReader(reader)
+		if err != nil {
+			return fmt.Errorf("decompress backup: %w", err)
+		}
+		defer gzr.Close()
+		rawData = gzr
+	} else {
+		rawData = reader
+	}
+
+	sqlData, err := io.ReadAll(rawData)
+	if err != nil {
+		return fmt.Errorf("read backup data: %w", err)
+	}
+
+	env := append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", connInfo.Password))
+	sections := splitByDatabase(string(sqlData))
+
+	for db, sql := range sections {
+		known := false
+		for _, d := range backupDatabases {
+			if d == db {
+				known = true
+				break
+			}
+		}
+		if !known {
+			log.Printf("restore: skipping unknown database %q", db)
+			continue
+		}
+
+		cmd := exec.CommandContext(ctx, "psql",
+			"-h", connInfo.Host,
+			"-p", connInfo.Port,
+			"-U", connInfo.User,
+			"-d", db,
+			"-v", "ON_ERROR_STOP=1",
+		)
+		cmd.Env = env
+		cmd.Stdin = strings.NewReader(sql)
+
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("restore %s: %s: %w", db, stderr.String(), err)
+		}
+	}
+
+	return nil
+}
+
+// RestoreFromBackupID restores the database from an existing backup record.
+func (s *Service) RestoreFromBackupID(ctx context.Context, backupID string) error {
+	filePath, filename, err := s.GetBackupFilePath(ctx, backupID)
+	if err != nil {
+		return err
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("open backup file: %w", err)
+	}
+	defer file.Close()
+
+	return s.RestoreBackup(ctx, file, filename)
+}
+
+// SaveUploadedBackup stores an uploaded file and creates a backup record.
+func (s *Service) SaveUploadedBackup(ctx context.Context, reader io.Reader, originalFilename string, actor string) (domain.BackupRecord, error) {
+	backupID := uuid.NewString()
+	ext := filepath.Ext(originalFilename)
+	if ext == "" {
+		ext = ".sql.gz"
+	}
+	safeOriginal := filepath.Base(originalFilename)
+	filename := fmt.Sprintf("uploaded_%s_%s%s", time.Now().Format("20060102-150405"), backupID[:8], ext)
+	filePath := filepath.Join(s.cfg.BackupDir, filename)
+
+	file, err := os.Create(filePath)
+	if err != nil {
+		return domain.BackupRecord{}, fmt.Errorf("create file: %w", err)
+	}
+
+	n, err := io.Copy(file, reader)
+	if closeErr := file.Close(); closeErr != nil && err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		os.Remove(filePath)
+		return domain.BackupRecord{}, fmt.Errorf("save uploaded backup: %w", err)
+	}
+
+	actorUUID := parseActorUUID(actor)
+	note := fmt.Sprintf("Uploaded: %s", safeOriginal)
+	row := s.pool.QueryRow(ctx,
+		`INSERT INTO store.backups (id, filename, size_bytes, databases, note, created_by)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id::text, filename, size_bytes, databases, note, created_at, created_by::text`,
+		backupID, filename, n, backupDatabases, note, actorUUID,
+	)
+
+	record, err := scanBackupRecord(row)
+	if err != nil {
+		os.Remove(filePath)
+		return domain.BackupRecord{}, err
+	}
+
+	return record, nil
+}
+
+// SyncPush creates a backup and sends it to the configured remote server.
+func (s *Service) SyncPush(ctx context.Context, actor string) error {
+	syncURL, err := s.getSyncServerURL(ctx)
+	if err != nil {
+		return err
+	}
+	syncKey := s.getSyncAPIKey(ctx)
+
+	record, err := s.CreateBackup(ctx, "Dong bo day", actor)
+	if err != nil {
+		return fmt.Errorf("create backup for sync push: %w", err)
+	}
+
+	filePath := filepath.Join(s.cfg.BackupDir, filepath.Base(record.Filename))
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("open backup file: %w", err)
+	}
+	defer file.Close()
+
+	targetURL := strings.TrimRight(syncURL, "/") + "/api/v1/store/backup/receive"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, file)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Backup-Filename", record.Filename)
+	if syncKey != "" {
+		req.Header.Set("X-Sync-API-Key", syncKey)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("push to remote: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("remote server returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// SyncPull downloads the latest backup from the remote server and saves it locally.
+func (s *Service) SyncPull(ctx context.Context, actor string) error {
+	syncURL, err := s.getSyncServerURL(ctx)
+	if err != nil {
+		return err
+	}
+	syncKey := s.getSyncAPIKey(ctx)
+
+	targetURL := strings.TrimRight(syncURL, "/") + "/api/v1/store/backup/latest/download"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	if syncKey != "" {
+		req.Header.Set("X-Sync-API-Key", syncKey)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("pull from remote: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("remote server returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	filename := resp.Header.Get("X-Backup-Filename")
+	if filename == "" {
+		filename = "sync-pull.sql.gz"
+	}
+
+	_, err = s.SaveUploadedBackup(ctx, resp.Body, filename, actor)
+	return err
+}
+
+// ReceiveBackup accepts a backup push from a remote server after verifying the API key.
+func (s *Service) ReceiveBackup(ctx context.Context, apiKey string, reader io.Reader, filename string) error {
+	expectedKey := s.getSyncAPIKey(ctx)
+	if expectedKey == "" {
+		return fmt.Errorf("%w: sync is not configured on this server", ErrBadRequest)
+	}
+	if apiKey != expectedKey {
+		return fmt.Errorf("%w: invalid sync API key", ErrForbidden)
+	}
+
+	_, err := s.SaveUploadedBackup(ctx, reader, filename, "sync")
+	return err
+}
+
+// GetLatestBackupFilePath returns the path to the most recent backup file.
+func (s *Service) GetLatestBackupFilePath(ctx context.Context) (string, string, error) {
+	row := s.pool.QueryRow(ctx,
+		`SELECT id::text, filename, size_bytes, databases, note, created_at, created_by::text
+		   FROM store.backups ORDER BY created_at DESC LIMIT 1`,
+	)
+	record, err := scanBackupRecord(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", fmt.Errorf("%w: no backups found", ErrNotFound)
+		}
+		return "", "", err
+	}
+
+	filePath := filepath.Join(s.cfg.BackupDir, filepath.Base(record.Filename))
+	if _, err := os.Stat(filePath); err != nil {
+		return "", "", fmt.Errorf("%w: backup file not found on disk", ErrNotFound)
+	}
+
+	return filePath, record.Filename, nil
+}
+
+// --- helpers ---
+
+func (s *Service) getSyncServerURL(ctx context.Context) (string, error) {
+	settings, err := s.GetSettingsByGroup(ctx, "backup")
+	if err != nil {
+		return "", err
+	}
+	rawURL, _ := settings["backup.sync_server_url"].(string)
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", fmt.Errorf("%w: sync server URL is not configured", ErrBadRequest)
+	}
+	return rawURL, nil
+}
+
+// GetSyncAPIKeyPublic returns the configured sync API key (used by handler for auth).
+func (s *Service) GetSyncAPIKeyPublic(ctx context.Context) string {
+	return s.getSyncAPIKey(ctx)
+}
+
+func (s *Service) getSyncAPIKey(ctx context.Context) string {
+	settings, _ := s.GetSettingsByGroup(ctx, "backup")
+	key, _ := settings["backup.sync_api_key"].(string)
+	return strings.TrimSpace(key)
+}
+
+func (s *Service) cleanupOldBackups(ctx context.Context) {
+	maxFiles := 10
+	settings, err := s.GetSettingsByGroup(ctx, "backup")
+	if err == nil {
+		if v, ok := settings["backup.max_files"]; ok {
+			if n, ok := v.(float64); ok && n > 0 {
+				maxFiles = int(n)
+			}
+		}
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT id::text, filename FROM store.backups ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	type item struct{ id, filename string }
+	var all []item
+	for rows.Next() {
+		var i item
+		if err := rows.Scan(&i.id, &i.filename); err != nil {
+			return
+		}
+		all = append(all, i)
+	}
+
+	if len(all) <= maxFiles {
+		return
+	}
+
+	for _, i := range all[maxFiles:] {
+		_, _ = s.pool.Exec(ctx, `DELETE FROM store.backups WHERE id = $1`, i.id)
+		_ = os.Remove(filepath.Join(s.cfg.BackupDir, filepath.Base(i.filename)))
+	}
+}
+
+func (s *Service) runBackupJob(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	// Seed last backup time from database.
+	var lastBackup time.Time
+	row := s.pool.QueryRow(context.Background(),
+		`SELECT created_at FROM store.backups ORDER BY created_at DESC LIMIT 1`,
+	)
+	if err := row.Scan(&lastBackup); err != nil {
+		lastBackup = time.Time{}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.checkAndRunAutoBackup(ctx, &lastBackup)
+		}
+	}
+}
+
+func (s *Service) checkAndRunAutoBackup(ctx context.Context, lastBackup *time.Time) {
+	settings, err := s.GetSettingsByGroup(ctx, "backup")
+	if err != nil {
+		return
+	}
+
+	enabled, _ := settings["backup.auto_enabled"].(bool)
+	if !enabled {
+		return
+	}
+
+	intervalHours := 24.0
+	if v, ok := settings["backup.auto_interval_hours"].(float64); ok && v > 0 {
+		intervalHours = v
+	}
+
+	if time.Since(*lastBackup) < time.Duration(intervalHours*float64(time.Hour)) {
+		return
+	}
+
+	log.Printf("auto-backup: creating scheduled backup")
+	_, err = s.CreateBackup(ctx, "Sao luu tu dong", "system")
+	if err != nil {
+		log.Printf("auto-backup failed: %v", err)
+		return
+	}
+	*lastBackup = time.Now()
+	log.Printf("auto-backup: completed successfully")
+}
+
+// splitByDatabase parses a combined backup SQL into per-database sections.
+func splitByDatabase(sql string) map[string]string {
+	result := make(map[string]string)
+	lines := strings.Split(sql, "\n")
+	currentDB := ""
+	var buf strings.Builder
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "\\connect ") {
+			if currentDB != "" {
+				result[currentDB] = buf.String()
+			}
+			currentDB = strings.TrimSpace(strings.TrimPrefix(trimmed, "\\connect "))
+			buf.Reset()
+			continue
+		}
+		if currentDB != "" {
+			buf.WriteString(line)
+			buf.WriteByte('\n')
+		}
+	}
+	if currentDB != "" {
+		result[currentDB] = buf.String()
+	}
+
+	return result
+}
+
+func scanBackupRecord(row pgx.Row) (domain.BackupRecord, error) {
+	var r domain.BackupRecord
+	err := row.Scan(
+		&r.ID,
+		&r.Filename,
+		&r.SizeBytes,
+		&r.Databases,
+		&r.Note,
+		&r.CreatedAt,
+		&r.CreatedBy,
+	)
+	if err != nil {
+		return domain.BackupRecord{}, err
+	}
+	return r, nil
+}

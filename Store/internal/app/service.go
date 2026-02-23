@@ -25,6 +25,7 @@ import (
 var (
 	ErrNotFound   = errors.New("not found")
 	ErrBadRequest = errors.New("bad request")
+	ErrForbidden  = errors.New("forbidden")
 )
 
 const (
@@ -35,10 +36,11 @@ const (
 )
 
 type Service struct {
-	cfg      config.Config
-	pool     *pgxpool.Pool
-	redis    *redis.Client
-	defaults map[string]domain.DefaultSetting
+	cfg          config.Config
+	pool         *pgxpool.Pool
+	redis        *redis.Client
+	defaults     map[string]domain.DefaultSetting
+	backupCancel context.CancelFunc
 }
 
 func New(ctx context.Context, cfg config.Config) (*Service, error) {
@@ -69,6 +71,10 @@ func New(ctx context.Context, cfg config.Config) (*Service, error) {
 		pool.Close()
 		return nil, fmt.Errorf("create logo upload dir: %w", err)
 	}
+	if err := os.MkdirAll(cfg.BackupDir, 0o755); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("create backup dir: %w", err)
+	}
 
 	if err := svc.migrate(ctx); err != nil {
 		pool.Close()
@@ -84,10 +90,17 @@ func New(ctx context.Context, cfg config.Config) (*Service, error) {
 		return nil, err
 	}
 
+	jobCtx, jobCancel := context.WithCancel(context.Background())
+	svc.backupCancel = jobCancel
+	go svc.runBackupJob(jobCtx)
+
 	return svc, nil
 }
 
 func (s *Service) Close() {
+	if s.backupCancel != nil {
+		s.backupCancel()
+	}
 	if s.redis != nil {
 		_ = s.redis.Close()
 	}
@@ -177,6 +190,16 @@ func (s *Service) migrate(ctx context.Context) error {
 		  ON store.drug_groups (category_id, lower(name))`,
 		`CREATE INDEX IF NOT EXISTS idx_drug_groups_category_active_sort
 		  ON store.drug_groups (category_id, is_active, sort_order, name)`,
+		`CREATE TABLE IF NOT EXISTS store.backups (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			filename VARCHAR(200) NOT NULL,
+			size_bytes BIGINT NOT NULL DEFAULT 0,
+			databases TEXT[] NOT NULL DEFAULT '{}',
+			note TEXT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			created_by UUID
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_backups_created_at ON store.backups (created_at DESC)`,
 	}
 
 	for _, query := range queries {

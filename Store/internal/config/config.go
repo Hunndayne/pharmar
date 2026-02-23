@@ -20,6 +20,7 @@ type Config struct {
 	JWTSecretKey       string
 	JWTAlgorithm       string
 	LogoUploadDir      string
+	BackupDir          string
 	DefaultStoreName   string
 	CORSAllowedOrigins []string
 }
@@ -78,6 +79,7 @@ func Load() (Config, error) {
 		JWTSecretKey:       getEnv("JWT_SECRET_KEY", "change-this-secret"),
 		JWTAlgorithm:       getEnv("JWT_ALGORITHM", "HS256"),
 		LogoUploadDir:      getEnv("LOGO_UPLOAD_DIR", "./uploads"),
+		BackupDir:          getEnv("BACKUP_DIR", "./backups"),
 		DefaultStoreName:   getEnv("DEFAULT_STORE_NAME", "Nha thuoc Pharmar"),
 		CORSAllowedOrigins: corsOrigins,
 	}

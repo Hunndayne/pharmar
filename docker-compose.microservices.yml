@@ -156,8 +156,11 @@
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       LOGO_UPLOAD_DIR: /app/uploads
+      BACKUP_DIR: /app/backups
       DEFAULT_STORE_NAME: Nha thuoc Pharmar
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
+    volumes:
+      - store_backups:/app/backups
     ports:
       - "8005:8005"
     depends_on:
@@ -290,3 +293,4 @@
 volumes:
   postgres_data:
   inventory_state_data:
+  store_backups:
