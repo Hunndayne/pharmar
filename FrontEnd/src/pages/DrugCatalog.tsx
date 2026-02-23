@@ -742,7 +742,7 @@ export function DrugCatalog() {
     const retailName = form.retailUnit.name.trim() || 'đơn vị bán lẻ'
     if (form.singleUnit) return `Sản phẩm chỉ có 1 đơn vị: ${retailName}.`
 
-    const importName = form.importUnit.name.trim() || 'đơn vị nhập'
+    const importName = form.importUnit.name.trim() || 'đơn vị bán sỉ'
     const importConversion = parsePositive(form.importUnit.conversion)
     if (!importConversion) return 'Quy đổi tự động: nhập quy đổi để xem công thức.'
 
@@ -2009,7 +2009,7 @@ export function DrugCatalog() {
               </div>
               <div className="mt-6 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <p className="text-sm font-semibold text-ink-900">Đơn vị nhập / trung gian / bán lẻ</p>
+                  <p className="text-sm font-semibold text-ink-900">Đơn vị bán sỉ / trung gian / bán lẻ</p>
                   <div className="flex flex-wrap items-center gap-4 text-sm text-ink-700">
                     <label className="inline-flex items-center gap-2">
                       <input
@@ -2037,7 +2037,7 @@ export function DrugCatalog() {
 
                 {!form.singleUnit ? (
                   <div className="rounded-2xl bg-fog-50 p-4">
-                    <p className="text-xs uppercase tracking-[0.25em] text-ink-600">Đơn vị nhập</p>
+                    <p className="text-xs uppercase tracking-[0.25em] text-ink-600">Đơn vị bán sỉ</p>
                     <div className="mt-3 grid gap-3 sm:grid-cols-3">
                       <label className="space-y-1 text-xs text-ink-600">
                         Tên đơn vị *

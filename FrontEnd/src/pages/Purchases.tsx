@@ -964,6 +964,7 @@ export function Purchases() {
   const scanStabilityRef = useRef<{ value: string; count: number; lastSeen: number } | null>(null)
   const receiptExtrasRef = useRef(receiptExtras)
   const formFieldRefs = useRef<Record<string, HTMLElement | null>>({})
+  const lineCardRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const pendingNewLineIdRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -997,6 +998,22 @@ export function Purchases() {
       target.focus()
     }
     return true
+  }, [])
+
+  const setLineCardRef = useCallback(
+    (lineId: string) => (element: HTMLDivElement | null) => {
+      if (element) lineCardRefs.current[lineId] = element
+      else delete lineCardRefs.current[lineId]
+    },
+    [],
+  )
+
+  const scrollToLineCard = useCallback((lineId: string) => {
+    const target = lineCardRefs.current[lineId]
+    if (!target) return
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    const firstFocusable = target.querySelector('select, input, textarea, button') as HTMLElement | null
+    firstFocusable?.focus()
   }, [])
 
   const getApiErrorMessage = useCallback((error: unknown, fallback: string) => {
@@ -1211,13 +1228,18 @@ export function Purchases() {
     return Array.from(next)
   }, [orders, form.shippingCarrier])
 
-  const selectedLineDrugNames = useMemo(() => {
-    const names = new Set<string>()
+  const selectedLinePills = useMemo(() => {
+    const seenDrugIds = new Set<string>()
+    const pills: Array<{ drugId: string; name: string; lineId: string }> = []
     form.lines.forEach((line) => {
-      const name = drugMap.get(line.drugId)?.name?.trim()
-      if (name) names.add(name)
+      const drugId = line.drugId?.trim()
+      if (!drugId || seenDrugIds.has(drugId)) return
+      const name = drugMap.get(drugId)?.name?.trim()
+      if (!name) return
+      seenDrugIds.add(drugId)
+      pills.push({ drugId, name, lineId: line.id })
     })
-    return Array.from(names)
+    return pills
   }, [drugMap, form.lines])
 
   const filtered = useMemo(() => {
@@ -2733,36 +2755,42 @@ export function Purchases() {
       {modalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4">
           <div className="flex w-full max-w-5xl max-h-[90vh] min-h-0 flex-col overflow-hidden rounded-3xl bg-white shadow-lift">
-            <div className="flex items-center justify-between border-b border-ink-900/10 px-6 py-5">
-              <div>
-                <p className="text-xs uppercase tracking-[0.3em] text-ink-600">
-                  {editingId ? 'Chỉnh sửa phiếu nhập' : 'Tạo phiếu nhập mới'}
-                </p>
-                <div className="mt-2 flex flex-wrap items-center gap-2">
+            <div className="flex items-start justify-between gap-3 border-b border-ink-900/10 px-6 py-5">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs uppercase tracking-[0.3em] text-ink-600">
+                    {editingId ? 'Chỉnh sửa phiếu nhập' : 'Tạo phiếu nhập mới'}
+                  </p>
                   <span className="rounded-full border border-ink-900/10 bg-fog-50 px-3 py-1 text-xs font-semibold text-ink-700">
                     Mã phiếu: {form.code}
                   </span>
-                  {selectedLineDrugNames.length ? (
-                    selectedLineDrugNames.map((name) => (
-                      <span
-                        key={name}
-                        className="max-w-[220px] truncate rounded-full border border-brand-500/20 bg-brand-500/10 px-3 py-1 text-xs font-medium text-brand-700"
-                        title={name}
-                      >
-                        {name}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-xs text-ink-500">Chưa có thuốc trong phiếu</span>
-                  )}
+                </div>
+                <div className="mt-2 w-full overflow-x-auto">
+                  <div className="inline-flex min-w-max items-center gap-2 whitespace-nowrap pr-1">
+                    {selectedLinePills.length ? (
+                      selectedLinePills.map((pill) => (
+                        <button
+                          key={pill.drugId}
+                          type="button"
+                          onClick={() => scrollToLineCard(pill.lineId)}
+                          className="rounded-full border border-brand-500/20 bg-brand-500/10 px-2.5 py-1 text-[11px] font-medium text-brand-700 hover:bg-brand-500/15"
+                          title={pill.name}
+                        >
+                          {pill.name}
+                        </button>
+                      ))
+                    ) : (
+                      <span className="text-xs text-ink-500">Chưa có thuốc trong phiếu</span>
+                    )}
+                  </div>
                 </div>
               </div>
-              <button onClick={closeModal} className="rounded-full border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900">
+              <button onClick={closeModal} className="shrink-0 rounded-full border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900">
                 Đóng
               </button>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-6">
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid grid-cols-2 gap-3">
                 <label className="space-y-2 text-sm text-ink-700">
                   <span>Mã phiếu nhập</span>
                   <input value={form.code} disabled className="w-full rounded-2xl border border-ink-900/10 bg-fog-50 px-4 py-2 text-xs text-ink-500" />
@@ -2832,7 +2860,7 @@ export function Purchases() {
                     ))}
                   </select>
                 </label>
-                <label className="space-y-2 text-sm text-ink-700 md:col-span-2">
+                <label className="col-span-2 space-y-2 text-sm text-ink-700">
                   <span>Ghi chú</span>
                   <textarea
                     value={form.note}
@@ -2857,7 +2885,7 @@ export function Purchases() {
                     const drug = drugMap.get(line.drugId)
                     const pricing = calcLinePricing(line)
                                         return (
-                      <div key={line.id} className="rounded-2xl bg-fog-50 p-4 space-y-4">
+                      <div key={line.id} ref={setLineCardRef(line.id)} className="rounded-2xl bg-fog-50 p-4 space-y-4">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div>
                             <p className="text-xs uppercase tracking-[0.25em] text-ink-500">Số thứ tự lô</p>
@@ -2883,8 +2911,8 @@ export function Purchases() {
                           </div>
                         </div>
 
-                        <div className="grid gap-3 md:grid-cols-2">
-                          <label className="space-y-1 text-xs text-ink-600 md:col-span-2">
+                        <div className="grid grid-cols-2 gap-3">
+                          <label className="col-span-2 space-y-1 text-xs text-ink-600">
                             Thuốc *
                             <select
                               ref={setFormFieldRef(`line-drug-${line.id}`)}
@@ -2939,7 +2967,7 @@ export function Purchases() {
                           </label>
 
                           <label className="space-y-1 text-xs text-ink-600">
-                            Số lượng nhập (đơn vị nhập) *
+                            Số lượng nhập (đơn vị bán sỉ) *
                             <input
                               ref={setFormFieldRef(`line-qty-${line.id}`)}
                               value={line.quantity}
@@ -2947,9 +2975,6 @@ export function Purchases() {
                               className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
                               placeholder="0"
                             />
-                            <span className="text-[11px] text-ink-500">
-                              Hệ thống tự quy đổi sang đơn vị bán lẻ để tính tồn kho.
-                            </span>
                             {errors[`line-qty-${index}`] ? (
                               <span className="text-xs text-coral-500">{errors[`line-qty-${index}`]}</span>
                             ) : null}
@@ -2968,7 +2993,7 @@ export function Purchases() {
                             ) : null}
                           </label>
 
-                          <div className="space-y-2 text-xs text-ink-600 md:col-span-2">
+                          <div className="col-span-2 space-y-2 text-xs text-ink-600">
                             <p>Giá bán lẻ theo từng đơn vị *</p>
                             {line.unitRetailPrices.length ? (
                               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -3061,7 +3086,7 @@ export function Purchases() {
                             </label>
                           ) : null}
 
-                          <label className="space-y-1 text-xs text-ink-600 md:col-span-2">
+                          <label className="col-span-2 space-y-1 text-xs text-ink-600">
                             Số lượng sau khuyến mãi
                             <input
                               value={pricing.quantityAfterPromo.toLocaleString('vi-VN')}

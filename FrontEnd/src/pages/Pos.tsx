@@ -211,7 +211,7 @@ const unitRoleFromIndex = (index: number, total: number): UnitRole => {
 }
 
 const unitRoleLabel = (role: UnitRole) => {
-  if (role === 'import') return 'Đơn vị nhập'
+  if (role === 'import') return 'Đơn vị bán sỉ'
   if (role === 'intermediate') return 'Đơn vị trung gian'
   if (role === 'retail') return 'Đơn vị bán lẻ'
   return 'Đơn vị'
@@ -2511,7 +2511,7 @@ export function Pos() {
             </button>
           </div>
 
-          <div className="mt-3 grid gap-3 md:grid-cols-[1.8fr,1fr,120px,auto]">
+          <div className="mt-3 grid gap-3 md:grid-cols-[1.6fr,1fr,120px,160px,auto]">
             <div className="space-y-1">
               <input
                 value={drugSearch}
@@ -2571,6 +2571,14 @@ export function Pos() {
               placeholder="SL"
             />
 
+            <input
+              value={selectedUnit ? formatCurrency(selectedUnit.price) : ''}
+              readOnly
+              className="w-full rounded-2xl border border-ink-900/10 bg-white/70 px-4 py-2 text-sm text-ink-500"
+              placeholder="Giá đơn vị"
+              title="Giá đơn vị tham khảo"
+            />
+
             <button
               type="button"
               onClick={() => {
@@ -2596,6 +2604,8 @@ export function Pos() {
             {activeOrder?.items.map((item) => {
               const drug = drugsById.get(item.drugId)
               const availableInUnit = Math.floor(item.batchQtyRemaining / Math.max(item.conversion, 1))
+              const unitRefPrice =
+                drug?.units.find((unit) => unit.id === item.unitId)?.price ?? item.unitPrice
               const quantity = parsePositiveInt(item.quantity, 0)
               const lineTotal = quantity * item.unitPrice
               const quantityInvalid = quantity <= 0 || quantity > availableInUnit
@@ -2618,7 +2628,7 @@ export function Pos() {
                     </button>
                   </div>
 
-                  <div className="mt-3 grid gap-3 md:grid-cols-4">
+                  <div className="mt-3 grid gap-3 md:grid-cols-5">
                     <label className="space-y-1 text-xs text-ink-600">
                       Đơn vị bán
                       <select
@@ -2640,6 +2650,15 @@ export function Pos() {
                         value={item.quantity}
                         onChange={(event) => handleItemQuantityChange(item.id, event.target.value)}
                         className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
+                      />
+                    </label>
+
+                    <label className="space-y-1 text-xs text-ink-600">
+                      Giá đơn vị tham khảo
+                      <input
+                        value={formatCurrency(unitRefPrice)}
+                        readOnly
+                        className="w-full rounded-xl border border-ink-900/10 bg-white/70 px-3 py-2 text-sm text-ink-500"
                       />
                     </label>
 
