@@ -299,8 +299,8 @@ const requestCatalogJson = async <T>(
           .map((item: { msg?: string; loc?: (string | number)[] }) => {
             const loc = Array.isArray(item?.loc) ? item.loc.join('.') : ''
             return loc
-              ? `${loc}: ${item?.msg ?? 'D\u1eef li\u1ec7u kh\u00f4ng h\u1ee3p l\u1ec7'}`
-              : (item?.msg ?? 'D\u1eef li\u1ec7u kh\u00f4ng h\u1ee3p l\u1ec7')
+              ? `${loc}: ${item?.msg ?? 'Dữ liệu không hợp lệ'}`
+              : (item?.msg ?? 'Dữ liệu không hợp lệ')
           })
           .join('; ')
       : undefined
@@ -308,7 +308,7 @@ const requestCatalogJson = async <T>(
       detailMessage ??
       payload?.detail ??
       payload?.message ??
-      `Y\u00eau c\u1ea7u th\u1ea5t b\u1ea1i (${response.status})`
+      `Yêu cầu thất bại (${response.status})`
     throw new ApiError(detail, response.status)
   }
 

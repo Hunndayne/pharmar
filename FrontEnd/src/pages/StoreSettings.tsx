@@ -353,12 +353,12 @@ export function StoreSettings() {
     setBackupError(null)
     setBackupMessage(null)
     try {
-      await storeApi.createBackup(token.access_token, 'Thu cong')
-      setBackupMessage('Da tao ban sao luu thanh cong.')
+      await storeApi.createBackup(token.access_token, 'Thủ công')
+      setBackupMessage('Đã tạo bản sao lưu thành công.')
       void loadBackups()
     } catch (err) {
       if (err instanceof ApiError) setBackupError(err.message)
-      else setBackupError('Khong the tao ban sao luu.')
+      else setBackupError('Không thể tạo bản sao lưu.')
     } finally {
       setBackupCreating(false)
     }
@@ -378,22 +378,22 @@ export function StoreSettings() {
       URL.revokeObjectURL(url)
     } catch (err) {
       if (err instanceof ApiError) setBackupError(err.message)
-      else setBackupError('Khong the tai ban sao luu.')
+      else setBackupError('Không thể tải bản sao lưu.')
     }
   }
 
   const onDeleteBackup = async (backupId: string) => {
     if (!token?.access_token) return
-    if (!window.confirm('Xoa ban sao luu nay?')) return
+    if (!window.confirm('Xóa bản sao lưu này?')) return
     setBackupError(null)
     setBackupMessage(null)
     try {
       await storeApi.deleteBackup(token.access_token, backupId)
-      setBackupMessage('Da xoa ban sao luu.')
+      setBackupMessage('Đã xóa bản sao lưu.')
       void loadBackups()
     } catch (err) {
       if (err instanceof ApiError) setBackupError(err.message)
-      else setBackupError('Khong the xoa ban sao luu.')
+      else setBackupError('Không thể xóa bản sao lưu.')
     }
   }
 
@@ -406,11 +406,11 @@ export function StoreSettings() {
     setBackupMessage(null)
     try {
       await storeApi.uploadBackup(token.access_token, file)
-      setBackupMessage('Da tai len ban sao luu thanh cong.')
+      setBackupMessage('Đã tải lên bản sao lưu thành công.')
       void loadBackups()
     } catch (err) {
       if (err instanceof ApiError) setBackupError(err.message)
-      else setBackupError('Khong the tai len ban sao luu.')
+      else setBackupError('Không thể tải lên bản sao lưu.')
     } finally {
       setBackupUploading(false)
     }
@@ -418,16 +418,16 @@ export function StoreSettings() {
 
   const onRestoreBackup = async (backupId: string) => {
     if (!token?.access_token) return
-    if (!window.confirm('Khoi phuc du lieu tu ban sao luu nay? Du lieu hien tai se bi ghi de.')) return
+    if (!window.confirm('Khôi phục dữ liệu từ bản sao lưu này? Dữ liệu hiện tại sẽ bị ghi đè.')) return
     setBackupRestoring(backupId)
     setBackupError(null)
     setBackupMessage(null)
     try {
       await storeApi.restoreBackup(token.access_token, backupId)
-      setBackupMessage('Da khoi phuc du lieu thanh cong. Hay tai lai trang.')
+      setBackupMessage('Đã khôi phục dữ liệu thành công. Hãy tải lại trang.')
     } catch (err) {
       if (err instanceof ApiError) setBackupError(err.message)
-      else setBackupError('Khong the khoi phuc du lieu.')
+      else setBackupError('Không thể khôi phục dữ liệu.')
     } finally {
       setBackupRestoring(null)
     }
@@ -446,10 +446,10 @@ export function StoreSettings() {
         'backup.sync_server_url': bkSyncUrl.trim(),
         'backup.sync_api_key': bkSyncKey.trim(),
       })
-      setBackupMessage('Da luu cau hinh sao luu.')
+      setBackupMessage('Đã lưu cấu hình sao lưu.')
     } catch (err) {
       if (err instanceof ApiError) setBackupError(err.message)
-      else setBackupError('Khong the luu cau hinh.')
+      else setBackupError('Không thể lưu cấu hình.')
     } finally {
       setBkSettingsSaving(false)
     }
@@ -457,17 +457,17 @@ export function StoreSettings() {
 
   const onSyncPush = async () => {
     if (!token?.access_token) return
-    if (!window.confirm('Day ban sao luu len server dong bo?')) return
+    if (!window.confirm('Đẩy bản sao lưu lên server đồng bộ?')) return
     setBackupSyncing('push')
     setBackupError(null)
     setBackupMessage(null)
     try {
       await storeApi.syncPush(token.access_token)
-      setBackupMessage('Da day ban sao luu len server dong bo.')
+      setBackupMessage('Đã đẩy bản sao lưu lên server đồng bộ.')
       void loadBackups()
     } catch (err) {
       if (err instanceof ApiError) setBackupError(err.message)
-      else setBackupError('Khong the dong bo.')
+      else setBackupError('Không thể đồng bộ.')
     } finally {
       setBackupSyncing(null)
     }
@@ -475,17 +475,17 @@ export function StoreSettings() {
 
   const onSyncPull = async () => {
     if (!token?.access_token) return
-    if (!window.confirm('Keo ban sao luu tu server dong bo? Du lieu moi se duoc luu vao danh sach.')) return
+    if (!window.confirm('Kéo bản sao lưu từ server đồng bộ? Dữ liệu mới sẽ được lưu vào danh sách.')) return
     setBackupSyncing('pull')
     setBackupError(null)
     setBackupMessage(null)
     try {
       await storeApi.syncPull(token.access_token)
-      setBackupMessage('Da keo ban sao luu tu server dong bo.')
+      setBackupMessage('Đã kéo bản sao lưu từ server đồng bộ.')
       void loadBackups()
     } catch (err) {
       if (err instanceof ApiError) setBackupError(err.message)
-      else setBackupError('Khong the dong bo.')
+      else setBackupError('Không thể đồng bộ.')
     } finally {
       setBackupSyncing(null)
     }
@@ -1291,9 +1291,9 @@ export function StoreSettings() {
         <section className="glass-card rounded-3xl p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="text-xl font-semibold text-ink-900">Sao luu & Dong bo du lieu</h3>
+              <h3 className="text-xl font-semibold text-ink-900">Sao lưu & Đồng bộ dữ liệu</h3>
               <p className="mt-1 text-sm text-ink-600">
-                Tao ban sao luu database, tai ve, tai len ban sao luu cu hoac dong bo voi server khac.
+                Tạo bản sao lưu database, tải về, tải lên bản sao lưu cũ hoặc đồng bộ với server khác.
               </p>
             </div>
             <button
@@ -1302,14 +1302,14 @@ export function StoreSettings() {
               disabled={backupLoading}
               className="rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
             >
-              Tai lai
+              Tải lại
             </button>
           </div>
 
           {!pgDumpOk ? (
             <p className="mt-3 text-sm text-amber-700">
-              pg_dump chua duoc cai dat tren server. Tinh nang tao sao luu tu dong se khong hoat dong.
-              Tuy nhien ban van co the tai len va khoi phuc tu file sao luu.
+              `pg_dump` chưa được cài đặt trên server. Tính năng tạo sao lưu tự động sẽ không hoạt động.
+              Tuy nhiên bạn vẫn có thể tải lên và khôi phục từ file sao lưu.
             </p>
           ) : null}
 
@@ -1324,10 +1324,10 @@ export function StoreSettings() {
               disabled={backupCreating || !pgDumpOk}
               className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
             >
-              {backupCreating ? 'Dang tao...' : 'Tao ban sao luu'}
+              {backupCreating ? 'Đang tạo...' : 'Tạo bản sao lưu'}
             </button>
             <label className="cursor-pointer rounded-full border border-ink-900/10 bg-white px-5 py-2 text-sm font-semibold text-ink-900">
-              {backupUploading ? 'Dang tai len...' : 'Tai len ban sao luu'}
+              {backupUploading ? 'Đang tải lên...' : 'Tải lên bản sao lưu'}
               <input
                 type="file"
                 accept=".sql,.sql.gz,.gz"
@@ -1339,19 +1339,19 @@ export function StoreSettings() {
           </div>
 
           {/* Backup list */}
-          {backupLoading ? <p className="mt-4 text-sm text-ink-600">Dang tai danh sach...</p> : null}
+          {backupLoading ? <p className="mt-4 text-sm text-ink-600">Đang tải danh sách...</p> : null}
           {!backupLoading && backups.length === 0 ? (
-            <p className="mt-4 text-sm text-ink-500">Chua co ban sao luu nao.</p>
+            <p className="mt-4 text-sm text-ink-500">Chưa có bản sao lưu nào.</p>
           ) : null}
           {backups.length > 0 ? (
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead>
                   <tr className="border-b border-ink-900/10 text-xs uppercase tracking-wider text-ink-500">
-                    <th className="pb-2 pr-4">Ten file</th>
-                    <th className="pb-2 pr-4">Kich thuoc</th>
-                    <th className="pb-2 pr-4">Thoi gian</th>
-                    <th className="pb-2 pr-4">Ghi chu</th>
+                    <th className="pb-2 pr-4">Tên file</th>
+                    <th className="pb-2 pr-4">Kích thước</th>
+                    <th className="pb-2 pr-4">Thời gian</th>
+                    <th className="pb-2 pr-4">Ghi chú</th>
                     <th className="pb-2" />
                   </tr>
                 </thead>
@@ -1369,7 +1369,7 @@ export function StoreSettings() {
                             onClick={() => void onDownloadBackup(b.id, b.filename)}
                             className="rounded-lg px-2 py-1 text-xs font-medium text-brand-600 hover:bg-brand-50"
                           >
-                            Tai ve
+                            Tải về
                           </button>
                           <button
                             type="button"
@@ -1377,14 +1377,14 @@ export function StoreSettings() {
                             disabled={backupRestoring === b.id}
                             className="rounded-lg px-2 py-1 text-xs font-medium text-amber-600 hover:bg-amber-50 disabled:opacity-60"
                           >
-                            {backupRestoring === b.id ? 'Dang khoi phuc...' : 'Khoi phuc'}
+                            {backupRestoring === b.id ? 'Đang khôi phục...' : 'Khôi phục'}
                           </button>
                           <button
                             type="button"
                             onClick={() => void onDeleteBackup(b.id)}
                             className="rounded-lg px-2 py-1 text-xs font-medium text-coral-500 hover:bg-coral-50"
                           >
-                            Xoa
+                            Xóa
                           </button>
                         </div>
                       </td>
@@ -1397,7 +1397,7 @@ export function StoreSettings() {
 
           {/* Auto backup settings */}
           <div className="mt-6 border-t border-ink-900/10 pt-4">
-            <h4 className="text-sm font-semibold uppercase tracking-wider text-ink-500">Sao luu tu dong</h4>
+            <h4 className="text-sm font-semibold uppercase tracking-wider text-ink-500">Sao lưu tự động</h4>
             <div className="mt-3 grid gap-4 md:grid-cols-3">
               <label className="flex items-center gap-2 text-sm text-ink-700">
                 <input
@@ -1406,10 +1406,10 @@ export function StoreSettings() {
                   onChange={(e) => setBkAutoEnabled(e.target.checked)}
                   disabled={!pgDumpOk}
                 />
-                Bat sao luu tu dong
+                Bật sao lưu tự động
               </label>
               <label className="space-y-1 text-sm text-ink-700">
-                <span>Chu ky (gio)</span>
+                <span>Chu kỳ (giờ)</span>
                 <input
                   type="number"
                   min={1}
@@ -1420,7 +1420,7 @@ export function StoreSettings() {
                 />
               </label>
               <label className="space-y-1 text-sm text-ink-700">
-                <span>So ban toi da</span>
+                <span>Số bản tối đa</span>
                 <input
                   type="number"
                   min={1}
@@ -1434,13 +1434,13 @@ export function StoreSettings() {
 
           {/* Sync settings */}
           <div className="mt-6 border-t border-ink-900/10 pt-4">
-            <h4 className="text-sm font-semibold uppercase tracking-wider text-ink-500">Dong bo voi server khac</h4>
+            <h4 className="text-sm font-semibold uppercase tracking-wider text-ink-500">Đồng bộ với server khác</h4>
             <p className="mt-1 text-xs text-ink-500">
-              Cau hinh URL va API key cua server du phong de dong bo du lieu.
+              Cấu hình URL và API key của server dự phòng để đồng bộ dữ liệu.
             </p>
             <div className="mt-3 grid gap-4 md:grid-cols-2">
               <label className="space-y-1 text-sm text-ink-700">
-                <span>URL server dong bo</span>
+                <span>URL server đồng bộ</span>
                 <input
                   value={bkSyncUrl}
                   onChange={(e) => setBkSyncUrl(e.target.value)}
@@ -1449,12 +1449,12 @@ export function StoreSettings() {
                 />
               </label>
               <label className="space-y-1 text-sm text-ink-700">
-                <span>API Key dong bo</span>
+                <span>API Key đồng bộ</span>
                 <input
                   type="password"
                   value={bkSyncKey}
                   onChange={(e) => setBkSyncKey(e.target.value)}
-                  placeholder="Nhap API key"
+                  placeholder="Nhập API key"
                   className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
                 />
               </label>
@@ -1466,7 +1466,7 @@ export function StoreSettings() {
                 disabled={bkSettingsSaving}
                 className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
               >
-                {bkSettingsSaving ? 'Dang luu...' : 'Luu cau hinh sao luu'}
+                {bkSettingsSaving ? 'Đang lưu...' : 'Lưu cấu hình sao lưu'}
               </button>
               <button
                 type="button"
@@ -1474,7 +1474,7 @@ export function StoreSettings() {
                 disabled={backupSyncing !== null || !bkSyncUrl.trim()}
                 className="rounded-full border border-ink-900/10 bg-white px-5 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
               >
-                {backupSyncing === 'push' ? 'Dang day...' : 'Day len server'}
+                {backupSyncing === 'push' ? 'Đang đẩy...' : 'Đẩy lên server'}
               </button>
               <button
                 type="button"
@@ -1482,7 +1482,7 @@ export function StoreSettings() {
                 disabled={backupSyncing !== null || !bkSyncUrl.trim()}
                 className="rounded-full border border-ink-900/10 bg-white px-5 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
               >
-                {backupSyncing === 'pull' ? 'Dang keo...' : 'Keo tu server'}
+                {backupSyncing === 'pull' ? 'Đang kéo...' : 'Kéo từ server'}
               </button>
             </div>
           </div>

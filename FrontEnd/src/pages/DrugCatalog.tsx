@@ -7,6 +7,7 @@ import {
   type ProductDetailItem,
   type ProductUnitItem,
 } from '../api/catalogService'
+import { inventoryApi } from '../api/inventoryService'
 import { storeApi } from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
@@ -446,6 +447,10 @@ export function DrugCatalog() {
     Record<string, { vatRate: number; otherTaxRate: number }>
   >({})
   const [makerOptions, setMakerOptions] = useState<ManufacturerItem[]>([])
+  const [inventoryStats, setInventoryStats] = useState<{ lowStock: number; nearDate: number }>({
+    lowStock: 0,
+    nearDate: 0,
+  })
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -453,6 +458,7 @@ export function DrugCatalog() {
   const [barcodeSearch, setBarcodeSearch] = useState('')
   const [groupFilter, setGroupFilter] = useState('Tất cả')
   const [makerFilter, setMakerFilter] = useState('Tất cả')
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
   const [page, setPage] = useState(1)
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
@@ -510,10 +516,11 @@ export function DrugCatalog() {
         return allProducts
       }
 
-      const [groupPage, manufacturerPage, products] = await Promise.all([
+      const [groupPage, manufacturerPage, products, stockSummary] = await Promise.all([
         catalogApi.listDrugGroups(accessToken, { is_active: true, page: 1, size: 200 }),
         catalogApi.listManufacturers(accessToken, { is_active: true, page: 1, size: 200 }),
         fetchAllProducts(),
+        inventoryApi.getStockSummary(accessToken).catch(() => []),
       ])
 
       let resolvedGroups = groupPage.items
@@ -610,6 +617,14 @@ export function DrugCatalog() {
       setGroupCategoryById(nextGroupCategoryById)
       setGroupTaxById(nextGroupTaxById)
       setMakerOptions(manufacturerPage.items)
+      setInventoryStats({
+        lowStock: stockSummary.filter(
+          (item) => item.status === 'low_stock' || item.status === 'out_of_stock',
+        ).length,
+        nearDate: stockSummary.filter(
+          (item) => item.status === 'near_date' || item.status === 'expiring_soon',
+        ).length,
+      })
       setDrugs(
         details.map((item) => {
           const mapped = mapProductDetailToDrug(item)
@@ -718,8 +733,8 @@ export function DrugCatalog() {
 
   const stats = [
     { label: 'Tổng thuốc', value: drugs.length.toString(), note: `${groupOptions.length} nhóm` },
-    { label: 'Sắp hết hàng', value: '38', note: 'dưới ngưỡng' },
-    { label: 'Cận date', value: '12', note: 'trong 30 ngày' },
+    { label: 'Sắp hết hàng', value: inventoryStats.lowStock.toString(), note: 'dưới ngưỡng' },
+    { label: 'Cận date', value: inventoryStats.nearDate.toString(), note: 'sắp đến hạn' },
     { label: 'Đang bán', value: drugs.filter((d) => d.active).length.toString(), note: 'đang hoạt động' },
   ]
 
@@ -1237,11 +1252,11 @@ export function DrugCatalog() {
   }
 
   const resetFilters = () => {
-
     setSearch('')
     setBarcodeSearch('')
     setGroupFilter('Tất cả')
     setMakerFilter('Tất cả')
+    setMobileFiltersOpen(false)
     setPage(1)
   }
 
@@ -1593,18 +1608,18 @@ export function DrugCatalog() {
         </div>
       ) : null}
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {stats.map((item) => (
-          <div key={item.label} className="glass-card rounded-3xl p-5">
-            <p className="text-xs uppercase tracking-[0.28em] text-ink-600">{item.label}</p>
-            <p className="mt-3 text-2xl font-semibold text-ink-900">{item.value}</p>
-            <p className="mt-2 text-xs text-ink-600">{item.note}</p>
+          <div key={item.label} className="glass-card min-w-0 rounded-2xl p-4 sm:rounded-3xl sm:p-5">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-ink-600 sm:text-xs sm:tracking-[0.28em]">{item.label}</p>
+            <p className="mt-2 text-xl font-semibold text-ink-900 sm:mt-3 sm:text-2xl">{item.value}</p>
+            <p className="mt-1 text-[11px] text-ink-600 sm:mt-2 sm:text-xs">{item.note}</p>
           </div>
         ))}
       </section>
 
-      <section className="glass-card rounded-3xl p-6 space-y-4">
-        <div className="grid gap-3 md:grid-cols-[1.2fr,1fr,1fr,auto]">
+      <section className="glass-card rounded-3xl p-4 sm:p-6 space-y-4">
+        <div className="grid gap-3 md:grid-cols-[1fr,auto]">
           <input
             value={search}
             onChange={(e) => {
@@ -1612,8 +1627,18 @@ export function DrugCatalog() {
               setPage(1)
             }}
             className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
-            placeholder="Tìm theo tên, mã, số đăng ký"
+            placeholder={'T\u00ecm theo t\u00ean, m\u00e3, s\u1ed1 \u0111\u0103ng k\u00fd'}
           />
+          <button
+            type="button"
+            onClick={() => setMobileFiltersOpen((prev) => !prev)}
+            className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900 md:hidden"
+          >
+            {mobileFiltersOpen ? 'Ẩn bộ lọc' : 'Bộ lọc nâng cao'}
+          </button>
+        </div>
+
+        <div className="hidden gap-3 md:grid md:grid-cols-[1fr,1fr,auto]">
           <select
             value={groupFilter}
             onChange={(e) => {
@@ -1622,7 +1647,7 @@ export function DrugCatalog() {
             }}
             className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
           >
-            <option value="Tất cả">Tất cả</option>
+            <option value={'T\u1ea5t c\u1ea3'}>{'T\u1ea5t c\u1ea3'}</option>
             {groupOptions.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
           </select>
           <select
@@ -1633,29 +1658,62 @@ export function DrugCatalog() {
             }}
             className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
           >
-            <option value="Tất cả">Tất cả</option>
+            <option value={'T\u1ea5t c\u1ea3'}>{'T\u1ea5t c\u1ea3'}</option>
             {makerOptions.map((maker) => <option key={maker.id} value={maker.id}>{maker.name}</option>)}
           </select>
           <button onClick={resetFilters} className="rounded-2xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white">Reset</button>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
+
+        {mobileFiltersOpen ? (
+          <div className="grid gap-3 md:hidden">
+            <select
+              value={groupFilter}
+              onChange={(e) => {
+                setGroupFilter(e.target.value)
+                setPage(1)
+              }}
+              className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
+            >
+              <option value={'T\u1ea5t c\u1ea3'}>{'T\u1ea5t c\u1ea3'}</option>
+              {groupOptions.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+            </select>
+            <select
+              value={makerFilter}
+              onChange={(e) => {
+                setMakerFilter(e.target.value)
+                setPage(1)
+              }}
+              className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
+            >
+              <option value={'T\u1ea5t c\u1ea3'}>{'T\u1ea5t c\u1ea3'}</option>
+              {makerOptions.map((maker) => <option key={maker.id} value={maker.id}>{maker.name}</option>)}
+            </select>
+            <button onClick={resetFilters} className="rounded-2xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white">Reset</button>
+          </div>
+        ) : null}
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <input
             value={barcodeSearch}
             onChange={(e) => {
               setBarcodeSearch(e.target.value)
               setPage(1)
             }}
-            className="min-w-[220px] flex-1 rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
-            placeholder="Quét barcode để tìm nhanh"
+            className="min-w-0 flex-1 rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
+            placeholder={'Qu\u00e9t barcode \u0111\u1ec3 t\u00ecm nhanh'}
           />
-          <button type="button" onClick={() => openScan('search')} className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900">
-            Quét bằng camera
+          <button
+            type="button"
+            onClick={() => openScan('search')}
+            className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900 sm:w-auto"
+          >
+            {'Qu\u00e9t b\u1eb1ng camera'}
           </button>
         </div>
       </section>
 
       <section className="overflow-hidden rounded-3xl border border-white/60 bg-white/70">
-        <div className="overflow-x-auto">
+        <div className="hidden overflow-x-auto md:block">
           <table className="min-w-[1100px] w-full text-left text-sm">
             <thead className="bg-white/70 text-xs uppercase tracking-[0.25em] text-ink-600">
               <tr>
@@ -1757,9 +1815,92 @@ export function DrugCatalog() {
             </tbody>
           </table>
         </div>
+        <div className="space-y-3 p-3 md:hidden">
+          {loading ? (
+            <div className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-4 text-sm text-ink-600">
+              Đang tải dữ liệu...
+            </div>
+          ) : null}
+          {!loading && paged.length === 0 ? (
+            <div className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-4 text-sm text-ink-600">
+              Không có dữ liệu thuốc.
+            </div>
+          ) : null}
+          {!loading
+            ? paged.map((drug) => (
+                <article key={drug.id} className="rounded-2xl border border-ink-900/10 bg-white/80 p-4 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold tracking-wide text-ink-600">{drug.code}</p>
+                      <h4 className="mt-1 truncate text-base font-semibold text-ink-900">{drug.name}</h4>
+                      {drug.activeIngredient ? (
+                        <p className="mt-1 text-xs text-ink-600">Hoạt chất: {drug.activeIngredient}</p>
+                      ) : null}
+                    </div>
+                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusStyles[drug.active ? 'Đang bán' : 'Ngừng bán']}`}>
+                      {drug.active ? 'Đang bán' : 'Ngừng bán'}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-ink-700">
+                    <p><span className="font-semibold text-ink-900">Loại:</span> {drug.category || '-'}</p>
+                    <p><span className="font-semibold text-ink-900">Nhóm:</span> {drug.group}</p>
+                    <p><span className="font-semibold text-ink-900">Nhà SX:</span> {drug.maker}</p>
+                    <p><span className="font-semibold text-ink-900">Barcode:</span> {drug.barcode || '-'}</p>
+                  </div>
+                  <p className="mt-3 text-xs text-ink-700">
+                    <span className="font-semibold text-ink-900">Đơn vị:</span> {formatUnits(drug.units)}
+                  </p>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button onClick={() => setExpandedId((prev) => (prev === drug.id ? null : drug.id))} className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900">
+                      {expandedId === drug.id ? 'Ẩn' : 'Chi tiết'}
+                    </button>
+                    <button
+                      onClick={() => openEdit(drug)}
+                      disabled={!canManage}
+                      className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-60"
+                    >
+                      Sửa
+                    </button>
+                    <button
+                      onClick={() => void removeDrug(drug)}
+                      disabled={!canDelete}
+                      className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500 disabled:opacity-60"
+                    >
+                      Xóa
+                    </button>
+                  </div>
+
+                  {expandedId === drug.id ? (
+                    <div className="mt-3 rounded-xl border border-ink-900/10 bg-white p-3 text-xs text-ink-700">
+                      <div className="space-y-1.5">
+                        <p><span className="font-semibold text-ink-900">Số đăng ký:</span> {drug.regNo || '-'}</p>
+                        <p><span className="font-semibold text-ink-900">Thuế:</span> VAT {drug.vatRate}% · Thuế khác {drug.otherTaxRate}%</p>
+                        <p><span className="font-semibold text-ink-900">Hướng dẫn:</span> {drug.usage || '-'}</p>
+                        <p><span className="font-semibold text-ink-900">Ghi chú:</span> {drug.note || '-'}</p>
+                      </div>
+                      <div className="mt-3 space-y-1.5">
+                        {drug.units
+                          .slice()
+                          .sort((a, b) => unitLevelOrder[a.level] - unitLevelOrder[b.level])
+                          .map((unit) => (
+                            <div key={unit.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-fog-50 px-3 py-2">
+                              <span className="font-semibold text-ink-900">{unit.name}</span>
+                              <span>{unitLevelLabel[unit.level]}</span>
+                              <span>{unit.price.toLocaleString('vi-VN')}đ</span>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </article>
+              ))
+            : null}
+        </div>
       </section>
 
-      <section className="flex flex-wrap items-center justify-between gap-3 text-sm text-ink-600">
+      <section className="flex flex-col gap-3 text-sm text-ink-600 sm:flex-row sm:items-center sm:justify-between">
         <span>
           Hiển thị {filtered.length === 0 ? 0 : (page - 1) * pageSize + 1} - {Math.min(page * pageSize, filtered.length)} trong {filtered.length} thuốc
         </span>

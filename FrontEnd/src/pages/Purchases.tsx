@@ -929,6 +929,7 @@ export function Purchases() {
   const [paymentStatusFilter, setPaymentStatusFilter] = useState('Tất cả')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
   const [page, setPage] = useState(1)
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
@@ -1209,6 +1210,12 @@ export function Purchases() {
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
   const paged = filtered.slice((page - 1) * pageSize, page * pageSize)
+  const rangeStart = filtered.length === 0 ? 0 : (page - 1) * pageSize + 1
+  const rangeEnd = filtered.length === 0 ? 0 : Math.min(page * pageSize, filtered.length)
+
+  useEffect(() => {
+    setPage((prev) => Math.min(prev, totalPages))
+  }, [totalPages])
 
   const resetFilters = () => {
     setSearch('')
@@ -2272,27 +2279,43 @@ export function Purchases() {
         </div>
       ) : null}
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {stats.map((item) => (
-          <div key={item.label} className="glass-card rounded-3xl p-5">
-            <p className="text-xs uppercase tracking-[0.28em] text-ink-600">{item.label}</p>
-            <p className="mt-3 text-2xl font-semibold text-ink-900">{item.value}</p>
-            <p className="mt-2 text-xs text-ink-600">{item.note}</p>
+          <div key={item.label} className="glass-card min-w-0 rounded-2xl p-4 sm:rounded-3xl sm:p-5">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-ink-600 sm:text-xs sm:tracking-[0.28em]">{item.label}</p>
+            <p className="mt-2 text-xl font-semibold text-ink-900 sm:mt-3 sm:text-2xl">{item.value}</p>
+            <p className="mt-1 text-[11px] text-ink-600 sm:mt-2 sm:text-xs">{item.note}</p>
           </div>
         ))}
       </section>
 
-      <section className="glass-card rounded-3xl p-6 space-y-4">
-        <div className="grid gap-3 md:grid-cols-[1.2fr,1fr,1fr,1fr,auto]">
+      <section className="glass-card rounded-3xl p-4 sm:p-6 space-y-4">
+        <div className="grid gap-3 md:grid-cols-[1fr,auto]">
           <input
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => {
+              setSearch(event.target.value)
+              setPage(1)
+            }}
             className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
             placeholder="Tìm theo mã phiếu, nhà phân phối"
           />
+          <button
+            type="button"
+            onClick={() => setMobileFiltersOpen((prev) => !prev)}
+            className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900 md:hidden"
+          >
+            {mobileFiltersOpen ? 'Ẩn bộ lọc' : 'Bộ lọc nâng cao'}
+          </button>
+        </div>
+
+        <div className="hidden gap-3 md:grid md:grid-cols-[1fr,1fr,1fr,1fr,auto]">
           <select
             value={supplierFilter}
-            onChange={(event) => setSupplierFilter(event.target.value)}
+            onChange={(event) => {
+              setSupplierFilter(event.target.value)
+              setPage(1)
+            }}
             className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
           >
             <option value="Tất cả">Tất cả NPP</option>
@@ -2302,35 +2325,95 @@ export function Purchases() {
           </select>
           <select
             value={paymentStatusFilter}
-            onChange={(event) => setPaymentStatusFilter(event.target.value)}
+            onChange={(event) => {
+              setPaymentStatusFilter(event.target.value)
+              setPage(1)
+            }}
             className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
           >
             <option value="Tất cả">Tất cả thanh toán</option>
             <option value="Đã thanh toán">Đã thanh toán</option>
             <option value="Còn nợ">Còn nợ</option>
           </select>
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              value={dateFrom}
-              onChange={(event) => setDateFrom(event.target.value)}
-              type="date"
-              className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-3 py-2 text-xs"
-            />
-            <input
-              value={dateTo}
-              onChange={(event) => setDateTo(event.target.value)}
-              type="date"
-              className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-3 py-2 text-xs"
-            />
-          </div>
+          <input
+            value={dateFrom}
+            onChange={(event) => {
+              setDateFrom(event.target.value)
+              setPage(1)
+            }}
+            type="date"
+            className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-3 py-2 text-xs"
+          />
+          <input
+            value={dateTo}
+            onChange={(event) => {
+              setDateTo(event.target.value)
+              setPage(1)
+            }}
+            type="date"
+            className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-3 py-2 text-xs"
+          />
           <button onClick={resetFilters} className="rounded-2xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white">
             Reset
           </button>
         </div>
+
+        {mobileFiltersOpen ? (
+          <div className="grid gap-3 md:hidden">
+            <select
+              value={supplierFilter}
+              onChange={(event) => {
+                setSupplierFilter(event.target.value)
+                setPage(1)
+              }}
+              className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
+            >
+              <option value="Tất cả">Tất cả NPP</option>
+              {supplierOptions.map((supplier) => (
+                <option key={supplier.id} value={supplier.id}>{supplier.name}</option>
+              ))}
+            </select>
+            <select
+              value={paymentStatusFilter}
+              onChange={(event) => {
+                setPaymentStatusFilter(event.target.value)
+                setPage(1)
+              }}
+              className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
+            >
+              <option value="Tất cả">Tất cả thanh toán</option>
+              <option value="Đã thanh toán">Đã thanh toán</option>
+              <option value="Còn nợ">Còn nợ</option>
+            </select>
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                value={dateFrom}
+                onChange={(event) => {
+                  setDateFrom(event.target.value)
+                  setPage(1)
+                }}
+                type="date"
+                className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-3 py-2 text-xs"
+              />
+              <input
+                value={dateTo}
+                onChange={(event) => {
+                  setDateTo(event.target.value)
+                  setPage(1)
+                }}
+                type="date"
+                className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-3 py-2 text-xs"
+              />
+            </div>
+            <button onClick={resetFilters} className="rounded-2xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white">
+              Reset
+            </button>
+          </div>
+        ) : null}
       </section>
 
       <section className="overflow-hidden rounded-3xl border border-white/60 bg-white/70">
-        <div className="overflow-x-auto">
+        <div className="hidden overflow-x-auto md:block">
           <table className="min-w-[1100px] w-full text-left text-sm">
             <thead className="bg-white/70 text-xs uppercase tracking-[0.25em] text-ink-600">
               <tr>
@@ -2346,6 +2429,11 @@ export function Purchases() {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/70">
+              {paged.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="px-6 py-6 text-sm text-ink-600">Không có phiếu nhập phù hợp.</td>
+                </tr>
+              ) : null}
               {paged.map((order) => {
                 const canEditOrder =
                   (order.canEdit !== false || canOverrideReceiptLock) &&
@@ -2442,10 +2530,96 @@ export function Purchases() {
             </tbody>
           </table>
         </div>
+        <div className="space-y-3 p-3 md:hidden">
+          {paged.length === 0 ? (
+            <div className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-4 text-sm text-ink-600">
+              Không có phiếu nhập phù hợp.
+            </div>
+          ) : null}
+          {paged.map((order) => {
+            const canEditOrder =
+              (order.canEdit !== false || canOverrideReceiptLock) &&
+              order.receiptStatus !== 'cancelled'
+            const canCancelOrder =
+              order.canEdit !== false && order.receiptStatus !== 'cancelled'
+            const isExpanded = expandedId === order.id
+            return (
+              <article key={order.id} className="rounded-2xl border border-ink-900/10 bg-white/80 p-4 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold tracking-wide text-ink-600">{order.code}</p>
+                    <p className="mt-1 text-sm text-ink-700">{formatDate(order.date)}</p>
+                  </div>
+                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${paymentStatusStyles[order.paymentStatus]}`}>
+                    {order.paymentStatus}
+                  </span>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-ink-700">
+                  <p><span className="font-semibold text-ink-900">NPP:</span> {supplierMap.get(order.supplierId)?.name || '-'}</p>
+                  <p><span className="font-semibold text-ink-900">Mặt hàng:</span> {order.lines.length}</p>
+                  <p><span className="font-semibold text-ink-900">Tổng tiền:</span> {formatCurrency(calcOrderTotal(order.lines))}</p>
+                  <p><span className="font-semibold text-ink-900">PTTT:</span> {order.paymentMethod || '-'}</p>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    onClick={() => setExpandedId((prev) => (prev === order.id ? null : order.id))}
+                    className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900"
+                  >
+                    {isExpanded ? 'Ẩn' : 'Chi tiết'}
+                  </button>
+                  <button
+                    onClick={() => openEdit(order)}
+                    title={canEditOrder ? 'Sửa phiếu nhập' : 'Phiếu này đã phát sinh giao dịch, chỉ owner/admin được sửa'}
+                    className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900"
+                  >
+                    Sửa
+                  </button>
+                  <button
+                    onClick={() => removeOrder(order.id)}
+                    title={canCancelOrder ? 'Hủy phiếu nhập' : 'Phiếu này đã phát sinh giao dịch, không thể hủy'}
+                    className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500"
+                  >
+                    Xóa
+                  </button>
+                </div>
+
+                {isExpanded ? (
+                  <div className="mt-3 rounded-xl border border-ink-900/10 bg-white p-3 text-xs text-ink-700">
+                    <div className="space-y-1.5">
+                      <p><span className="font-semibold text-ink-900">Liên hệ NPP:</span> {supplierMap.get(order.supplierId)?.contactName || '-'}</p>
+                      <p><span className="font-semibold text-ink-900">SĐT:</span> {supplierMap.get(order.supplierId)?.phone || '-'}</p>
+                      <p><span className="font-semibold text-ink-900">Địa chỉ:</span> {supplierMap.get(order.supplierId)?.address || '-'}</p>
+                      <p><span className="font-semibold text-ink-900">Vận chuyển:</span> {order.shippingCarrier || '-'}</p>
+                      <p><span className="font-semibold text-ink-900">Ghi chú:</span> {order.note || '-'}</p>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {order.lines.map((line) => {
+                        const drug = drugMap.get(line.drugId)
+                        const pricing = calcLinePricing(line)
+                        return (
+                          <div key={line.id} className="rounded-lg bg-fog-50 px-3 py-2">
+                            <p className="font-semibold text-ink-900">{drug?.name ?? '-'}</p>
+                            <p className="mt-1">Lô {line.lotNumber || '-'} · HSD {formatDate(line.expDate)}</p>
+                            <p>SL sau KM {pricing.quantityAfterPromo.toLocaleString('vi-VN')} · Giá sau KM {formatCurrency(pricing.unitPriceAfterPromo)}</p>
+                            <p className="text-ink-600">Giá bẻ: {formatRetailPrices(line) || '-'}</p>
+                            <p>{describePromo(line)} · {formatCurrency(calcLineTotal(line))}</p>
+                            <p className="text-ink-600">QR: {line.batchCode}</p>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+              </article>
+            )
+          })}
+        </div>
       </section>
 
-      <section className="flex flex-wrap items-center justify-between gap-3 text-sm text-ink-600">
-        <span>Hiển thị {(page - 1) * pageSize + 1} - {Math.min(page * pageSize, filtered.length)} trong {filtered.length} phiếu</span>
+      <section className="flex flex-col gap-3 text-sm text-ink-600 sm:flex-row sm:items-center sm:justify-between">
+        <span>Hiển thị {rangeStart} - {rangeEnd} trong {filtered.length} phiếu</span>
         <div className="flex items-center gap-2">
           <button onClick={() => setPage((p) => Math.max(1, p - 1))} className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900">Trước</button>
           <span>{page}/{totalPages}</span>

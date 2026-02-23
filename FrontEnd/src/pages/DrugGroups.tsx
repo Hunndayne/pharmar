@@ -70,7 +70,7 @@ export function DrugGroups() {
       }
     } catch (loadError) {
       if (loadError instanceof ApiError) setError(loadError.message)
-      else setError('Kh?ng th? t?i danh s?ch nh?m thu?c.')
+      else setError('Không thể tải danh sách nhóm thuốc.')
     } finally {
       setLoading(false)
     }
@@ -114,7 +114,7 @@ export function DrugGroups() {
       })
     } catch (detailError) {
       if (detailError instanceof ApiError) setFormError(detailError.message)
-      else setFormError('Kh?ng th? t?i chi ti?t nh?m thu?c.')
+      else setFormError('Không thể tải chi tiết nhóm thuốc.')
     } finally {
       setDetailLoading(false)
     }
@@ -124,7 +124,7 @@ export function DrugGroups() {
     if (!accessToken || !canManage) return
 
     if (!form.name.trim()) {
-      setFormError('T?n nh?m thu?c l? b?t bu?c.')
+      setFormError('Tên nhóm thuốc là bắt buộc.')
       return
     }
 
@@ -148,7 +148,7 @@ export function DrugGroups() {
       await loadRows()
     } catch (saveError) {
       if (saveError instanceof ApiError) setFormError(saveError.message)
-      else setFormError('Kh?ng th? l?u nh?m thu?c.')
+      else setFormError('Không thể lưu nhóm thuốc.')
     } finally {
       setFormSubmitting(false)
     }
@@ -157,14 +157,14 @@ export function DrugGroups() {
   const handleDelete = async (item: DrugGroupItem) => {
     if (!accessToken || !canDelete) return
 
-    if (!window.confirm(`X?a nh?m thu?c ${item.name}?`)) return
+    if (!window.confirm(`Xóa nhóm thuốc ${item.name}?`)) return
 
     try {
       await catalogApi.deleteDrugGroup(accessToken, item.id)
       await loadRows()
     } catch (deleteError) {
       if (deleteError instanceof ApiError) setError(deleteError.message)
-      else setError('Kh?ng th? x?a nh?m thu?c.')
+      else setError('Không thể xóa nhóm thuốc.')
     }
   }
 
@@ -181,9 +181,9 @@ export function DrugGroups() {
     <div className="space-y-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-xs uppercase tracking-[0.35em] text-ink-600">Danh m?c</p>
-          <h2 className="mt-2 text-3xl font-semibold text-ink-900">Nh?m thu?c</h2>
-          <p className="mt-2 text-sm text-ink-600">Qu?n l? nh?m thu?c ph?c v? khai b?o s?n ph?m.</p>
+          <p className="text-xs uppercase tracking-[0.35em] text-ink-600">Danh mục</p>
+          <h2 className="mt-2 text-3xl font-semibold text-ink-900">Nhóm thuốc</h2>
+          <p className="mt-2 text-sm text-ink-600">Quản lý nhóm thuốc phục vụ khai báo sản phẩm.</p>
         </div>
         <button
           type="button"
@@ -191,25 +191,25 @@ export function DrugGroups() {
           disabled={!canManage}
           className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift disabled:opacity-60"
         >
-          Th?m nh?m
+          Thêm nhóm
         </button>
       </header>
 
       {!canManage ? (
-        <p className="text-sm text-amber-700">B?n ch? c? quy?n xem danh s?ch nh?m thu?c.</p>
+        <p className="text-sm text-amber-700">Bạn chỉ có quyền xem danh sách nhóm thuốc.</p>
       ) : null}
 
       <section className="grid gap-4 sm:grid-cols-3">
         <div className="glass-card rounded-3xl p-5">
-          <p className="text-xs text-ink-600">T?ng nh?m thu?c</p>
+          <p className="text-xs text-ink-600">Tổng nhóm thuốc</p>
           <p className="mt-2 text-2xl font-semibold">{summary.total}</p>
         </div>
         <div className="glass-card rounded-3xl p-5">
-          <p className="text-xs text-ink-600">?ang ho?t ??ng</p>
+          <p className="text-xs text-ink-600">Đang hoạt động</p>
           <p className="mt-2 text-2xl font-semibold text-brand-600">{summary.active}</p>
         </div>
         <div className="glass-card rounded-3xl p-5">
-          <p className="text-xs text-ink-600">Ng?ng ho?t ??ng</p>
+          <p className="text-xs text-ink-600">Ngừng hoạt động</p>
           <p className="mt-2 text-2xl font-semibold text-ink-600">{summary.inactive}</p>
         </div>
       </section>
@@ -223,7 +223,7 @@ export function DrugGroups() {
               setPage(1)
             }}
             className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
-            placeholder="T?m theo m? ho?c t?n nh?m thu?c"
+            placeholder="Tìm theo mã hoặc tên nhóm thuốc"
           />
 
           <select
@@ -234,9 +234,9 @@ export function DrugGroups() {
             }}
             className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
           >
-            <option value="all">T?t c? tr?ng th?i</option>
-            <option value="active">?ang ho?t ??ng</option>
-            <option value="inactive">Ng?ng ho?t ??ng</option>
+            <option value="all">Tất cả trạng thái</option>
+            <option value="active">Đang hoạt động</option>
+            <option value="inactive">Ngừng hoạt động</option>
           </select>
 
           <button
@@ -256,7 +256,7 @@ export function DrugGroups() {
             onClick={() => void loadRows()}
             className="rounded-2xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white"
           >
-            T?i l?i
+            Tải lại
           </button>
         </div>
 
@@ -268,23 +268,23 @@ export function DrugGroups() {
           <table className="w-full min-w-[900px] text-left text-sm">
             <thead className="bg-white/70 text-xs uppercase tracking-[0.22em] text-ink-600">
               <tr>
-                <th className="px-6 py-4">M? nh?m</th>
-                <th className="px-6 py-4">T?n nh?m</th>
-                <th className="px-6 py-4">M? t?</th>
-                <th className="px-6 py-4">Tr?ng th?i</th>
-                <th className="px-6 py-4">Thao t?c</th>
+                <th className="px-6 py-4">Mã nhóm</th>
+                <th className="px-6 py-4">Tên nhóm</th>
+                <th className="px-6 py-4">Mô tả</th>
+                <th className="px-6 py-4">Trạng thái</th>
+                <th className="px-6 py-4">Thao tác</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/70">
               {loading ? (
                 <tr>
-                  <td className="px-6 py-6 text-sm text-ink-600" colSpan={5}>?ang t?i d? li?u...</td>
+                  <td className="px-6 py-6 text-sm text-ink-600" colSpan={5}>Đang tải dữ liệu...</td>
                 </tr>
               ) : null}
 
               {!loading && rows.length === 0 ? (
                 <tr>
-                  <td className="px-6 py-6 text-sm text-ink-600" colSpan={5}>Kh?ng c? d? li?u nh?m thu?c.</td>
+                  <td className="px-6 py-6 text-sm text-ink-600" colSpan={5}>Không có dữ liệu nhóm thuốc.</td>
                 </tr>
               ) : null}
 
@@ -302,7 +302,7 @@ export function DrugGroups() {
                               : 'bg-ink-600/10 text-ink-600 border border-ink-600/20'
                           }`}
                         >
-                          {item.is_active ? '?ang ho?t ??ng' : 'Ng?ng ho?t ??ng'}
+                          {item.is_active ? 'Đang hoạt động' : 'Ngừng hoạt động'}
                         </span>
                       </td>
                       <td className="px-6 py-4">
@@ -313,7 +313,7 @@ export function DrugGroups() {
                             onClick={() => void openEdit(item)}
                             className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-60"
                           >
-                            S?a
+                            Sửa
                           </button>
                           <button
                             type="button"
@@ -321,7 +321,7 @@ export function DrugGroups() {
                             onClick={() => void handleDelete(item)}
                             className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500 disabled:opacity-60"
                           >
-                            X?a
+                            Xóa
                           </button>
                         </div>
                       </td>
@@ -335,7 +335,7 @@ export function DrugGroups() {
 
       <section className="flex flex-wrap items-center justify-between gap-3 text-sm text-ink-600">
         <span>
-          Hi?n th? {rows.length === 0 ? 0 : (page - 1) * pageSize + 1} - {Math.min(page * pageSize, total)} trong {total} nh?m thu?c
+          Hiển thị {rows.length === 0 ? 0 : (page - 1) * pageSize + 1} - {Math.min(page * pageSize, total)} trong {total} nhóm thuốc
         </span>
         <div className="flex items-center gap-2">
           <button
@@ -344,7 +344,7 @@ export function DrugGroups() {
             disabled={page <= 1}
             className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-60"
           >
-            Tr??c
+            Trước
           </button>
           <span>{page}/{totalPages}</span>
           <button
@@ -364,31 +364,31 @@ export function DrugGroups() {
             <div className="flex items-center justify-between border-b border-ink-900/10 px-6 py-5">
               <div>
                 <p className="text-xs uppercase tracking-[0.3em] text-ink-600">
-                  {modalMode === 'create' ? 'Th?m nh?m thu?c' : 'C?p nh?t nh?m thu?c'}
+                  {modalMode === 'create' ? 'Thêm nhóm thuốc' : 'Cập nhật nhóm thuốc'}
                 </p>
-                <h3 className="mt-2 text-2xl font-semibold text-ink-900">{form.name || 'Th?ng tin nh?m thu?c'}</h3>
+                <h3 className="mt-2 text-2xl font-semibold text-ink-900">{form.name || 'Thông tin nhóm thuốc'}</h3>
               </div>
               <button
                 type="button"
                 onClick={() => setModalOpen(false)}
                 className="rounded-full border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900"
               >
-                ??ng
+                Đóng
               </button>
             </div>
 
             <div className="flex-1 overflow-y-auto px-6 py-5">
-              {detailLoading ? <p className="text-sm text-ink-600">?ang t?i chi ti?t...</p> : null}
+              {detailLoading ? <p className="text-sm text-ink-600">Đang tải chi tiết...</p> : null}
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="space-y-2 text-sm text-ink-700">
-                  <span>M? nh?m</span>
+                  <span>Mã nhóm</span>
                   <div className="w-full rounded-2xl border border-ink-900/10 bg-fog-50 px-4 py-2 text-ink-700">
-                    {form.code || 'T? ??ng sinh khi l?u'}
+                    {form.code || 'Tự động sinh khi lưu'}
                   </div>
                 </label>
 
                 <label className="space-y-2 text-sm text-ink-700">
-                  <span>T?n nh?m thu?c *</span>
+                  <span>Tên nhóm thuốc *</span>
                   <input
                     value={form.name}
                     onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
@@ -397,7 +397,7 @@ export function DrugGroups() {
                 </label>
 
                 <label className="space-y-2 text-sm text-ink-700 md:col-span-2">
-                  <span>M? t?</span>
+                  <span>Mô tả</span>
                   <textarea
                     value={form.description}
                     onChange={(event) => setForm((prev) => ({ ...prev, description: event.target.value }))}
@@ -413,7 +413,7 @@ export function DrugGroups() {
                     onChange={(event) => setForm((prev) => ({ ...prev, isActive: event.target.checked }))}
                     className="h-4 w-4 rounded border-ink-900/20"
                   />
-                  ?ang ho?t ??ng
+                  Đang hoạt động
                 </label>
               </div>
 
@@ -427,14 +427,14 @@ export function DrugGroups() {
                 disabled={formSubmitting}
                 className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift disabled:opacity-60"
               >
-                {formSubmitting ? '?ang l?u...' : 'L?u'}
+                {formSubmitting ? 'Đang lưu...' : 'Lưu'}
               </button>
               <button
                 type="button"
                 onClick={() => setModalOpen(false)}
                 className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900"
               >
-                H?y
+                Hủy
               </button>
             </div>
           </div>

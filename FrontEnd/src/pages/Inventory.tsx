@@ -197,6 +197,7 @@ export function Inventory() {
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all')
   const [expFrom, setExpFrom] = useState('')
   const [expTo, setExpTo] = useState('')
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
 
   const [expandedLotId, setExpandedLotId] = useState<string | null>(null)
   const [adjusting, setAdjusting] = useState<AdjustModalState | null>(null)
@@ -459,6 +460,13 @@ export function Inventory() {
     downloadCsv(`ton-kho-theo-lo-${dateKey}.csv`, headers, rows)
   }
 
+  const resetFilters = () => {
+    setSearch('')
+    setQuickFilter('all')
+    setExpFrom('')
+    setExpTo('')
+  }
+
   if (printingLot) {
     return (
       <LotLabelPrintPage
@@ -479,7 +487,7 @@ export function Inventory() {
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.35em] text-ink-600">Kho</p>
-          <h2 className="mt-2 text-3xl font-semibold text-ink-900">Tồn kho theo lô</h2>
+          <h2 className="mt-2 text-2xl font-semibold text-ink-900 sm:text-3xl">Tồn kho theo lô</h2>
         </div>
         <button
           type="button"
@@ -497,38 +505,38 @@ export function Inventory() {
         </div>
       ) : null}
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <button
           type="button"
           onClick={() => setQuickFilter('all')}
-          className={`glass-card rounded-3xl p-5 text-left ${quickFilter === 'all' ? 'ring-2 ring-ink-900/20' : ''}`}
+          className={`glass-card min-w-0 rounded-2xl p-4 text-left sm:rounded-3xl sm:p-5 ${quickFilter === 'all' ? 'ring-2 ring-ink-900/20' : ''}`}
         >
-          <p className="text-xs uppercase tracking-[0.24em] text-ink-600">Tổng mặt hàng</p>
-          <p className="mt-2 text-3xl font-semibold text-ink-900">{stats.totalDrugs}</p>
+          <p className="text-[10px] uppercase tracking-[0.2em] text-ink-600 sm:text-xs sm:tracking-[0.24em]">Tổng mặt hàng</p>
+          <p className="mt-2 text-2xl font-semibold text-ink-900 sm:text-3xl">{stats.totalDrugs}</p>
         </button>
         <button
           type="button"
           onClick={() => setQuickFilter('out')}
-          className={`glass-card rounded-3xl p-5 text-left ${quickFilter === 'out' ? 'ring-2 ring-ink-900/20' : ''}`}
+          className={`glass-card min-w-0 rounded-2xl p-4 text-left sm:rounded-3xl sm:p-5 ${quickFilter === 'out' ? 'ring-2 ring-ink-900/20' : ''}`}
         >
-          <p className="text-xs uppercase tracking-[0.24em] text-ink-600">Hết hàng</p>
-          <p className="mt-2 text-3xl font-semibold text-coral-500">{stats.outOfStock}</p>
+          <p className="text-[10px] uppercase tracking-[0.2em] text-ink-600 sm:text-xs sm:tracking-[0.24em]">Hết hàng</p>
+          <p className="mt-2 text-2xl font-semibold text-coral-500 sm:text-3xl">{stats.outOfStock}</p>
         </button>
         <button
           type="button"
           onClick={() => setQuickFilter('near')}
-          className={`glass-card rounded-3xl p-5 text-left ${quickFilter === 'near' ? 'ring-2 ring-ink-900/20' : ''}`}
+          className={`glass-card min-w-0 rounded-2xl p-4 text-left sm:rounded-3xl sm:p-5 ${quickFilter === 'near' ? 'ring-2 ring-ink-900/20' : ''}`}
         >
-          <p className="text-xs uppercase tracking-[0.24em] text-ink-600">Cận date</p>
-          <p className="mt-2 text-3xl font-semibold text-sun-500">{stats.nearDate}</p>
+          <p className="text-[10px] uppercase tracking-[0.2em] text-ink-600 sm:text-xs sm:tracking-[0.24em]">Cận date</p>
+          <p className="mt-2 text-2xl font-semibold text-sun-500 sm:text-3xl">{stats.nearDate}</p>
         </button>
         <button
           type="button"
           onClick={() => setQuickFilter('expired')}
-          className={`glass-card rounded-3xl p-5 text-left ${quickFilter === 'expired' ? 'ring-2 ring-ink-900/20' : ''}`}
+          className={`glass-card min-w-0 rounded-2xl p-4 text-left sm:rounded-3xl sm:p-5 ${quickFilter === 'expired' ? 'ring-2 ring-ink-900/20' : ''}`}
         >
-          <p className="text-xs uppercase tracking-[0.24em] text-ink-600">Hết hạn</p>
-          <p className="mt-2 text-3xl font-semibold text-coral-500">{stats.expired}</p>
+          <p className="text-[10px] uppercase tracking-[0.2em] text-ink-600 sm:text-xs sm:tracking-[0.24em]">Hết hạn</p>
+          <p className="mt-2 text-2xl font-semibold text-coral-500 sm:text-3xl">{stats.expired}</p>
         </button>
       </section>
 
@@ -538,14 +546,34 @@ export function Inventory() {
         </div>
       ) : null}
 
-      <section className="glass-card rounded-3xl p-6">
-        <div className="grid gap-3 md:grid-cols-[1.4fr,1fr,1fr,auto,auto]">
+      <section className="glass-card rounded-3xl p-4 sm:p-6 space-y-4">
+        <div className="grid gap-3 md:grid-cols-1">
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Tìm theo mã thuốc, tên thuốc, số lô, nhà phân phối"
             className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
           />
+        </div>
+
+        <div className="flex flex-wrap gap-3 md:hidden">
+          <button
+            type="button"
+            onClick={() => setMobileFiltersOpen((prev) => !prev)}
+            className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900"
+          >
+            {mobileFiltersOpen ? 'Ẩn bộ lọc' : 'Bộ lọc nâng cao'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void loadInventory()}
+            className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900"
+          >
+            Tải lại
+          </button>
+        </div>
+
+        <div className="hidden gap-3 md:grid md:grid-cols-[1fr,1fr,auto,auto]">
           <input
             type="date"
             value={expFrom}
@@ -560,12 +588,7 @@ export function Inventory() {
           />
           <button
             type="button"
-            onClick={() => {
-              setSearch('')
-              setQuickFilter('all')
-              setExpFrom('')
-              setExpTo('')
-            }}
+            onClick={resetFilters}
             className="rounded-2xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white"
           >
             Reset
@@ -578,10 +601,36 @@ export function Inventory() {
             Tải lại
           </button>
         </div>
+
+        {mobileFiltersOpen ? (
+          <div className="grid grid-cols-1 gap-3 md:hidden">
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                type="date"
+                value={expFrom}
+                onChange={(event) => setExpFrom(event.target.value)}
+                className="w-full rounded-2xl border border-ink-900/10 bg-white px-3 py-2 text-xs"
+              />
+              <input
+                type="date"
+                value={expTo}
+                onChange={(event) => setExpTo(event.target.value)}
+                className="w-full rounded-2xl border border-ink-900/10 bg-white px-3 py-2 text-xs"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="rounded-2xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white"
+            >
+              Reset
+            </button>
+          </div>
+        ) : null}
       </section>
 
       <section className="overflow-hidden rounded-3xl border border-white/60 bg-white/70">
-        <div className="overflow-x-auto">
+        <div className="hidden overflow-x-auto md:block">
           <table className="min-w-[1120px] w-full text-left text-sm">
             <thead className="bg-white/70 text-xs uppercase tracking-[0.24em] text-ink-600">
               <tr>
@@ -744,6 +793,129 @@ export function Inventory() {
                 : null}
             </tbody>
           </table>
+        </div>
+
+        <div className="space-y-3 p-3 md:hidden">
+          {loading ? (
+            <div className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-4 text-sm text-ink-600">
+              Đang tải dữ liệu tồn kho...
+            </div>
+          ) : null}
+          {!loading && lotRows.length === 0 ? (
+            <div className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-4 text-sm text-ink-600">
+              Không có dữ liệu phù hợp bộ lọc.
+            </div>
+          ) : null}
+
+          {!loading
+            ? lotRows.map((row) => {
+                const isExpired = row.nearDays < 0
+                const isExpiringSoon =
+                  row.nearDays >= 0 && row.nearDays < expiryWarningDays && row.batch.qty_remaining > 0
+                const isNearDate =
+                  row.nearDays >= 0 && row.nearDays <= nearExpiryDays && row.batch.qty_remaining > 0
+                const breakdown = quantityBreakdown(row.batch.qty_remaining, row.units)
+                const isExpanded = expandedLotId === row.batch.id
+                return (
+                  <article key={row.batch.id} className="rounded-2xl border border-ink-900/10 bg-white/80 p-4 shadow-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold tracking-wide text-ink-600">{row.drugCode}</p>
+                        <h4 className="mt-1 text-base font-semibold text-ink-900">{row.drugName}</h4>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setExpandedLotId((prev) => (prev === row.batch.id ? null : row.batch.id))}
+                        className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900"
+                      >
+                        {isExpanded ? 'Ẩn' : 'Chi tiết'}
+                      </button>
+                    </div>
+
+                    <div className="mt-3 space-y-1 text-xs text-ink-700">
+                      <p><span className="font-semibold text-ink-900">Số lô:</span> {row.batch.batch_code}</p>
+                      <p><span className="font-semibold text-ink-900">HSD:</span> {formatDate(row.batch.exp_date)}</p>
+                      {isExpired ? (
+                        <p className="font-semibold text-coral-500">Đã hết hạn {Math.abs(row.nearDays)} ngày</p>
+                      ) : null}
+                      {!isExpired && isExpiringSoon ? (
+                        <p className="font-semibold text-coral-500">Sắp hết hạn: còn {row.nearDays} ngày</p>
+                      ) : null}
+                      {!isExpired && !isExpiringSoon && isNearDate ? (
+                        <p className="font-semibold text-sun-500">Còn {row.nearDays} ngày</p>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-3 rounded-xl bg-fog-50 px-3 py-2 text-xs text-ink-700">
+                      <p>
+                        <span className="font-semibold text-ink-900">Tồn:</span>{' '}
+                        {row.batch.qty_remaining.toLocaleString('vi-VN')} {row.units.retailUnit.name}
+                      </p>
+                      <p className="mt-1 text-ink-600">
+                        {breakdown.map((item) => `${item.value} ${item.label}`).join(' · ')}
+                      </p>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAdjustError(null)
+                          setAdjusting({
+                            batchId: row.batch.id,
+                            operation: 'subtract',
+                            importQty: '',
+                            middleQty: '',
+                            retailQty: '',
+                          })
+                        }}
+                        disabled={!canAdjust}
+                        className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-50"
+                      >
+                        Điều chỉnh tồn kho
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPrintingLot({
+                            id: row.batch.id,
+                            code: row.batch.batch_code,
+                            qrValue: row.batch.batch_code,
+                            productName: row.drugName,
+                            price: row.highestUnitPrice,
+                            defaultCount: 1,
+                          })
+                        }
+                        className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900"
+                      >
+                        In QR
+                      </button>
+                    </div>
+
+                    {isExpanded ? (
+                      <div className="mt-3 rounded-xl border border-ink-900/10 bg-white p-3 text-xs text-ink-700">
+                        <div className="space-y-1.5">
+                          <p><span className="font-semibold text-ink-900">Mã thuốc:</span> {row.drugCode}</p>
+                          <p><span className="font-semibold text-ink-900">Số lô:</span> {row.batch.batch_code}</p>
+                          <p><span className="font-semibold text-ink-900">Nhà phân phối:</span> {row.batch.supplier_name}</p>
+                          <p><span className="font-semibold text-ink-900">Liên hệ NPP:</span> {row.supplierContact}</p>
+                          <p><span className="font-semibold text-ink-900">Địa chỉ:</span> {row.supplierAddress}</p>
+                          <p><span className="font-semibold text-ink-900">Mã QR:</span> {row.batch.batch_code}</p>
+                        </div>
+                        <div className="mt-3 rounded-lg bg-fog-50 px-3 py-2">
+                          {quantityBreakdown(row.batch.qty_remaining, row.units).map((item) => (
+                            <p key={item.label} className="flex items-center justify-between">
+                              <span>{item.label}</span>
+                              <span className="font-semibold text-ink-900">{item.value.toLocaleString('vi-VN')}</span>
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </article>
+                )
+              })
+            : null}
         </div>
       </section>
 
