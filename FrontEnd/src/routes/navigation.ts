@@ -18,11 +18,11 @@ export const navItems: NavItem[] = [
   { type: 'item', label: 'Nhập hàng', path: '/nhap-hang' },
   { type: 'item', label: 'Tồn kho', path: '/ton-kho' },
   { type: 'item', label: 'Bán hàng', path: '/ban-hang' },
+  { type: 'item', label: 'Cài đặt', path: '/cua-hang/cai-dat' },
   {
     type: 'group',
     label: 'Cửa hàng',
     children: [
-      { type: 'item', label: 'Thông tin cửa hàng', path: '/cua-hang/cai-dat' },
       { type: 'item', label: 'Loại & nhóm thuốc', path: '/cua-hang/nhom-thuoc' },
       { type: 'item', label: 'Nhà sản xuất', path: '/nha-san-xuat' },
       { type: 'item', label: 'Nhà phân phối', path: '/nha-phan-phoi' },
@@ -32,5 +32,4 @@ export const navItems: NavItem[] = [
     ],
   },
   { type: 'item', label: 'Báo cáo', path: '/bao-cao' },
-  { type: 'item', label: 'Hệ thống', path: '/he-thong/suc-khoe-dich-vu' },
 ]

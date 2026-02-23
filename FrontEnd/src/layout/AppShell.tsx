@@ -12,7 +12,7 @@ const titleByPath: Record<string, string> = {
   '/thuoc': 'Danh mục thuốc',
   '/nhom-thuoc': 'Nhóm thuốc',
   '/cua-hang': 'Cửa hàng',
-  '/cua-hang/cai-dat': 'Thông tin cửa hàng',
+  '/cua-hang/cai-dat': 'Cài đặt cửa hàng',
   '/cua-hang/nhom-thuoc': 'Loại & nhóm thuốc',
   '/nha-san-xuat': 'Nhà sản xuất',
   '/nha-phan-phoi': 'Nhà phân phối',
@@ -70,7 +70,18 @@ export function AppShell() {
         canManageUsers={canManageUsers}
       />
 
-      <MobileNav open={mobileNavOpen} items={visibleNavItems} onClose={() => setMobileNavOpen(false)} />
+      <MobileNav
+        open={mobileNavOpen}
+        items={visibleNavItems}
+        onClose={() => setMobileNavOpen(false)}
+        onOpenSettings={() => navigate('/cai-dat')}
+        onOpenUsersManagement={() => navigate('/quan-ly-tai-khoan')}
+        onOpenServicesHealth={() => navigate('/he-thong/suc-khoe-dich-vu')}
+        onLogout={() => {
+          void handleLogout()
+        }}
+        canManageUsers={canManageUsers}
+      />
 
       <div className="flex min-h-screen flex-1 flex-col lg:ml-72">
         <MobileHeader title={title} onMenu={() => setMobileNavOpen(true)} />
