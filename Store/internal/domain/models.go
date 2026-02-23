@@ -52,6 +52,16 @@ type DefaultSetting struct {
 	IsPublic    bool
 }
 
+type BackupRecord struct {
+	ID        string    `json:"id"`
+	Filename  string    `json:"filename"`
+	SizeBytes int64     `json:"size_bytes"`
+	Databases []string  `json:"databases"`
+	Note      *string   `json:"note"`
+	CreatedAt time.Time `json:"created_at"`
+	CreatedBy *string   `json:"created_by"`
+}
+
 type DrugCategory struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`

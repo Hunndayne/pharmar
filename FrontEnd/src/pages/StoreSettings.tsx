@@ -7,7 +7,7 @@ import {
   type FormEvent,
 } from 'react'
 import { ApiError } from '../api/usersService'
-import { storeApi, type StoreInfo, type StoreSettingsMap } from '../api/storeService'
+import { storeApi, type BackupRecord, type StoreInfo, type StoreSettingsMap } from '../api/storeService'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
 import { BANK_OPTIONS } from '../constants/bankList'
@@ -92,6 +92,12 @@ const formatDateTime = (value: string | null) => {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString('vi-VN')
+}
+
+const formatFileSize = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 const asString = (value: unknown, fallback = ''): string => {
@@ -246,6 +252,23 @@ export function StoreSettings() {
   const [bankPickerKeyword, setBankPickerKeyword] = useState('')
   const [qrAccountName, setQrAccountName] = useState('')
 
+  // --- Backup & Sync state ---
+  const [backups, setBackups] = useState<BackupRecord[]>([])
+  const [pgDumpOk, setPgDumpOk] = useState(true)
+  const [backupLoading, setBackupLoading] = useState(false)
+  const [backupCreating, setBackupCreating] = useState(false)
+  const [backupUploading, setBackupUploading] = useState(false)
+  const [backupRestoring, setBackupRestoring] = useState<string | null>(null)
+  const [backupSyncing, setBackupSyncing] = useState<'push' | 'pull' | null>(null)
+  const [backupError, setBackupError] = useState<string | null>(null)
+  const [backupMessage, setBackupMessage] = useState<string | null>(null)
+  const [bkAutoEnabled, setBkAutoEnabled] = useState(false)
+  const [bkAutoInterval, setBkAutoInterval] = useState('24')
+  const [bkMaxFiles, setBkMaxFiles] = useState('10')
+  const [bkSyncUrl, setBkSyncUrl] = useState('')
+  const [bkSyncKey, setBkSyncKey] = useState('')
+  const [bkSettingsSaving, setBkSettingsSaving] = useState(false)
+
   const bankSuggestions = useMemo(() => {
     const keyword = normalizeText(bankPickerKeyword.trim())
     const filtered = !keyword
@@ -290,6 +313,183 @@ export function StoreSettings() {
   useEffect(() => {
     void loadStoreData()
   }, [loadStoreData])
+
+  // --- Backup data loading ---
+  const loadBackups = useCallback(async () => {
+    if (!token?.access_token || !canManageStore) return
+    setBackupLoading(true)
+    try {
+      const res = await storeApi.listBackups(token.access_token)
+      setBackups(res.items)
+      setPgDumpOk(res.pg_dump_ok)
+    } catch {
+      // silent
+    } finally {
+      setBackupLoading(false)
+    }
+  }, [token?.access_token, canManageStore])
+
+  const loadBackupSettings = useCallback(async () => {
+    try {
+      const bs = await storeApi.getSettingsByGroup('backup')
+      setBkAutoEnabled(asBoolean(bs['backup.auto_enabled'], false))
+      setBkAutoInterval(asNumberString(bs['backup.auto_interval_hours'], 24))
+      setBkMaxFiles(asNumberString(bs['backup.max_files'], 10))
+      setBkSyncUrl(asString(bs['backup.sync_server_url'], ''))
+      setBkSyncKey(asString(bs['backup.sync_api_key'], ''))
+    } catch {
+      // silent
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadBackups()
+    void loadBackupSettings()
+  }, [loadBackups, loadBackupSettings])
+
+  const onCreateBackup = async () => {
+    if (!token?.access_token) return
+    setBackupCreating(true)
+    setBackupError(null)
+    setBackupMessage(null)
+    try {
+      await storeApi.createBackup(token.access_token, 'Thu cong')
+      setBackupMessage('Da tao ban sao luu thanh cong.')
+      void loadBackups()
+    } catch (err) {
+      if (err instanceof ApiError) setBackupError(err.message)
+      else setBackupError('Khong the tao ban sao luu.')
+    } finally {
+      setBackupCreating(false)
+    }
+  }
+
+  const onDownloadBackup = async (backupId: string, filename: string) => {
+    if (!token?.access_token) return
+    try {
+      const { blob } = await storeApi.downloadBackup(token.access_token, backupId)
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      if (err instanceof ApiError) setBackupError(err.message)
+      else setBackupError('Khong the tai ban sao luu.')
+    }
+  }
+
+  const onDeleteBackup = async (backupId: string) => {
+    if (!token?.access_token) return
+    if (!window.confirm('Xoa ban sao luu nay?')) return
+    setBackupError(null)
+    setBackupMessage(null)
+    try {
+      await storeApi.deleteBackup(token.access_token, backupId)
+      setBackupMessage('Da xoa ban sao luu.')
+      void loadBackups()
+    } catch (err) {
+      if (err instanceof ApiError) setBackupError(err.message)
+      else setBackupError('Khong the xoa ban sao luu.')
+    }
+  }
+
+  const onUploadBackup = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file || !token?.access_token) return
+    setBackupUploading(true)
+    setBackupError(null)
+    setBackupMessage(null)
+    try {
+      await storeApi.uploadBackup(token.access_token, file)
+      setBackupMessage('Da tai len ban sao luu thanh cong.')
+      void loadBackups()
+    } catch (err) {
+      if (err instanceof ApiError) setBackupError(err.message)
+      else setBackupError('Khong the tai len ban sao luu.')
+    } finally {
+      setBackupUploading(false)
+    }
+  }
+
+  const onRestoreBackup = async (backupId: string) => {
+    if (!token?.access_token) return
+    if (!window.confirm('Khoi phuc du lieu tu ban sao luu nay? Du lieu hien tai se bi ghi de.')) return
+    setBackupRestoring(backupId)
+    setBackupError(null)
+    setBackupMessage(null)
+    try {
+      await storeApi.restoreBackup(token.access_token, backupId)
+      setBackupMessage('Da khoi phuc du lieu thanh cong. Hay tai lai trang.')
+    } catch (err) {
+      if (err instanceof ApiError) setBackupError(err.message)
+      else setBackupError('Khong the khoi phuc du lieu.')
+    } finally {
+      setBackupRestoring(null)
+    }
+  }
+
+  const onSaveBackupSettings = async () => {
+    if (!token?.access_token) return
+    setBkSettingsSaving(true)
+    setBackupError(null)
+    setBackupMessage(null)
+    try {
+      await storeApi.updateSettingsBulk(token.access_token, {
+        'backup.auto_enabled': bkAutoEnabled,
+        'backup.auto_interval_hours': Math.max(1, Math.trunc(Number(bkAutoInterval) || 24)),
+        'backup.max_files': Math.max(1, Math.trunc(Number(bkMaxFiles) || 10)),
+        'backup.sync_server_url': bkSyncUrl.trim(),
+        'backup.sync_api_key': bkSyncKey.trim(),
+      })
+      setBackupMessage('Da luu cau hinh sao luu.')
+    } catch (err) {
+      if (err instanceof ApiError) setBackupError(err.message)
+      else setBackupError('Khong the luu cau hinh.')
+    } finally {
+      setBkSettingsSaving(false)
+    }
+  }
+
+  const onSyncPush = async () => {
+    if (!token?.access_token) return
+    if (!window.confirm('Day ban sao luu len server dong bo?')) return
+    setBackupSyncing('push')
+    setBackupError(null)
+    setBackupMessage(null)
+    try {
+      await storeApi.syncPush(token.access_token)
+      setBackupMessage('Da day ban sao luu len server dong bo.')
+      void loadBackups()
+    } catch (err) {
+      if (err instanceof ApiError) setBackupError(err.message)
+      else setBackupError('Khong the dong bo.')
+    } finally {
+      setBackupSyncing(null)
+    }
+  }
+
+  const onSyncPull = async () => {
+    if (!token?.access_token) return
+    if (!window.confirm('Keo ban sao luu tu server dong bo? Du lieu moi se duoc luu vao danh sach.')) return
+    setBackupSyncing('pull')
+    setBackupError(null)
+    setBackupMessage(null)
+    try {
+      await storeApi.syncPull(token.access_token)
+      setBackupMessage('Da keo ban sao luu tu server dong bo.')
+      void loadBackups()
+    } catch (err) {
+      if (err instanceof ApiError) setBackupError(err.message)
+      else setBackupError('Khong the dong bo.')
+    } finally {
+      setBackupSyncing(null)
+    }
+  }
 
   const onSubmitStoreInfo = async (event: FormEvent) => {
     event.preventDefault()
@@ -1085,6 +1285,209 @@ export function StoreSettings() {
           </div>
         </form>
       </section>
+
+      {/* --- Backup & Sync --- */}
+      {canManageStore ? (
+        <section className="glass-card rounded-3xl p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xl font-semibold text-ink-900">Sao luu & Dong bo du lieu</h3>
+              <p className="mt-1 text-sm text-ink-600">
+                Tao ban sao luu database, tai ve, tai len ban sao luu cu hoac dong bo voi server khac.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadBackups()}
+              disabled={backupLoading}
+              className="rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
+            >
+              Tai lai
+            </button>
+          </div>
+
+          {!pgDumpOk ? (
+            <p className="mt-3 text-sm text-amber-700">
+              pg_dump chua duoc cai dat tren server. Tinh nang tao sao luu tu dong se khong hoat dong.
+              Tuy nhien ban van co the tai len va khoi phuc tu file sao luu.
+            </p>
+          ) : null}
+
+          {backupError ? <p className="mt-3 text-sm text-coral-500">{backupError}</p> : null}
+          {backupMessage ? <p className="mt-3 text-sm text-brand-600">{backupMessage}</p> : null}
+
+          {/* Backup actions */}
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void onCreateBackup()}
+              disabled={backupCreating || !pgDumpOk}
+              className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
+            >
+              {backupCreating ? 'Dang tao...' : 'Tao ban sao luu'}
+            </button>
+            <label className="cursor-pointer rounded-full border border-ink-900/10 bg-white px-5 py-2 text-sm font-semibold text-ink-900">
+              {backupUploading ? 'Dang tai len...' : 'Tai len ban sao luu'}
+              <input
+                type="file"
+                accept=".sql,.sql.gz,.gz"
+                className="hidden"
+                disabled={backupUploading}
+                onChange={(event) => { void onUploadBackup(event) }}
+              />
+            </label>
+          </div>
+
+          {/* Backup list */}
+          {backupLoading ? <p className="mt-4 text-sm text-ink-600">Dang tai danh sach...</p> : null}
+          {!backupLoading && backups.length === 0 ? (
+            <p className="mt-4 text-sm text-ink-500">Chua co ban sao luu nao.</p>
+          ) : null}
+          {backups.length > 0 ? (
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-ink-900/10 text-xs uppercase tracking-wider text-ink-500">
+                    <th className="pb-2 pr-4">Ten file</th>
+                    <th className="pb-2 pr-4">Kich thuoc</th>
+                    <th className="pb-2 pr-4">Thoi gian</th>
+                    <th className="pb-2 pr-4">Ghi chu</th>
+                    <th className="pb-2" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {backups.map((b) => (
+                    <tr key={b.id} className="border-b border-ink-900/5">
+                      <td className="py-2 pr-4 font-mono text-xs text-ink-800">{b.filename}</td>
+                      <td className="py-2 pr-4 text-ink-600">{formatFileSize(b.size_bytes)}</td>
+                      <td className="py-2 pr-4 text-ink-600">{formatDateTime(b.created_at)}</td>
+                      <td className="py-2 pr-4 text-ink-500">{b.note ?? '-'}</td>
+                      <td className="py-2">
+                        <div className="flex gap-1">
+                          <button
+                            type="button"
+                            onClick={() => void onDownloadBackup(b.id, b.filename)}
+                            className="rounded-lg px-2 py-1 text-xs font-medium text-brand-600 hover:bg-brand-50"
+                          >
+                            Tai ve
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void onRestoreBackup(b.id)}
+                            disabled={backupRestoring === b.id}
+                            className="rounded-lg px-2 py-1 text-xs font-medium text-amber-600 hover:bg-amber-50 disabled:opacity-60"
+                          >
+                            {backupRestoring === b.id ? 'Dang khoi phuc...' : 'Khoi phuc'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void onDeleteBackup(b.id)}
+                            className="rounded-lg px-2 py-1 text-xs font-medium text-coral-500 hover:bg-coral-50"
+                          >
+                            Xoa
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
+          {/* Auto backup settings */}
+          <div className="mt-6 border-t border-ink-900/10 pt-4">
+            <h4 className="text-sm font-semibold uppercase tracking-wider text-ink-500">Sao luu tu dong</h4>
+            <div className="mt-3 grid gap-4 md:grid-cols-3">
+              <label className="flex items-center gap-2 text-sm text-ink-700">
+                <input
+                  type="checkbox"
+                  checked={bkAutoEnabled}
+                  onChange={(e) => setBkAutoEnabled(e.target.checked)}
+                  disabled={!pgDumpOk}
+                />
+                Bat sao luu tu dong
+              </label>
+              <label className="space-y-1 text-sm text-ink-700">
+                <span>Chu ky (gio)</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={bkAutoInterval}
+                  onChange={(e) => setBkAutoInterval(e.target.value)}
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  disabled={!bkAutoEnabled}
+                />
+              </label>
+              <label className="space-y-1 text-sm text-ink-700">
+                <span>So ban toi da</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={bkMaxFiles}
+                  onChange={(e) => setBkMaxFiles(e.target.value)}
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                />
+              </label>
+            </div>
+          </div>
+
+          {/* Sync settings */}
+          <div className="mt-6 border-t border-ink-900/10 pt-4">
+            <h4 className="text-sm font-semibold uppercase tracking-wider text-ink-500">Dong bo voi server khac</h4>
+            <p className="mt-1 text-xs text-ink-500">
+              Cau hinh URL va API key cua server du phong de dong bo du lieu.
+            </p>
+            <div className="mt-3 grid gap-4 md:grid-cols-2">
+              <label className="space-y-1 text-sm text-ink-700">
+                <span>URL server dong bo</span>
+                <input
+                  value={bkSyncUrl}
+                  onChange={(e) => setBkSyncUrl(e.target.value)}
+                  placeholder="https://backup-server.example.com"
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                />
+              </label>
+              <label className="space-y-1 text-sm text-ink-700">
+                <span>API Key dong bo</span>
+                <input
+                  type="password"
+                  value={bkSyncKey}
+                  onChange={(e) => setBkSyncKey(e.target.value)}
+                  placeholder="Nhap API key"
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                />
+              </label>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void onSaveBackupSettings()}
+                disabled={bkSettingsSaving}
+                className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                {bkSettingsSaving ? 'Dang luu...' : 'Luu cau hinh sao luu'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void onSyncPush()}
+                disabled={backupSyncing !== null || !bkSyncUrl.trim()}
+                className="rounded-full border border-ink-900/10 bg-white px-5 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
+              >
+                {backupSyncing === 'push' ? 'Dang day...' : 'Day len server'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void onSyncPull()}
+                disabled={backupSyncing !== null || !bkSyncUrl.trim()}
+                className="rounded-full border border-ink-900/10 bg-white px-5 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
+              >
+                {backupSyncing === 'pull' ? 'Dang keo...' : 'Keo tu server'}
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
     </div>
   )
 }

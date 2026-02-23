@@ -27,7 +27,7 @@ class Settings(BaseSettings):
         "http://localhost:5173",
     ]
 
-    MAX_REQUEST_BODY_SIZE: int = 20 * 1024 * 1024  # 20MB
+    MAX_REQUEST_BODY_SIZE: int = 100 * 1024 * 1024  # 100MB (supports backup uploads)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -200,8 +200,12 @@ async def proxy(service: str, request: Request, resource_path: str = "") -> Resp
         raise HTTPException(status_code=404, detail=f"Unknown service '{service}'")
 
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > settings.MAX_REQUEST_BODY_SIZE:
-        raise HTTPException(status_code=413, detail="Request body too large")
+    if content_length:
+        try:
+            if int(content_length) > settings.MAX_REQUEST_BODY_SIZE:
+                raise HTTPException(status_code=413, detail="Request body too large")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length header")
 
     base_path = f"{target_service_url.rstrip('/')}/api/v1/{service}"
     target_url = f"{base_path}/{resource_path}" if resource_path else base_path

@@ -101,6 +101,16 @@ export type UpdateDrugGroupPayload = {
   sort_order?: number
 }
 
+export type BackupRecord = {
+  id: string
+  filename: string
+  size_bytes: number
+  databases: string[]
+  note: string | null
+  created_at: string
+  created_by: string | null
+}
+
 const sanitizePrefix = (value: string) => {
   const trimmed = value.trim()
   if (!trimmed) return ''
@@ -293,4 +303,73 @@ export const storeApi = {
       { method: 'DELETE' },
       token,
     ),
+
+  // --- Backup ---
+
+  listBackups: (token: string) =>
+    requestStoreJson<{ items: BackupRecord[]; total: number; pg_dump_ok: boolean }>(
+      '/backup/list',
+      { method: 'GET' },
+      token,
+    ),
+
+  createBackup: (token: string, note?: string) =>
+    requestStoreJson<{ message: string; data: BackupRecord }>(
+      '/backup/create',
+      {
+        method: 'POST',
+        body: JSON.stringify({ note: note ?? '' }),
+      },
+      token,
+    ),
+
+  downloadBackup: async (token: string, backupId: string): Promise<{ blob: Blob; filename: string }> => {
+    const response = await fetch(buildStoreApiUrl(`/backup/download/${encodeURIComponent(backupId)}`), {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null)
+      throw new ApiError(payload?.detail ?? `Yeu cau that bai (${response.status})`, response.status)
+    }
+    const filename = response.headers.get('x-backup-filename') ?? 'backup.sql.gz'
+    const blob = await response.blob()
+    return { blob, filename }
+  },
+
+  deleteBackup: (token: string, backupId: string) =>
+    requestStoreJson<{ message: string; id: string }>(
+      `/backup/${encodeURIComponent(backupId)}`,
+      { method: 'DELETE' },
+      token,
+    ),
+
+  uploadBackup: async (token: string, file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+
+    const response = await fetch(buildStoreApiUrl('/backup/upload'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) {
+      throw new ApiError(payload?.detail ?? `Yeu cau that bai (${response.status})`, response.status)
+    }
+    return payload as { message: string; data: BackupRecord }
+  },
+
+  restoreBackup: (token: string, backupId: string) =>
+    requestStoreJson<{ message: string }>(
+      `/backup/restore/${encodeURIComponent(backupId)}`,
+      { method: 'POST' },
+      token,
+    ),
+
+  syncPush: (token: string) =>
+    requestStoreJson<{ message: string }>('/backup/sync/push', { method: 'POST' }, token),
+
+  syncPull: (token: string) =>
+    requestStoreJson<{ message: string }>('/backup/sync/pull', { method: 'POST' }, token),
 }
