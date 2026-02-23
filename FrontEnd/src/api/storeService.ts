@@ -48,6 +48,8 @@ export type StoreDrugGroup = {
   category_id: string
   name: string
   description: string | null
+  vat_rate: number | string
+  other_tax_rate: number | string
   is_active: boolean
   sort_order: number
   created_at: string
@@ -89,6 +91,8 @@ export type CreateDrugGroupPayload = {
   category_id: string
   name: string
   description?: string | null
+  vat_rate?: number
+  other_tax_rate?: number
   is_active?: boolean
   sort_order?: number
 }
@@ -97,6 +101,8 @@ export type UpdateDrugGroupPayload = {
   category_id?: string
   name?: string
   description?: string | null
+  vat_rate?: number
+  other_tax_rate?: number
   is_active?: boolean
   sort_order?: number
 }

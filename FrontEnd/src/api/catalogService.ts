@@ -60,6 +60,7 @@ export type ProductListItem = {
   code: string
   barcode: string | null
   name: string
+  active_ingredient: string | null
   registration_number: string | null
   group_name: string | null
   manufacturer_name: string | null
@@ -77,6 +78,7 @@ export type ProductDetailItem = {
   code: string
   barcode: string | null
   name: string
+  active_ingredient: string | null
   registration_number: string | null
   group: ProductGroupRef | null
   manufacturer: ProductManufacturerRef | null
@@ -224,6 +226,7 @@ type ProductCreatePayload = {
   code?: string | null
   barcode?: string | null
   name: string
+  active_ingredient?: string | null
   registration_number?: string | null
   group_id?: string | null
   manufacturer_id?: string | null
@@ -242,6 +245,7 @@ type ProductUpdatePayload = {
   code?: string | null
   barcode?: string | null
   name?: string
+  active_ingredient?: string | null
   registration_number?: string | null
   group_id?: string | null
   manufacturer_id?: string | null

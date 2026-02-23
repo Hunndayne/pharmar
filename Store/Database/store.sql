@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS store.drug_groups (
     category_id UUID NOT NULL REFERENCES store.drug_categories(id) ON DELETE RESTRICT,
     name VARCHAR(120) NOT NULL,
     description TEXT,
+    vat_rate NUMERIC(5,2) NOT NULL DEFAULT 0,
+    other_tax_rate NUMERIC(5,2) NOT NULL DEFAULT 0,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     sort_order INTEGER NOT NULL DEFAULT 100,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -67,3 +69,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_drug_groups_category_name_unique
 
 CREATE INDEX IF NOT EXISTS idx_drug_groups_category_active_sort
     ON store.drug_groups (category_id, is_active, sort_order, name);
+
+ALTER TABLE store.drug_groups
+    ADD COLUMN IF NOT EXISTS vat_rate NUMERIC(5,2) NOT NULL DEFAULT 0;
+
+ALTER TABLE store.drug_groups
+    ADD COLUMN IF NOT EXISTS other_tax_rate NUMERIC(5,2) NOT NULL DEFAULT 0;

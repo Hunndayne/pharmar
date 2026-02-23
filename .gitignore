@@ -37,3 +37,5 @@ Thumbs.db
 Users/.env
 Users/.env
 Users/.env
+FrontEnd/nginx.conf
+FrontEnd/nginx.conf

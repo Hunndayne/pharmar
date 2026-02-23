@@ -25,6 +25,7 @@ type Drug = {
   id: string
   code: string
   name: string
+  activeIngredient: string
   regNo: string
   category: string
   vatRate: number
@@ -51,10 +52,9 @@ type FormState = {
   id?: string
   code: string
   name: string
+  activeIngredient: string
   regNo: string
   groupCategory: string
-  vatRate: string
-  otherTaxRate: string
   groupId: string
   makerId: string
   barcode: string
@@ -111,10 +111,9 @@ const statusStyles: Record<string, string> = {
 const emptyForm = (groupId = '', makerId = '', groupCategory = ''): FormState => ({
   code: '',
   name: '',
+  activeIngredient: '',
   regNo: '',
   groupCategory,
-  vatRate: '0',
-  otherTaxRate: '0',
   groupId,
   makerId,
   barcode: '',
@@ -291,6 +290,7 @@ const mapProductDetailToDrug = (item: ProductDetailItem): Drug => {
     id: item.id,
     code: item.code,
     name: item.name,
+    activeIngredient: item.active_ingredient ?? '',
     regNo: item.registration_number ?? '',
     category: '-',
     vatRate: toPriceNumber(item.vat_rate),
@@ -442,6 +442,9 @@ export function DrugCatalog() {
   const [drugs, setDrugs] = useState<Drug[]>(initialDrugs)
   const [groupOptions, setGroupOptions] = useState<DrugGroupItem[]>([])
   const [groupCategoryById, setGroupCategoryById] = useState<Record<string, string>>({})
+  const [groupTaxById, setGroupTaxById] = useState<
+    Record<string, { vatRate: number; otherTaxRate: number }>
+  >({})
   const [makerOptions, setMakerOptions] = useState<ManufacturerItem[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -515,6 +518,7 @@ export function DrugCatalog() {
 
       let resolvedGroups = groupPage.items
       const groupCategoryByName: Record<string, string> = {}
+      const groupTaxByName: Record<string, { vatRate: number; otherTaxRate: number }> = {}
 
       try {
         const storeCategoryPage = await storeApi.listDrugCategories({
@@ -535,6 +539,12 @@ export function DrugCatalog() {
                   const normalizedGroupName = normalizeGroupKey(group.name)
                   if (normalizedGroupName && !groupCategoryByName[normalizedGroupName]) {
                     groupCategoryByName[normalizedGroupName] = categoryName || '-'
+                  }
+                  if (normalizedGroupName && !groupTaxByName[normalizedGroupName]) {
+                    groupTaxByName[normalizedGroupName] = {
+                      vatRate: toPriceNumber(group.vat_rate),
+                      otherTaxRate: toPriceNumber(group.other_tax_rate),
+                    }
                   }
                   return group.name.trim()
                 })
@@ -584,6 +594,13 @@ export function DrugCatalog() {
         acc[group.id] = groupCategoryByName[normalizeGroupKey(group.name)] ?? '-'
         return acc
       }, {})
+      const nextGroupTaxById = resolvedGroups.reduce<
+        Record<string, { vatRate: number; otherTaxRate: number }>
+      >((acc, group) => {
+        const byName = groupTaxByName[normalizeGroupKey(group.name)]
+        acc[group.id] = byName ?? { vatRate: 0, otherTaxRate: 0 }
+        return acc
+      }, {})
 
       setGroupOptions(
         resolvedGroups
@@ -591,15 +608,19 @@ export function DrugCatalog() {
           .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN')),
       )
       setGroupCategoryById(nextGroupCategoryById)
+      setGroupTaxById(nextGroupTaxById)
       setMakerOptions(manufacturerPage.items)
       setDrugs(
         details.map((item) => {
           const mapped = mapProductDetailToDrug(item)
+          const groupTax = mapped.groupId ? nextGroupTaxById[mapped.groupId] : undefined
           return {
             ...mapped,
             category: mapped.groupId
               ? (nextGroupCategoryById[mapped.groupId] ?? '-')
               : (groupCategoryByName[normalizeGroupKey(mapped.group)] ?? '-'),
+            vatRate: groupTax?.vatRate ?? mapped.vatRate,
+            otherTaxRate: groupTax?.otherTaxRate ?? mapped.otherTaxRate,
           }
         }),
       )
@@ -675,7 +696,7 @@ export function DrugCatalog() {
     return drugs.filter((drug) => {
       const matchKeyword =
         !keyword ||
-        [drug.code, drug.name, drug.regNo, drug.barcode, drug.maker]
+        [drug.code, drug.name, drug.activeIngredient, drug.regNo, drug.barcode, drug.maker]
           .join(' ')
           .toLowerCase()
           .includes(keyword)
@@ -755,6 +776,11 @@ export function DrugCatalog() {
     return groupCategoryById[form.groupId] ?? '-'
   }, [form.groupCategory, form.groupId, groupCategoryById])
 
+  const selectedGroupTax = useMemo(() => {
+    if (!form.groupId) return null
+    return groupTaxById[form.groupId] ?? null
+  }, [form.groupId, groupTaxById])
+
   const handleGroupCategoryChange = (groupCategory: string) => {
     setForm((prev) => {
       const firstGroupId = groupOptions.find(
@@ -797,12 +823,11 @@ export function DrugCatalog() {
       id: drug.id,
       code: drug.code,
       name: drug.name,
+      activeIngredient: drug.activeIngredient,
       regNo: drug.regNo,
       groupCategory:
         (drug.groupId ? (groupCategoryById[drug.groupId] ?? '') : '') ||
         (drug.category !== '-' ? drug.category : ''),
-      vatRate: String(drug.vatRate ?? 0),
-      otherTaxRate: String(drug.otherTaxRate ?? 0),
       groupId: drug.groupId ?? '',
       makerId: drug.makerId ?? '',
       barcode: drug.barcode,
@@ -874,17 +899,6 @@ export function DrugCatalog() {
     if (!form.regNo.trim()) next.regNo = 'Bắt buộc'
     if (!form.groupId) next.group = 'Bắt buộc'
     if (!form.makerId) next.maker = 'Bắt buộc'
-    const vatRate = Number(form.vatRate)
-    const otherTaxRate = Number(form.otherTaxRate)
-    if (form.vatRate.trim() === '') next.vatRate = 'Bắt buộc'
-    if (form.otherTaxRate.trim() === '') next.otherTaxRate = 'Bắt buộc'
-    if (form.vatRate.trim() !== '' && (!Number.isFinite(vatRate) || vatRate < 0 || vatRate > 100)) {
-      next.vatRate = 'Từ 0 đến 100'
-    }
-    if (form.otherTaxRate.trim() !== '' && (!Number.isFinite(otherTaxRate) || otherTaxRate < 0 || otherTaxRate > 100)) {
-      next.otherTaxRate = 'Từ 0 đến 100'
-    }
-
     const retailPrice = parsePositive(form.retailUnit.price)
     if (!form.retailUnit.name.trim()) next['retail-name'] = 'Bắt buộc'
     if (!retailPrice) next['retail-price'] = 'Giá bán không hợp lệ'
@@ -934,6 +948,7 @@ export function DrugCatalog() {
     try {
       const desiredUnits = buildDesiredUnits(form)
       const baseUnit = desiredUnits.find((item) => item.level === 'retail')
+      const selectedGroupTax = form.groupId ? groupTaxById[form.groupId] : undefined
       if (!baseUnit) {
         setAlert('Không thể xác định đơn vị bán lẻ.')
         return
@@ -941,14 +956,15 @@ export function DrugCatalog() {
 
       const productPayload = {
         name: form.name.trim(),
+        active_ingredient: form.activeIngredient.trim() || null,
         registration_number: form.regNo.trim() || null,
         group_id: form.groupId || null,
         manufacturer_id: form.makerId || null,
         barcode: form.barcode.trim() || null,
         instructions: form.usage.trim() || null,
         note: form.note.trim() || null,
-        vat_rate: Math.max(0, Number(form.vatRate) || 0),
-        other_tax_rate: Math.max(0, Number(form.otherTaxRate) || 0),
+        vat_rate: selectedGroupTax?.vatRate ?? 0,
+        other_tax_rate: selectedGroupTax?.otherTaxRate ?? 0,
         is_active: form.active,
       }
 
@@ -986,12 +1002,11 @@ export function DrugCatalog() {
       return [
         drug.code,
         drug.name,
+        drug.activeIngredient,
         drug.regNo,
         drug.category,
         drug.group,
         drug.maker,
-        `${drug.vatRate}`,
-        `${drug.otherTaxRate}`,
         drug.barcode,
         drug.active ? 'Đang bán' : 'Ngừng bán',
         unitData,
@@ -999,7 +1014,7 @@ export function DrugCatalog() {
     })
     downloadCsv(
       'danh-muc-thuoc.csv',
-      ['Mã thuốc', 'Tên thuốc', 'Số đăng ký', 'Loại thuốc', 'Nhóm', 'NSX', 'VAT', 'Thuế khác', 'Barcode', 'Trạng thái', 'Đơn vị'],
+      ['M\u00e3 thu\u1ed1c', 'T\u00ean thu\u1ed1c', 'Ho\u1ea1t ch\u1ea5t', 'S\u1ed1 \u0111\u0103ng k\u00fd', 'Lo\u1ea1i thu\u1ed1c', 'Nh\u00f3m', 'NSX', 'Barcode', 'Tr\u1ea1ng th\u00e1i', '\u0110\u01a1n v\u1ecb'],
       rows,
     )
   }
@@ -1111,11 +1126,10 @@ export function DrugCatalog() {
 
       const idxCode = findIndex('Mã thuốc', 'Code')
       const idxName = findIndex('Tên thuốc', 'Name')
+      const idxActiveIngredient = findIndex('Hoat chat', 'Active ingredient')
       const idxRegNo = findIndex('Số đăng ký', 'Registration number')
       const idxGroup = findIndex('Nhóm', 'Nhom thuoc', 'Group')
       const idxMaker = findIndex('NSX', 'Nha san xuat', 'Maker')
-      const idxVat = findIndex('VAT')
-      const idxOtherTax = findIndex('Thuế khác', 'Other tax')
       const idxBarcode = findIndex('Barcode')
       const idxStatus = findIndex('Trạng thái', 'Status')
       const idxUnits = findIndex('Đơn vị', 'Đơn vị & giá')
@@ -1150,11 +1164,10 @@ export function DrugCatalog() {
 
         try {
           const code = idxCode >= 0 ? (row[idxCode] ?? '').trim().toUpperCase() : ''
+          const activeIngredient = idxActiveIngredient >= 0 ? (row[idxActiveIngredient] ?? '').trim() : ''
           const regNo = idxRegNo >= 0 ? (row[idxRegNo] ?? '').trim() : ''
           const groupName = idxGroup >= 0 ? (row[idxGroup] ?? '').trim() : ''
           const makerName = idxMaker >= 0 ? (row[idxMaker] ?? '').trim() : ''
-          const vatRate = idxVat >= 0 ? Number((row[idxVat] ?? '0').replace(/[^\d.-]/g, '')) : 0
-          const otherTaxRate = idxOtherTax >= 0 ? Number((row[idxOtherTax] ?? '0').replace(/[^\d.-]/g, '')) : 0
           const barcode = idxBarcode >= 0 ? (row[idxBarcode] ?? '').trim() : ''
           const statusRaw = idxStatus >= 0 ? normalizeImportText(row[idxStatus] ?? '') : ''
           const active = !(statusRaw.includes('ngung') || statusRaw.includes('inactive'))
@@ -1165,16 +1178,19 @@ export function DrugCatalog() {
             continue
           }
 
+          const groupId = groupByName.get(normalizeGroupKey(groupName)) ?? null
+          const groupTax = groupId ? groupTaxById[groupId] : undefined
           const payload = {
             name,
+            active_ingredient: activeIngredient || null,
             registration_number: regNo || null,
-            group_id: groupByName.get(normalizeGroupKey(groupName)) ?? null,
+            group_id: groupId,
             manufacturer_id: makerByName.get(normalizeGroupKey(makerName)) ?? null,
             barcode: barcode || null,
             instructions: null,
             note: null,
-            vat_rate: Number.isFinite(vatRate) ? Math.max(0, vatRate) : 0,
-            other_tax_rate: Number.isFinite(otherTaxRate) ? Math.max(0, otherTaxRate) : 0,
+            vat_rate: groupTax?.vatRate ?? 0,
+            other_tax_rate: groupTax?.otherTaxRate ?? 0,
             is_active: active,
           }
 
@@ -1669,7 +1685,12 @@ export function DrugCatalog() {
                 <Fragment key={drug.id}>
                   <tr className="hover:bg-white/80">
                     <td className="px-6 py-4 font-semibold text-ink-900">{drug.code}</td>
-                    <td className="px-6 py-4 text-ink-900">{drug.name}</td>
+                    <td className="px-6 py-4 text-ink-900">
+                      <p>{drug.name}</p>
+                      {drug.activeIngredient ? (
+                        <p className="mt-1 text-xs text-ink-600">Hoạt chất: {drug.activeIngredient}</p>
+                      ) : null}
+                    </td>
                     <td className="px-6 py-4 text-ink-700">{drug.category || '-'}</td>
                     <td className="px-6 py-4 text-ink-700">{drug.group}</td>
                     <td className="px-6 py-4 text-ink-700">{drug.maker}</td>
@@ -1707,6 +1728,7 @@ export function DrugCatalog() {
                           <div className="grid gap-4 lg:grid-cols-[1.2fr,1fr]">
                             <div className="space-y-2 text-sm text-ink-700">
                               <p><span className="font-semibold text-ink-900">Loại thuốc:</span> {drug.category || '-'}</p>
+                              <p><span className="font-semibold text-ink-900">Hoạt chất:</span> {drug.activeIngredient || '-'}</p>
                               <p><span className="font-semibold text-ink-900">Số đăng ký:</span> {drug.regNo}</p>
                               <p><span className="font-semibold text-ink-900">Thuế:</span> VAT {drug.vatRate}% · Thuế khác {drug.otherTaxRate}%</p>
                               <p><span className="font-semibold text-ink-900">Hướng dẫn:</span> {drug.usage || '-'}</p>
@@ -1773,29 +1795,13 @@ export function DrugCatalog() {
                   {errors.name ? <span className="text-xs text-coral-500">{errors.name}</span> : null}
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">
+                  <span>{'Ho\u1ea1t ch\u1ea5t'}</span>
+                  <input value={form.activeIngredient} onChange={(e) => updateForm('activeIngredient', e.target.value)} className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2" />
+                </label>
+                <label className="space-y-2 text-sm text-ink-700">
                   <span>Số đăng ký *</span>
                   <input value={form.regNo} onChange={(e) => updateForm('regNo', e.target.value)} className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2" />
                   {errors.regNo ? <span className="text-xs text-coral-500">{errors.regNo}</span> : null}
-                </label>
-                <label className="space-y-2 text-sm text-ink-700">
-                  <span>Thuế VAT (%) *</span>
-                  <input
-                    value={form.vatRate}
-                    onChange={(e) => updateForm('vatRate', e.target.value)}
-                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-                    inputMode="decimal"
-                  />
-                  {errors.vatRate ? <span className="text-xs text-coral-500">{errors.vatRate}</span> : null}
-                </label>
-                <label className="space-y-2 text-sm text-ink-700">
-                  <span>Thuế khác (%) *</span>
-                  <input
-                    value={form.otherTaxRate}
-                    onChange={(e) => updateForm('otherTaxRate', e.target.value)}
-                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-                    inputMode="decimal"
-                  />
-                  {errors.otherTaxRate ? <span className="text-xs text-coral-500">{errors.otherTaxRate}</span> : null}
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">
                   <span>Loại thuốc *</span>
@@ -1823,8 +1829,13 @@ export function DrugCatalog() {
                     <span className="text-xs text-ink-500">Hãy chọn loại thuốc trước.</span>
                   ) : null}
                   <div className="rounded-2xl border border-ink-900/10 bg-fog-50 px-4 py-2 text-sm text-ink-700">
-                    Loại thuốc hiện tại: <span className="font-semibold text-ink-900">{selectedGroupCategory}</span>
+                    {'Lo\u1ea1i thu\u1ed1c hi\u1ec7n t\u1ea1i:'} <span className="font-semibold text-ink-900">{selectedGroupCategory}</span>
                   </div>
+                  {selectedGroupTax ? (
+                    <div className="rounded-2xl border border-ink-900/10 bg-fog-50 px-4 py-2 text-sm text-ink-700">
+                      {'Thu\u1ebf nh\u00f3m \u00e1p d\u1ee5ng:'} VAT {selectedGroupTax.vatRate}% {'\u00b7'} {'Thu\u1ebf kh\u00e1c'} {selectedGroupTax.otherTaxRate}%
+                    </div>
+                  ) : null}
                   {errors.group ? <span className="text-xs text-coral-500">{errors.group}</span> : null}
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">

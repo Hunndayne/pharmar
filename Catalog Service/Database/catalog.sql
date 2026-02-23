@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS catalog.products (
     code VARCHAR(20) UNIQUE NOT NULL,
     barcode VARCHAR(50),
     name VARCHAR(300) NOT NULL,
+    active_ingredient VARCHAR(300),
     registration_number VARCHAR(50),
     group_id UUID REFERENCES catalog.drug_groups(id),
     manufacturer_id UUID REFERENCES catalog.manufacturers(id),
@@ -92,3 +93,6 @@ CREATE INDEX IF NOT EXISTS idx_products_manufacturer ON catalog.products(manufac
 CREATE INDEX IF NOT EXISTS idx_product_units_barcode ON catalog.product_units(barcode);
 CREATE INDEX IF NOT EXISTS idx_product_units_product ON catalog.product_units(product_id);
 CREATE INDEX IF NOT EXISTS idx_products_name ON catalog.products USING gin(to_tsvector('simple', name));
+
+ALTER TABLE catalog.products
+  ADD COLUMN IF NOT EXISTS active_ingredient VARCHAR(300);

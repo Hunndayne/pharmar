@@ -192,6 +192,7 @@ def to_product_list_item(product: Product) -> ProductListItemResponse:
         code=product.code,
         barcode=product.barcode,
         name=product.name,
+        active_ingredient=product.active_ingredient,
         registration_number=product.registration_number,
         group_name=product.group.name if product.group else None,
         manufacturer_name=product.manufacturer.name if product.manufacturer else None,
@@ -212,6 +213,7 @@ def to_product_detail(product: Product) -> ProductDetailResponse:
         code=product.code,
         barcode=product.barcode,
         name=product.name,
+        active_ingredient=product.active_ingredient,
         registration_number=product.registration_number,
         group=(
             ProductGroupRef(

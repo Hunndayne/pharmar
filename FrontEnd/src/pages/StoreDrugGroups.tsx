@@ -23,6 +23,8 @@ type GroupFormState = {
   categoryId: string
   name: string
   description: string
+  vatRate: string
+  otherTaxRate: string
   sortOrder: string
   isActive: boolean
 }
@@ -38,6 +40,8 @@ const emptyGroupForm = (categoryId = ''): GroupFormState => ({
   categoryId,
   name: '',
   description: '',
+  vatRate: '0',
+  otherTaxRate: '0',
   sortOrder: '100',
   isActive: true,
 })
@@ -46,6 +50,13 @@ const parseSortOrder = (value: string) => {
   const numberValue = Number(value)
   if (!Number.isFinite(numberValue)) return 100
   return Math.max(0, Math.floor(numberValue))
+}
+
+const parseTaxRate = (value: string) => {
+  const numberValue = Number(value)
+  if (!Number.isFinite(numberValue)) return null
+  if (numberValue < 0 || numberValue > 100) return null
+  return numberValue
 }
 
 export function StoreDrugGroups() {
@@ -139,6 +150,8 @@ export function StoreDrugGroups() {
       categoryId: category.id,
       name: group.name,
       description: group.description ?? '',
+      vatRate: String(group.vat_rate ?? 0),
+      otherTaxRate: String(group.other_tax_rate ?? 0),
       sortOrder: String(group.sort_order),
       isActive: group.is_active,
     })
@@ -200,10 +213,23 @@ export function StoreDrugGroups() {
       return
     }
 
+    const vatRate = parseTaxRate(groupForm.vatRate)
+    if (vatRate === null) {
+      setFormError('VAT phai trong khoang 0-100.')
+      return
+    }
+    const otherTaxRate = parseTaxRate(groupForm.otherTaxRate)
+    if (otherTaxRate === null) {
+      setFormError('Thue khac phai trong khoang 0-100.')
+      return
+    }
+
     const payload: CreateDrugGroupPayload | UpdateDrugGroupPayload = {
       category_id: groupForm.categoryId,
       name,
       description: groupForm.description.trim() || null,
+      vat_rate: vatRate,
+      other_tax_rate: otherTaxRate,
       is_active: groupForm.isActive,
       sort_order: parseSortOrder(groupForm.sortOrder),
     }
@@ -434,6 +460,9 @@ export function StoreDrugGroups() {
                     </span>
                   </div>
                   <p className="mt-1 text-xs text-ink-600">{group.description || 'Không có mô tả'}</p>
+                  <p className="mt-1 text-xs text-ink-600">
+                    Thuế nhóm: VAT {Number(group.vat_rate || 0)}% | Thuế khác {Number(group.other_tax_rate || 0)}%
+                  </p>
                   <p className="mt-2 text-xs text-ink-500">Thứ tự: {group.sort_order}</p>
                   {isOwner ? (
                     <div className="mt-3 flex flex-wrap gap-2">
@@ -581,6 +610,32 @@ export function StoreDrugGroups() {
                   className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
                 />
               </label>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>VAT (%)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={groupForm.vatRate}
+                    onChange={(event) => setGroupForm((prev) => ({ ...prev, vatRate: event.target.value }))}
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  />
+                </label>
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Thue khac (%)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={groupForm.otherTaxRate}
+                    onChange={(event) =>
+                      setGroupForm((prev) => ({ ...prev, otherTaxRate: event.target.value }))
+                    }
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  />
+                </label>
+              </div>
               <label className="space-y-2 text-sm text-ink-700">
                 <span>Thứ tự hiển thị</span>
                 <input
@@ -623,4 +678,3 @@ export function StoreDrugGroups() {
     </div>
   )
 }
-

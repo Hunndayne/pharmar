@@ -259,6 +259,7 @@ async def create_product(
         code=code,
         barcode=normalize_optional_string(payload.barcode),
         name=payload.name.strip(),
+        active_ingredient=normalize_optional_string(payload.active_ingredient),
         registration_number=normalize_optional_string(payload.registration_number),
         group_id=payload.group_id,
         manufacturer_id=payload.manufacturer_id,
@@ -322,6 +323,8 @@ async def update_product(
         product.barcode = normalize_optional_string(payload.barcode)
     if "name" in updates and payload.name is not None:
         product.name = payload.name.strip()
+    if "active_ingredient" in updates:
+        product.active_ingredient = normalize_optional_string(payload.active_ingredient)
     if "registration_number" in updates:
         product.registration_number = normalize_optional_string(payload.registration_number)
     if "instructions" in updates:
@@ -622,6 +625,9 @@ async def import_products_from_excel(
                     str(cell_value("barcode")) if cell_value("barcode") is not None else None
                 ),
                 name=name,
+                active_ingredient=normalize_optional_string(
+                    str(cell_value("active_ingredient")) if cell_value("active_ingredient") is not None else None
+                ),
                 registration_number=normalize_optional_string(
                     str(cell_value("registration_number")) if cell_value("registration_number") is not None else None
                 ),
@@ -684,6 +690,7 @@ async def export_products(_: ManagerOrOwner, db: DbSession):
             "code",
             "barcode",
             "name",
+            "active_ingredient",
             "registration_number",
             "group_code",
             "group_name",
@@ -706,6 +713,7 @@ async def export_products(_: ManagerOrOwner, db: DbSession):
                 product.code,
                 product.barcode,
                 product.name,
+                product.active_ingredient,
                 product.registration_number,
                 product.group.code if product.group else None,
                 product.group.name if product.group else None,
