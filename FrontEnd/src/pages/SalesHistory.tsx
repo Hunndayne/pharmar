@@ -602,8 +602,8 @@ export function SalesHistory() {
         </div>
       </section>
 
-      <section className="glass-card rounded-3xl p-6 space-y-4">
-        <div className="grid gap-3 lg:grid-cols-[1.5fr,1fr,1fr,1fr,auto,auto,auto]">
+      <section className="glass-card rounded-3xl p-4 sm:p-6 space-y-4">
+        <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-[1.5fr,1fr,1fr,1fr,auto,auto,auto]">
           <input
             value={search}
             onChange={(event) => {
@@ -680,7 +680,113 @@ export function SalesHistory() {
       </section>
 
       <section className="overflow-hidden rounded-3xl border border-white/60 bg-white/70">
-        <div className="overflow-x-auto">
+        <div className="space-y-3 p-3 md:hidden">
+          {loading ? (
+            <p className="rounded-2xl bg-white px-4 py-3 text-sm text-ink-600">Äang táº£i dá»¯ liá»‡u...</p>
+          ) : null}
+          {!loading && rows.length === 0 ? (
+            <p className="rounded-2xl bg-white px-4 py-3 text-sm text-ink-600">KhÃ´ng cÃ³ hÃ³a Ä‘Æ¡n phÃ¹ há»£p bá»™ lá»c.</p>
+          ) : null}
+
+          {!loading
+            ? rows.map((item) => {
+                const detail = detailsById[item.id]
+                const isExpanded = expandedId === item.id
+                const isLoadingDetail = detailLoadingId === item.id
+                const debtAmount = debtAmountOfInvoice(item.total_amount, item.amount_paid)
+
+                return (
+                  <article
+                    key={item.id}
+                    className="rounded-2xl bg-white p-4 text-sm text-ink-700 shadow-[0_1px_0_rgba(17,24,39,0.04)]"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-semibold text-ink-900">{item.code}</p>
+                        <p className="text-xs text-ink-600">{formatDateTime(item.created_at)}</p>
+                      </div>
+                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${getStatusStyle(item.status)}`}>
+                        {getStatusLabel(item.status)}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 space-y-1 text-xs text-ink-600">
+                      <p>KhÃ¡ch: {item.customer_name || 'KhÃ¡ch vÃ£ng lai'}</p>
+                      <p>SÄT: {item.customer_phone || '-'}</p>
+                      <p>Thanh toÃ¡n: {getPaymentMethodLabel(item.payment_method)}</p>
+                      <p>ThÃ nh tiá»n: <span className="font-semibold text-ink-900">{formatCurrency(item.total_amount)}</span></p>
+                      {debtAmount > 0 ? (
+                        <p>CÃ²n ná»£: <span className="font-semibold text-coral-500">{formatCurrency(debtAmount)}</span></p>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void toggleDetail(item)}
+                        className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900"
+                      >
+                        {isExpanded ? 'áº¨n chi tiáº¿t' : 'Chi tiáº¿t'}
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={printingId === item.id}
+                        onClick={() => void handlePrintInvoice(item)}
+                        className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-60"
+                      >
+                        {printingId === item.id ? 'Äang in...' : 'In hÃ³a Ä‘Æ¡n'}
+                      </button>
+
+                      {(item.status === 'completed' || item.status === 'returned') ? (
+                        <button
+                          type="button"
+                          disabled={returningId === item.id}
+                          onClick={() => void handleReturnByItem(item)}
+                          className="rounded-full border border-sun-500/30 bg-sun-500/10 px-3 py-1 text-xs font-semibold text-sun-700 disabled:opacity-60"
+                        >
+                          {returningId === item.id ? 'Äang tráº£...' : 'Tráº£ hÃ ng'}
+                        </button>
+                      ) : null}
+
+                      {canCancel && item.status === 'completed' ? (
+                        <button
+                          type="button"
+                          disabled={cancellingId === item.id}
+                          onClick={() => void handleCancel(item)}
+                          className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500 disabled:opacity-60"
+                        >
+                          {cancellingId === item.id ? 'Äang há»§y...' : 'Há»§y hÃ³a Ä‘Æ¡n'}
+                        </button>
+                      ) : null}
+                    </div>
+
+                    {isExpanded ? (
+                      <div className="mt-3 rounded-xl border border-ink-900/10 bg-fog-50 p-3 text-xs text-ink-700">
+                        {isLoadingDetail ? <p>Äang táº£i chi tiáº¿t...</p> : null}
+                        {!isLoadingDetail && detail ? (
+                          <div className="space-y-1">
+                            <p>Thu ngÃ¢n: {detail.created_by_name || detail.created_by}</p>
+                            <p>Táº¡m tÃ­nh: {formatCurrency(detail.subtotal)}</p>
+                            <p>Giáº£m giÃ¡: {formatCurrency(detail.discount_amount)}</p>
+                            <p className="font-semibold text-ink-900">Tá»•ng: {formatCurrency(detail.total_amount)}</p>
+                            {detail.items.slice(0, 5).map((line) => (
+                              <p key={line.id}>
+                                {line.product_name} x{line.quantity} {line.unit_name} - {formatCurrency(line.line_total)}
+                              </p>
+                            ))}
+                            {detail.items.length > 5 ? <p>... {detail.items.length - 5} dÃ²ng khÃ¡c</p> : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </article>
+                )
+              })
+            : null}
+        </div>
+
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[1240px] text-left text-sm">
             <thead className="bg-white/70 text-xs uppercase tracking-[0.22em] text-ink-600">
               <tr>
