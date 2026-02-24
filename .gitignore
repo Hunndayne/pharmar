@@ -26,6 +26,8 @@ FrontEnd/.vite/
 # Go build
 Store/store
 "Payment QR Service/paymentqr"
+.gocache_store2/
+.gopath_store2/
 
 # Logs
 *.log
