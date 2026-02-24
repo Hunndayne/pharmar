@@ -711,12 +711,12 @@ export function SalesHistory() {
                     </div>
 
                     <div className="mt-3 space-y-1 text-xs text-ink-600">
-                      <p>KhÃ¡ch: {item.customer_name || 'KhÃ¡ch vÃ£ng lai'}</p>
-                      <p>SÄT: {item.customer_phone || '-'}</p>
-                      <p>Thanh toÃ¡n: {getPaymentMethodLabel(item.payment_method)}</p>
-                      <p>ThÃ nh tiá»n: <span className="font-semibold text-ink-900">{formatCurrency(item.total_amount)}</span></p>
+                      <p>Khách: {item.customer_name || 'Khách vãng lai'}</p>
+                      <p>SĐT: {item.customer_phone || '-'}</p>
+                      <p>Thanh toán: {getPaymentMethodLabel(item.payment_method)}</p>
+                      <p>Thành tiền: <span className="font-semibold text-ink-900">{formatCurrency(item.total_amount)}</span></p>
                       {debtAmount > 0 ? (
-                        <p>CÃ²n ná»£: <span className="font-semibold text-coral-500">{formatCurrency(debtAmount)}</span></p>
+                        <p>Còn nợ: <span className="font-semibold text-coral-500">{formatCurrency(debtAmount)}</span></p>
                       ) : null}
                     </div>
 
@@ -726,7 +726,7 @@ export function SalesHistory() {
                         onClick={() => void toggleDetail(item)}
                         className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900"
                       >
-                        {isExpanded ? 'áº¨n chi tiáº¿t' : 'Chi tiáº¿t'}
+                        {isExpanded ? 'Ẩn chi tiết' : 'Chi tiết'}
                       </button>
 
                       <button
@@ -735,7 +735,7 @@ export function SalesHistory() {
                         onClick={() => void handlePrintInvoice(item)}
                         className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-60"
                       >
-                        {printingId === item.id ? 'Äang in...' : 'In hÃ³a Ä‘Æ¡n'}
+                        {printingId === item.id ? 'Đang in...' : 'In hóa đơn'}
                       </button>
 
                       {(item.status === 'completed' || item.status === 'returned') ? (
@@ -745,7 +745,7 @@ export function SalesHistory() {
                           onClick={() => void handleReturnByItem(item)}
                           className="rounded-full border border-sun-500/30 bg-sun-500/10 px-3 py-1 text-xs font-semibold text-sun-700 disabled:opacity-60"
                         >
-                          {returningId === item.id ? 'Äang tráº£...' : 'Tráº£ hÃ ng'}
+                          {returningId === item.id ? 'Đang trả...' : 'Trả hàng'}
                         </button>
                       ) : null}
 
@@ -756,26 +756,26 @@ export function SalesHistory() {
                           onClick={() => void handleCancel(item)}
                           className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500 disabled:opacity-60"
                         >
-                          {cancellingId === item.id ? 'Äang há»§y...' : 'Há»§y hÃ³a Ä‘Æ¡n'}
+                          {cancellingId === item.id ? 'Đang hủy...' : 'Hủy hóa đơn'}
                         </button>
                       ) : null}
                     </div>
 
                     {isExpanded ? (
                       <div className="mt-3 rounded-xl border border-ink-900/10 bg-fog-50 p-3 text-xs text-ink-700">
-                        {isLoadingDetail ? <p>Äang táº£i chi tiáº¿t...</p> : null}
+                        {isLoadingDetail ? <p>Đang tải chi tiết...</p> : null}
                         {!isLoadingDetail && detail ? (
                           <div className="space-y-1">
-                            <p>Thu ngÃ¢n: {detail.created_by_name || detail.created_by}</p>
-                            <p>Táº¡m tÃ­nh: {formatCurrency(detail.subtotal)}</p>
-                            <p>Giáº£m giÃ¡: {formatCurrency(detail.discount_amount)}</p>
-                            <p className="font-semibold text-ink-900">Tá»•ng: {formatCurrency(detail.total_amount)}</p>
+                            <p>Thu ngân: {detail.created_by_name || detail.created_by}</p>
+                            <p>Tạm tính: {formatCurrency(detail.subtotal)}</p>
+                            <p>Giảm giá: {formatCurrency(detail.discount_amount)}</p>
+                            <p className="font-semibold text-ink-900">Tổng: {formatCurrency(detail.total_amount)}</p>
                             {detail.items.slice(0, 5).map((line) => (
                               <p key={line.id}>
                                 {line.product_name} x{line.quantity} {line.unit_name} - {formatCurrency(line.line_total)}
                               </p>
                             ))}
-                            {detail.items.length > 5 ? <p>... {detail.items.length - 5} dÃ²ng khÃ¡c</p> : null}
+                            {detail.items.length > 5 ? <p>... {detail.items.length - 5} dòng khác</p> : null}
                           </div>
                         ) : null}
                       </div>

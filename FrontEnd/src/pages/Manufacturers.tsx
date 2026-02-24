@@ -276,9 +276,9 @@ export function Manufacturers() {
 
       <section className="overflow-hidden rounded-3xl border border-white/60 bg-white/70">
         <div className="space-y-3 p-3 md:hidden">
-          {loading ? <p className="rounded-2xl bg-white px-4 py-3 text-sm text-ink-600">Äang táº£i dá»¯ liá»‡u...</p> : null}
+          {loading ? <p className="rounded-2xl bg-white px-4 py-3 text-sm text-ink-600">Đang tải dữ liệu...</p> : null}
           {!loading && rows.length === 0 ? (
-            <p className="rounded-2xl bg-white px-4 py-3 text-sm text-ink-600">KhÃ´ng cÃ³ dá»¯ liá»‡u nhÃ  sáº£n xuáº¥t.</p>
+            <p className="rounded-2xl bg-white px-4 py-3 text-sm text-ink-600">Không có dữ liệu nhà sản xuất.</p>
           ) : null}
 
           {!loading
@@ -296,14 +296,14 @@ export function Manufacturers() {
                           : 'bg-ink-600/10 text-ink-600 border border-ink-600/20'
                       }`}
                     >
-                      {item.is_active ? 'Äang hoáº¡t Ä‘á»™ng' : 'Ngá»«ng hoáº¡t Ä‘á»™ng'}
+                      {item.is_active ? 'Đang hoạt động' : 'Ngừng hoạt động'}
                     </span>
                   </div>
 
                   <div className="mt-3 space-y-1 text-xs text-ink-600">
-                    <p>Quá»‘c gia: {item.country || '-'}</p>
-                    <p>SÄT: {item.phone || '-'}</p>
-                    <p>Äá»‹a chá»‰: {item.address || '-'}</p>
+                    <p>Quốc gia: {item.country || '-'}</p>
+                    <p>SĐT: {item.phone || '-'}</p>
+                    <p>Địa chỉ: {item.address || '-'}</p>
                   </div>
 
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -313,7 +313,7 @@ export function Manufacturers() {
                       onClick={() => void openEdit(item)}
                       className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-60"
                     >
-                      Sá»­a
+                      Sửa
                     </button>
                     <button
                       type="button"
@@ -321,7 +321,7 @@ export function Manufacturers() {
                       onClick={() => void handleDelete(item)}
                       className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500 disabled:opacity-60"
                     >
-                      XÃ³a
+                      Xóa
                     </button>
                   </div>
                 </article>

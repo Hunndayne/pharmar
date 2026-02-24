@@ -993,7 +993,7 @@ export function StoreSettings() {
               }
               disabled={!canManageStore || storeLoading}
             />
-            Tu dong in hoa don
+            Tự động in hóa đơn
           </label>
           <label className="flex items-center gap-2 text-sm text-ink-700 md:col-span-2">
             <input
@@ -1004,7 +1004,7 @@ export function StoreSettings() {
               }
               disabled={!canManageStore || storeLoading}
             />
-            Ban hang theo lo (ap dung FIFO/FEFO khi tao hoa don)
+            Bán hàng theo lô (áp dụng FIFO/FEFO khi tạo hóa đơn)
           </label>
           <label className="flex items-center gap-2 text-sm text-ink-700 md:col-span-2">
             <input
@@ -1018,10 +1018,10 @@ export function StoreSettings() {
               }
               disabled={!canManageStore || storeLoading}
             />
-            Bat lam tron tien mat khi thanh toan
+            Bật làm tròn tiền mặt khi thanh toán
           </label>
           <label className="space-y-2 text-sm text-ink-700">
-            <span>Bac lam tron tien mat (dong)</span>
+            <span>Bậc làm tròn tiền mặt (đồng)</span>
             <input
               type="number"
               min={1}
@@ -1037,7 +1037,7 @@ export function StoreSettings() {
             />
           </label>
           <label className="space-y-2 text-sm text-ink-700">
-            <span>Phuong thuc thanh toan mac dinh</span>
+            <span>Phương thức thanh toán mặc định</span>
             <input
               value={storeSettingsForm.defaultPaymentMethod}
               onChange={(event) =>
@@ -1092,7 +1092,7 @@ export function StoreSettings() {
               }
               disabled={!canManageStore || storeLoading}
             />
-            Man hinh khach: hien gia tung dong thuoc
+            Màn hình khách: hiển thị giá bán từng dòng thuốc
           </label>
           <label className="flex items-center gap-2 text-sm text-ink-700 md:col-span-2">
             <input
@@ -1106,11 +1106,11 @@ export function StoreSettings() {
               }
               disabled={!canManageStore || storeLoading}
             />
-            Man hinh khach: hien tong tien
+            Màn hình khách: hiển thị tổng tiền hóa đơn
           </label>
 
           <label className="space-y-2 text-sm text-ink-700 md:col-span-2">
-            <span>Danh sach ads man hinh khach (moi dong 1 URL hinh)</span>
+            <span>Danh sách ads màn hình khách (mỗi dòng 1 URL hình)</span>
             <textarea
               value={storeSettingsForm.customerDisplayAds}
               onChange={(event) =>
@@ -1124,12 +1124,12 @@ export function StoreSettings() {
               disabled={!canManageStore || storeLoading}
             />
             <p className="text-xs text-ink-500">
-              Co the dung link tuyet doi (https://...) hoac duong dan static tu public/.
+              Có thể dùng link tuyệt đối (https://...) hoặc đường dẫn static từ public/.
             </p>
           </label>
 
           <label className="space-y-2 text-sm text-ink-700">
-            <span>Kieu transition ads</span>
+            <span>Kiểu transition ads</span>
             <select
               value={storeSettingsForm.customerDisplayAdsTransition}
               onChange={(event) =>
@@ -1149,7 +1149,7 @@ export function StoreSettings() {
           </label>
 
           <label className="space-y-2 text-sm text-ink-700">
-            <span>Chu ky doi ads (giay)</span>
+            <span>Chu kỳ đổi ads (giây)</span>
             <input
               type="number"
               min={1}
@@ -1166,7 +1166,7 @@ export function StoreSettings() {
           </label>
 
           <label className="space-y-2 text-sm text-ink-700">
-            <span>Thoi gian transition (ms)</span>
+            <span>Thời gian transition (ms)</span>
             <input
               type="number"
               min={0}

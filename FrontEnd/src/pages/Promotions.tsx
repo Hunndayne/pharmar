@@ -99,14 +99,14 @@ const getPromotionStatus = (row: PromotionRecord) => {
   const end = new Date(row.end_date)
   end.setHours(0, 0, 0, 0)
 
-  if (!row.is_active) return { label: 'Tam dung', className: 'bg-ink-600/10 text-ink-600 border border-ink-600/20' }
+  if (!row.is_active) return { label: 'Tạm dừng', className: 'bg-ink-600/10 text-ink-600 border border-ink-600/20' }
   if (!Number.isNaN(end.getTime()) && end < today) {
-    return { label: 'Het han', className: 'bg-coral-500/10 text-coral-500 border border-coral-500/30' }
+    return { label: 'Hết hạn', className: 'bg-coral-500/10 text-coral-500 border border-coral-500/30' }
   }
   if (!Number.isNaN(start.getTime()) && start > today) {
-    return { label: 'Sap ap dung', className: 'bg-amber-500/10 text-amber-700 border border-amber-500/30' }
+    return { label: 'Sắp áp dụng', className: 'bg-amber-500/10 text-amber-700 border border-amber-500/30' }
   }
-  return { label: 'Dang ap dung', className: 'bg-brand-500/15 text-brand-600 border border-brand-500/30' }
+  return { label: 'Đang áp dụng', className: 'bg-brand-500/15 text-brand-600 border border-brand-500/30' }
 }
 
 const roleLabel = (value: string) => {
@@ -162,7 +162,7 @@ export function Promotions() {
       }
     } catch (loadError) {
       if (loadError instanceof ApiError) setError(loadError.message)
-      else setError('Khong the tai danh sach khuyen mai.')
+      else setError('Không thể tải danh sách khuyến mãi.')
     } finally {
       setLoading(false)
     }
@@ -231,27 +231,27 @@ export function Promotions() {
     const discountValue = parseOptionalNumber(form.discountValue)
 
     if (!code) {
-      setFormError('Ma khuyen mai la bat buoc.')
+      setFormError('Mã khuyến mãi là bắt buộc.')
       return
     }
     if (!name) {
-      setFormError('Ten chuong trinh la bat buoc.')
+      setFormError('Tên chương trình là bắt buộc.')
       return
     }
     if (discountValue === null || discountValue < 0) {
-      setFormError('Gia tri giam khong hop le.')
+      setFormError('Giá trị giảm không hợp lệ.')
       return
     }
     if (form.discountType === 'percent' && discountValue > 100) {
-      setFormError('Khuyen mai phan tram khong duoc vuot qua 100%.')
+      setFormError('Khuyến mãi phần trăm không được vượt quá 100%.')
       return
     }
     if (!form.startDate || !form.endDate) {
-      setFormError('Can nhap thoi gian bat dau va ket thuc.')
+      setFormError('Cần nhập thời gian bắt đầu và kết thúc.')
       return
     }
     if (new Date(form.endDate).getTime() < new Date(form.startDate).getTime()) {
-      setFormError('Ngay ket thuc phai lon hon hoac bang ngay bat dau.')
+      setFormError('Ngày kết thúc phải lớn hơn hoặc bằng ngày bắt đầu.')
       return
     }
 
@@ -286,7 +286,7 @@ export function Promotions() {
       await loadRows()
     } catch (saveError) {
       if (saveError instanceof ApiError) setFormError(saveError.message)
-      else setFormError('Khong the luu chuong trinh khuyen mai.')
+      else setFormError('Không thể lưu chương trình khuyến mãi.')
     } finally {
       setFormSubmitting(false)
     }
@@ -300,20 +300,20 @@ export function Promotions() {
       await loadRows()
     } catch (toggleError) {
       if (toggleError instanceof ApiError) setError(toggleError.message)
-      else setError('Khong the cap nhat trang thai khuyen mai.')
+      else setError('Không thể cập nhật trạng thái khuyến mãi.')
     }
   }
 
   const handleDelete = async (item: PromotionRecord) => {
     if (!accessToken || !canDelete) return
-    if (!window.confirm(`Xoa khuyen mai ${item.code} - ${item.name}?`)) return
+    if (!window.confirm(`Xóa khuyến mãi ${item.code} - ${item.name}?`)) return
 
     try {
       await customerApi.deletePromotion(accessToken, item.id)
       await loadRows()
     } catch (deleteError) {
       if (deleteError instanceof ApiError) setError(deleteError.message)
-      else setError('Khong the xoa khuyen mai.')
+      else setError('Không thể xóa khuyến mãi.')
     }
   }
 
@@ -352,8 +352,8 @@ export function Promotions() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.35em] text-ink-600">Marketing</p>
-          <h2 className="mt-2 text-3xl font-semibold text-ink-900">Khuyen mai</h2>
-          <p className="mt-2 text-sm text-ink-600">Quan ly chuong trinh khuyen mai tu Customer Service.</p>
+          <h2 className="mt-2 text-3xl font-semibold text-ink-900">Khuyến mãi</h2>
+          <p className="mt-2 text-sm text-ink-600">Quản lý chương trình khuyến mãi từ Customer Service.</p>
         </div>
         <button
           type="button"
@@ -361,25 +361,25 @@ export function Promotions() {
           disabled={!canManage}
           className="w-full rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift disabled:opacity-60 sm:w-auto"
         >
-          Tao chuong trinh
+          Tạo chương trình
         </button>
       </header>
 
       {!canManage ? (
-        <p className="text-sm text-amber-700">Ban chi co quyen xem danh sach khuyen mai.</p>
+        <p className="text-sm text-amber-700">Bạn không có quyền quản lý khuyến mãi.</p>
       ) : null}
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <div className="glass-card rounded-3xl p-5">
-          <p className="text-xs text-ink-600">Tong chuong trinh</p>
+          <p className="text-xs text-ink-600">Tổng số chương trình</p>
           <p className="mt-2 text-2xl font-semibold">{summary.total}</p>
         </div>
         <div className="glass-card rounded-3xl p-5">
-          <p className="text-xs text-ink-600">Dang bat (trang nay)</p>
+          <p className="text-xs text-ink-600">Đang bật (trang này)</p>
           <p className="mt-2 text-2xl font-semibold text-brand-600">{summary.activeOnPage}</p>
         </div>
         <div className="glass-card rounded-3xl p-5">
-          <p className="text-xs text-ink-600">Tu ap dung (trang nay)</p>
+          <p className="text-xs text-ink-600">Tự áp dụng (trang này)</p>
           <p className="mt-2 text-2xl font-semibold text-ink-900">{summary.autoApplyOnPage}</p>
         </div>
       </section>
@@ -404,9 +404,9 @@ export function Promotions() {
             }}
             className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
           >
-            <option value="all">Tat ca trang thai</option>
-            <option value="active">Dang bat</option>
-            <option value="inactive">Da tat</option>
+            <option value="all">Tất cả trạng thái</option>
+            <option value="active">Đang bật</option>
+            <option value="inactive">Đã tắt</option>
           </select>
 
           <select
@@ -417,9 +417,9 @@ export function Promotions() {
             }}
             className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
           >
-            <option value="all">Tat ca kieu ap dung</option>
-            <option value="auto">Tu ap dung</option>
-            <option value="manual">Ap dung thu cong</option>
+            <option value="all">Tất cả kiểu áp dụng</option>
+            <option value="auto">Tự áp dụng</option>
+            <option value="manual">Áp dụng thủ công</option>
           </select>
 
           <button
@@ -435,7 +435,7 @@ export function Promotions() {
             onClick={() => void loadRows()}
             className="rounded-2xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white"
           >
-            Tai lai
+            Tải lại
           </button>
         </div>
 
@@ -446,13 +446,13 @@ export function Promotions() {
         <div className="space-y-3 p-4 md:hidden">
           {loading ? (
             <div className="rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm text-ink-600">
-              Dang tai du lieu...
+              Đang tải dữ liệu...
             </div>
           ) : null}
 
           {!loading && rows.length === 0 ? (
             <div className="rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm text-ink-600">
-              Khong co du lieu khuyen mai.
+              Không có dữ liệu khuyến mãi.
             </div>
           ) : null}
 
@@ -472,13 +472,13 @@ export function Promotions() {
                     </div>
 
                     <div className="mt-3 space-y-1 text-xs text-ink-700">
-                      <p>Giam gia: {formatDiscount(item)}</p>
+                      <p>Giảm giá: {formatDiscount(item)}</p>
                       <p>
-                        Thoi gian: {formatDate(item.start_date)} - {formatDate(item.end_date)}
+                        Thời gian: {formatDate(item.start_date)} - {formatDate(item.end_date)}
                       </p>
-                      <p>Don toi thieu: {item.min_order_amount == null ? '-' : formatCurrency(item.min_order_amount)}</p>
+                      <p>Đơn tối thiểu: {item.min_order_amount == null ? '-' : formatCurrency(item.min_order_amount)}</p>
                       <p>
-                        Ap dung: {item.auto_apply ? 'Tu dong' : 'Thu cong'} | Luot: {item.usage_limit ?? '-'} / Khach: {item.usage_per_customer ?? '-'}
+                        Áp dụng: {item.auto_apply ? 'Tự động' : 'Thủ công'} | Lượt: {item.usage_limit ?? '-'} / Khách: {item.usage_per_customer ?? '-'}
                       </p>
                     </div>
 
@@ -489,7 +489,7 @@ export function Promotions() {
                         onClick={() => openEdit(item)}
                         className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-60"
                       >
-                        Sua
+                        Sửa
                       </button>
                       <button
                         type="button"
@@ -505,7 +505,7 @@ export function Promotions() {
                         onClick={() => void handleDelete(item)}
                         className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500 disabled:opacity-60"
                       >
-                        Xoa
+                        Xóa
                       </button>
                     </div>
                   </article>
@@ -518,20 +518,20 @@ export function Promotions() {
           <table className="min-w-[1140px] w-full text-left text-sm">
             <thead className="bg-white/70 text-xs uppercase tracking-[0.24em] text-ink-600">
               <tr>
-                <th className="px-6 py-4">Ma / Ten</th>
-                <th className="px-6 py-4">Giam gia</th>
-                <th className="px-6 py-4">Thoi gian</th>
-                <th className="px-6 py-4">Dieu kien</th>
-                <th className="px-6 py-4">Ap dung</th>
-                <th className="px-6 py-4">Trang thai</th>
-                <th className="px-6 py-4">Thao tac</th>
+                <th className="px-6 py-4">Mã / tên</th>
+                <th className="px-6 py-4">Giảm giá</th>
+                <th className="px-6 py-4">Thời gian</th>
+                <th className="px-6 py-4">Điều kiện</th>
+                <th className="px-6 py-4">Áp dụng</th>
+                <th className="px-6 py-4">Trạng thái</th>
+                <th className="px-6 py-4">Thao tác</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/70">
               {loading ? (
                 <tr>
                   <td className="px-6 py-6 text-sm text-ink-600" colSpan={7}>
-                    Dang tai du lieu...
+                    Đang tải dữ liệu...
                   </td>
                 </tr>
               ) : null}
@@ -539,7 +539,7 @@ export function Promotions() {
               {!loading && rows.length === 0 ? (
                 <tr>
                   <td className="px-6 py-6 text-sm text-ink-600" colSpan={7}>
-                    Khong co du lieu khuyen mai.
+                    Không có dữ liệu khuyến mãi.
                   </td>
                 </tr>
               ) : null}
@@ -559,14 +559,14 @@ export function Promotions() {
                           {formatDate(item.start_date)} - {formatDate(item.end_date)}
                         </td>
                         <td className="px-6 py-4 text-ink-700">
-                          <p>Don toi thieu: {item.min_order_amount == null ? '-' : formatCurrency(item.min_order_amount)}</p>
+                          <p>Đơn tối thiểu: {item.min_order_amount == null ? '-' : formatCurrency(item.min_order_amount)}</p>
                           <p className="mt-1 text-xs text-ink-600">
-                            Gioi han: {item.usage_limit ?? '-'} / Khach: {item.usage_per_customer ?? '-'}
+                            Giới hạn: {item.usage_limit ?? '-'} / Khách: {item.usage_per_customer ?? '-'}
                           </p>
                         </td>
                         <td className="px-6 py-4 text-ink-700">
                           <p className="mb-2 text-xs uppercase tracking-[0.16em] text-ink-500">
-                            {item.auto_apply ? 'Tu ap dung' : 'Thu cong'}
+                            {item.auto_apply ? 'Tự áp dụng' : 'Thủ công'}
                           </p>
                           {renderTierBadges(item.applicable_tiers)}
                         </td>
@@ -583,7 +583,7 @@ export function Promotions() {
                               onClick={() => openEdit(item)}
                               className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-60"
                             >
-                              Sua
+                              Sửa
                             </button>
                             <button
                               type="button"
@@ -599,7 +599,7 @@ export function Promotions() {
                               onClick={() => void handleDelete(item)}
                               className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500 disabled:opacity-60"
                             >
-                              Xoa
+                              Xóa
                             </button>
                           </div>
                         </td>
@@ -614,7 +614,7 @@ export function Promotions() {
 
       <section className="flex flex-col gap-3 text-sm text-ink-600 sm:flex-row sm:items-center sm:justify-between">
         <span>
-          Hien thi {rows.length === 0 ? 0 : (page - 1) * pageSize + 1} - {Math.min(page * pageSize, total)} trong {total} khuyen mai
+          Hiển thị {rows.length === 0 ? 0 : (page - 1) * pageSize + 1} - {Math.min(page * pageSize, total)} trong {total} khuyến mãi
         </span>
         <div className="flex items-center gap-2 self-end sm:self-auto">
           <button
@@ -659,7 +659,7 @@ export function Promotions() {
             <div className="flex-1 overflow-y-auto px-6 py-5">
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="space-y-2 text-sm text-ink-700">
-                  <span>Ma khuyen mai *</span>
+                  <span>Mã khuyến mãi *</span>
                   <input
                     value={form.code}
                     onChange={(event) => setForm((prev) => ({ ...prev, code: event.target.value.toUpperCase() }))}
@@ -667,7 +667,7 @@ export function Promotions() {
                   />
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">
-                  <span>Ten chuong trinh *</span>
+                  <span>Tên chương trình *</span>
                   <input
                     value={form.name}
                     onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
@@ -676,7 +676,7 @@ export function Promotions() {
                 </label>
 
                 <label className="space-y-2 text-sm text-ink-700 md:col-span-2">
-                  <span>Mo ta</span>
+                  <span>Mô tả</span>
                   <textarea
                     value={form.description}
                     onChange={(event) => setForm((prev) => ({ ...prev, description: event.target.value }))}
@@ -686,18 +686,18 @@ export function Promotions() {
                 </label>
 
                 <label className="space-y-2 text-sm text-ink-700">
-                  <span>Loai giam *</span>
+                  <span>Loại giảm *</span>
                   <select
                     value={form.discountType}
                     onChange={(event) => setForm((prev) => ({ ...prev, discountType: event.target.value as PromotionDiscountType }))}
                     className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
                   >
-                    <option value="percent">Phan tram (%)</option>
-                    <option value="fixed">So tien co dinh</option>
+                    <option value="percent">Phần trăm (%)</option>
+                    <option value="fixed">Số tiền cố định</option>
                   </select>
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">
-                  <span>Gia tri giam *</span>
+                  <span>Giá trị giảm *</span>
                   <input
                     type="number"
                     min="0"
@@ -709,7 +709,7 @@ export function Promotions() {
                 </label>
 
                 <label className="space-y-2 text-sm text-ink-700">
-                  <span>Giam toi da</span>
+                  <span>Giảm tối đa</span>
                   <input
                     type="number"
                     min="0"
@@ -720,7 +720,7 @@ export function Promotions() {
                   />
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">
-                  <span>Don toi thieu</span>
+                  <span>Đơn tối thiểu</span>
                   <input
                     type="number"
                     min="0"
@@ -731,7 +731,7 @@ export function Promotions() {
                 </label>
 
                 <label className="space-y-2 text-sm text-ink-700">
-                  <span>Bat dau *</span>
+                  <span>Bắt đầu *</span>
                   <input
                     type="date"
                     value={form.startDate}
@@ -740,7 +740,7 @@ export function Promotions() {
                   />
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">
-                  <span>Ket thuc *</span>
+                  <span>Kết thúc *</span>
                   <input
                     type="date"
                     value={form.endDate}
@@ -750,7 +750,7 @@ export function Promotions() {
                 </label>
 
                 <label className="space-y-2 text-sm text-ink-700">
-                  <span>Gioi han luot dung</span>
+                  <span>Giới hạn lượt dùng</span>
                   <input
                     type="number"
                     min="0"
@@ -760,7 +760,7 @@ export function Promotions() {
                   />
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">
-                  <span>Luot dung / khach</span>
+                  <span>Lượt dùng / khách</span>
                   <input
                     type="number"
                     min="0"
@@ -771,10 +771,10 @@ export function Promotions() {
                 </label>
 
                 <div className="space-y-2 text-sm text-ink-700 md:col-span-2">
-                  <span>Ap dung cho hang thanh vien</span>
+                  <span>Áp dụng cho hạng thành viên</span>
                   <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                     {tiers.length === 0 ? (
-                      <p className="text-xs text-ink-500">Khong co du lieu hang. De trong se ap dung cho tat ca.</p>
+                      <p className="text-xs text-ink-500">Không có dữ liệu hạng. Để trống sẽ áp dụng cho tất cả.</p>
                     ) : (
                       tiers.map((tier) => {
                         const checked = form.applicableTiers.includes(tier.tier_name)
@@ -808,7 +808,7 @@ export function Promotions() {
                     onChange={(event) => setForm((prev) => ({ ...prev, isActive: event.target.checked }))}
                     className="h-4 w-4 rounded border-ink-900/20"
                   />
-                  Kich hoat chuong trinh
+                  Kích hoạt chương trình
                 </label>
                 <label className="flex items-center gap-3 text-sm text-ink-700">
                   <input
@@ -817,7 +817,7 @@ export function Promotions() {
                     onChange={(event) => setForm((prev) => ({ ...prev, autoApply: event.target.checked }))}
                     className="h-4 w-4 rounded border-ink-900/20"
                   />
-                  Tu dong ap dung khi du dieu kien
+                  Tự động áp dụng khi đủ điều kiện
                 </label>
               </div>
 
@@ -838,7 +838,7 @@ export function Promotions() {
                 onClick={() => setModalOpen(false)}
                 className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900"
               >
-                Huy
+                Hủy
               </button>
             </div>
           </div>

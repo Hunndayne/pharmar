@@ -438,9 +438,9 @@ export function Distributors() {
                     </div>
 
                     <div className="mt-3 space-y-1 text-xs text-ink-600">
-                      <p>LiÃªn há»‡: {supplierContactPerson}</p>
-                      <p>SÄT: {supplierPhone}</p>
-                      <p>CÃ´ng ná»£: <span className="font-semibold text-coral-500">{formatCurrency(item.current_debt)}</span></p>
+                      <p>Liên hệ: {supplierContactPerson}</p>
+                      <p>SĐT: {supplierPhone}</p>
+                      <p>Công nợ: <span className="font-semibold text-coral-500">{formatCurrency(item.current_debt)}</span></p>
                     </div>
 
                     <div className="mt-3 flex flex-wrap gap-2">
