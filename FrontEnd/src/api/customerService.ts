@@ -62,6 +62,102 @@ export type PageResponse<T> = {
   pages: number
 }
 
+export type TierConfigRecord = {
+  tier_name: string
+  min_points: number
+  point_multiplier: string | number
+  discount_percent: string | number
+  benefits: string | null
+  display_order: number
+  created_at: string
+  updated_at: string
+}
+
+export type PromotionDiscountType = 'percent' | 'fixed'
+
+export type PromotionRecord = {
+  id: string
+  code: string
+  name: string
+  description: string | null
+  discount_type: PromotionDiscountType
+  discount_value: string | number
+  max_discount: string | number | null
+  min_order_amount: string | number | null
+  start_date: string
+  end_date: string
+  applicable_tiers: string[] | null
+  applicable_products: string[] | null
+  applicable_groups: string[] | null
+  usage_limit: number | null
+  usage_per_customer: number | null
+  current_usage: number
+  is_active: boolean
+  auto_apply: boolean
+  created_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type PromotionUsageRecord = {
+  id: string
+  promotion_id: string
+  customer_id: string | null
+  invoice_id: string
+  invoice_code: string | null
+  discount_amount: string | number
+  is_cancelled: boolean
+  cancelled_reason: string | null
+  cancelled_at: string | null
+  created_at: string
+}
+
+export type PromotionCreatePayload = {
+  code: string
+  name: string
+  description?: string | null
+  discount_type: PromotionDiscountType
+  discount_value: string | number
+  max_discount?: string | number | null
+  min_order_amount?: string | number | null
+  start_date: string
+  end_date: string
+  applicable_tiers?: string[] | null
+  applicable_products?: string[] | null
+  applicable_groups?: string[] | null
+  usage_limit?: number | null
+  usage_per_customer?: number | null
+  is_active?: boolean
+  auto_apply?: boolean
+}
+
+export type PromotionUpdatePayload = {
+  code?: string | null
+  name?: string | null
+  description?: string | null
+  discount_type?: PromotionDiscountType
+  discount_value?: string | number | null
+  max_discount?: string | number | null
+  min_order_amount?: string | number | null
+  start_date?: string | null
+  end_date?: string | null
+  applicable_tiers?: string[] | null
+  applicable_products?: string[] | null
+  applicable_groups?: string[] | null
+  usage_limit?: number | null
+  usage_per_customer?: number | null
+  is_active?: boolean
+  auto_apply?: boolean
+}
+
+export type PromotionListParams = {
+  search?: string
+  is_active?: boolean
+  auto_apply?: boolean
+  page?: number
+  size?: number
+}
+
 const requestCustomerJson = async <T>(
   path: string,
   token: string,
@@ -152,5 +248,73 @@ export const customerApi = {
       `/customer/customers/${encodeURIComponent(customerId)}`,
       token,
       { method: 'DELETE' },
+    ),
+
+  listTiers: (token: string) =>
+    requestCustomerJson<TierConfigRecord[]>(
+      '/customer/tiers',
+      token,
+      { method: 'GET' },
+    ),
+
+  listPromotions: (token: string, params?: PromotionListParams) =>
+    requestCustomerJson<PageResponse<PromotionRecord>>(
+      '/customer/promotions',
+      token,
+      { method: 'GET' },
+      params,
+    ),
+
+  listActivePromotions: (token: string) =>
+    requestCustomerJson<PromotionRecord[]>(
+      '/customer/promotions/active',
+      token,
+      { method: 'GET' },
+    ),
+
+  getPromotionById: (token: string, promotionId: string) =>
+    requestCustomerJson<PromotionRecord>(
+      `/customer/promotions/${encodeURIComponent(promotionId)}`,
+      token,
+      { method: 'GET' },
+    ),
+
+  createPromotion: (token: string, payload: PromotionCreatePayload) =>
+    requestCustomerJson<PromotionRecord>(
+      '/customer/promotions',
+      token,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  updatePromotion: (token: string, promotionId: string, payload: PromotionUpdatePayload) =>
+    requestCustomerJson<PromotionRecord>(
+      `/customer/promotions/${encodeURIComponent(promotionId)}`,
+      token,
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  deletePromotion: (token: string, promotionId: string) =>
+    requestCustomerJson<{ message: string }>(
+      `/customer/promotions/${encodeURIComponent(promotionId)}`,
+      token,
+      { method: 'DELETE' },
+    ),
+
+  listPromotionUsages: (
+    token: string,
+    promotionId: string,
+    params?: { page?: number; size?: number },
+  ) =>
+    requestCustomerJson<PageResponse<PromotionUsageRecord>>(
+      `/customer/promotions/${encodeURIComponent(promotionId)}/usages`,
+      token,
+      { method: 'GET' },
+      params,
     ),
 }
