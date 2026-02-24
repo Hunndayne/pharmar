@@ -202,7 +202,7 @@ export function Customers() {
           type="button"
           onClick={openCreate}
           disabled={!canManage}
-          className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift disabled:opacity-60"
+          className="w-full rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift disabled:opacity-60 sm:w-auto"
         >
           Thêm khách hàng
         </button>
@@ -212,7 +212,7 @@ export function Customers() {
         <p className="text-sm text-amber-700">Bạn chỉ có quyền xem danh sách khách hàng.</p>
       ) : null}
 
-      <section className="grid gap-4 sm:grid-cols-3">
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <div className="glass-card rounded-3xl p-5">
           <p className="text-xs text-ink-600">Tổng khách hàng</p>
           <p className="mt-2 text-2xl font-semibold">{summary.total}</p>
@@ -227,7 +227,7 @@ export function Customers() {
         </div>
       </section>
 
-      <section className="glass-card rounded-3xl p-6 space-y-4">
+      <section className="glass-card rounded-3xl p-4 space-y-4 sm:p-6">
         <div className="grid gap-3 md:grid-cols-[1.4fr,1fr,auto,auto]">
           <input
             value={search}
@@ -277,7 +277,70 @@ export function Customers() {
       </section>
 
       <section className="overflow-hidden rounded-3xl border border-white/60 bg-white/70">
-        <div className="overflow-x-auto">
+        <div className="space-y-3 p-4 md:hidden">
+          {loading ? (
+            <div className="rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm text-ink-600">
+              ??ang t???i d??? li???u...
+            </div>
+          ) : null}
+
+          {!loading && rows.length === 0 ? (
+            <div className="rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm text-ink-600">
+              Kh??ng c?? d??? li???u kh??ch h??ng.
+            </div>
+          ) : null}
+
+          {!loading
+            ? rows.map((item) => (
+                <article key={item.id} className="rounded-2xl border border-ink-900/10 bg-white p-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold text-ink-900">{item.code}</p>
+                      <p className="text-sm text-ink-900">{item.name}</p>
+                    </div>
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                        item.is_active
+                          ? 'bg-brand-500/15 text-brand-600 border border-brand-500/30'
+                          : 'bg-ink-600/10 text-ink-600 border border-ink-600/20'
+                      }`}
+                    >
+                      {item.is_active ? 'Đang hoạt động' : 'Ngừng hoạt động'}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 space-y-1 text-xs text-ink-700">
+                    <p>SDT: {item.phone}</p>
+                    <p>Hạng: {item.tier}</p>
+                    <p>Điểm: {item.current_points.toLocaleString('vi-VN')}</p>
+                    <p>Tổng chi tiêu: {formatCurrency(item.total_spent)}</p>
+                    <p>Ngày mua gần nhất: {formatDate(item.last_purchase_at)}</p>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={!canManage}
+                      onClick={() => openEdit(item)}
+                      className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-60"
+                    >
+                      Sửa
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!canDelete}
+                      onClick={() => void handleDelete(item)}
+                      className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500 disabled:opacity-60"
+                    >
+                      Xóa
+                    </button>
+                  </div>
+                </article>
+              ))
+            : null}
+        </div>
+
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[1180px] text-left text-sm">
             <thead className="bg-white/70 text-xs uppercase tracking-[0.22em] text-ink-600">
               <tr>
@@ -361,11 +424,11 @@ export function Customers() {
         </div>
       </section>
 
-      <section className="flex flex-wrap items-center justify-between gap-3 text-sm text-ink-600">
+      <section className="flex flex-col gap-3 text-sm text-ink-600 sm:flex-row sm:items-center sm:justify-between">
         <span>
           Hiển thị {rows.length === 0 ? 0 : (page - 1) * pageSize + 1} - {Math.min(page * pageSize, total)} trong {total} khách hàng
         </span>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 self-end sm:self-auto">
           <button
             type="button"
             onClick={() => setPage((prev) => Math.max(1, prev - 1))}

@@ -194,6 +194,12 @@ const parseNonNegativeNumber = (value: string) => {
   return parsed
 }
 
+const roundCashTotalByStep = (amount: number, step: number) => {
+  const safeAmount = Math.max(0, amount)
+  const safeStep = Math.max(1, Math.floor(step))
+  return Math.round(safeAmount / safeStep) * safeStep
+}
+
 const parsePositiveInt = (value: string, fallback = 0) => {
   if (!value.trim()) return fallback
   const parsed = Number(value)
@@ -614,6 +620,8 @@ export function Pos() {
   const [fefoEnabled, setFefoEnabled] = useState(true)
   const [fefoThresholdDays, setFefoThresholdDays] = useState(180)
   const [sellByLot, setSellByLot] = useState(true)
+  const [cashRoundingEnabled, setCashRoundingEnabled] = useState(true)
+  const [cashRoundingUnit, setCashRoundingUnit] = useState(1000)
   const [storeInfo, setStoreInfo] = useState<StoreInfo | null>(null)
   const [returnPolicyText, setReturnPolicyText] = useState('Đổi trả trong 7 ngày với hóa đơn.')
   const [bankQrAccountNo, setBankQrAccountNo] = useState('')
@@ -774,6 +782,15 @@ export function Pos() {
         normalizeSettingNumber(inventorySettings['inventory.fefo_threshold_days'], 180),
       )
       setSellByLot(normalizeSettingBoolean(saleSettings['sale.enforce_lot_policy'], true))
+      setCashRoundingEnabled(
+        normalizeSettingBoolean(saleSettings['sale.cash_rounding_enabled'], true),
+      )
+      setCashRoundingUnit(
+        Math.max(
+          1,
+          normalizeSettingNumber(saleSettings['sale.cash_rounding_step'], 1000),
+        ),
+      )
       setReturnPolicyText(buildReturnPolicyText(saleSettings))
       setBankQrAddInfoMode(
         normalizeSettingString(saleSettings['sale.bank_qr_add_info_mode'], 'order_code')
@@ -1803,6 +1820,12 @@ export function Pos() {
   const cashReceived = parseNonNegativeNumber(activeOrder?.cashReceived ?? '0')
   const changeAmount = cashReceived - grandTotal
   const outstandingAmount = Math.max(0, grandTotal - cashReceived)
+  const roundedCashChangeAmount = useMemo(() => {
+    if (activeOrder?.paymentMode !== 'cash') return 0
+    const positiveChange = Math.max(0, changeAmount)
+    if (!cashRoundingEnabled) return positiveChange
+    return roundCashTotalByStep(positiveChange, cashRoundingUnit)
+  }, [activeOrder?.paymentMode, changeAmount, cashRoundingEnabled, cashRoundingUnit])
 
   const customerDisplayPayload = useMemo<CustomerDisplayPayload>(() => {
     const lines = activeOrderLineDetails.map((row) => ({
@@ -1983,14 +2006,14 @@ export function Pos() {
     try {
       const lines = buildCheckoutLines(activeOrder)
       if (!lines.length) {
-        throw new ApiError('Đơn hàng chưa có thuốc hợp lệ để thanh toán.', 400)
+        throw new ApiError('Don hang chua co thuoc hop le de thanh toan.', 400)
       }
 
       const invalidStock = lines.find(
         (line) => line.quantity * Math.max(line.item.conversion, 1) > line.item.batchQtyRemaining,
       )
       if (invalidStock) {
-        throw new ApiError(`Số lượng vượt tồn kho của lô ${invalidStock.item.batchCode}.`, 409)
+        throw new ApiError(`So luong vuot ton kho cua lo ${invalidStock.item.batchCode}.`, 409)
       }
 
       if (sellByLot && !skipPolicyCheck) {
@@ -2028,33 +2051,42 @@ export function Pos() {
         }
       }
 
+      const checkoutPaymentMethod = options?.paymentMethod ?? 'cash'
+      const shouldRoundCashChange =
+        checkoutPaymentMethod === 'cash' &&
+        activeOrder.paymentMode === 'cash' &&
+        cashRoundingEnabled
+
       const amountPaid = options?.amountPaid ?? parseNonNegativeNumber(activeOrder.cashReceived)
       if (activeOrder.paymentMode === 'cash' && amountPaid < grandTotal) {
-        throw new ApiError('Tiền khách đưa chưa đủ để thanh toán.', 400)
+        throw new ApiError('Tien khach dua chua du de thanh toan.', 400)
       }
       if (activeOrder.customerMode === 'member' && !activeOrder.customerId) {
-        throw new ApiError('Vui lòng tìm hoặc tạo thành viên trước khi thanh toán.', 400)
+        throw new ApiError('Vui long tim hoac tao thanh vien truoc khi thanh toan.', 400)
       }
 
       const serviceFeeValue = parseNonNegativeNumber(activeOrder.serviceFee)
       const noteParts = [activeOrder.note.trim()].filter(Boolean)
       if (serviceFeeValue > 0) {
         noteParts.push(
-          `Phí dịch vụ: ${formatCurrency(serviceFeeValue)} (${activeOrder.serviceFeeMode === 'split' ? 'chia đều vào các dòng thuốc' : 'mục riêng'})`,
+          `Phi dich vu: ${formatCurrency(serviceFeeValue)} (${activeOrder.serviceFeeMode === 'split' ? 'chia deu vao cac dong thuoc' : 'muc rieng'})`,
         )
       }
       const debtAmount = Math.max(0, grandTotal - amountPaid)
-      const paymentChange = Math.max(0, amountPaid - grandTotal)
+      const paymentChangeRaw = Math.max(0, amountPaid - grandTotal)
+      const paymentChange = shouldRoundCashChange
+        ? roundCashTotalByStep(paymentChangeRaw, cashRoundingUnit)
+        : paymentChangeRaw
       if (debtAmount > 0) {
         noteParts.push(`Cong no: ${formatCurrency(debtAmount)}`)
       }
       if (activeOrder.customerName.trim()) {
         if (activeOrder.customerMode === 'member') {
           noteParts.push(
-            `Khách thành viên: ${activeOrder.customerName.trim()}${activeOrder.customerCode ? ` (${activeOrder.customerCode})` : ''}${activeOrder.customerPhone ? ` - ${activeOrder.customerPhone}` : ''}`,
+            `Khach thanh vien: ${activeOrder.customerName.trim()}${activeOrder.customerCode ? ` (${activeOrder.customerCode})` : ''}${activeOrder.customerPhone ? ` - ${activeOrder.customerPhone}` : ''}`,
           )
         } else {
-          noteParts.push(`Khách vãng lai: ${activeOrder.customerName.trim()}`)
+          noteParts.push(`Khach vang lai: ${activeOrder.customerName.trim()}`)
         }
       }
       if (options?.noteSuffix?.trim()) {
@@ -2066,7 +2098,7 @@ export function Pos() {
           activeOrder.customerMode === 'member' && activeOrder.customerId
             ? activeOrder.customerId
             : null,
-        payment_method: options?.paymentMethod ?? 'cash',
+        payment_method: checkoutPaymentMethod,
         amount_paid: amountPaid,
         note: noteParts.join(' | ') || null,
         items: lines.map((line) => ({
@@ -2119,15 +2151,15 @@ export function Pos() {
         createdAt: invoice.created_at
           ? new Date(invoice.created_at).toLocaleString('vi-VN')
           : new Date().toLocaleString('vi-VN'),
-        storeName: storeInfo?.name?.trim() || 'Nhà thuốc',
+        storeName: storeInfo?.name?.trim() || 'Nha thuoc',
         storeLogoUrl: resolveAssetUrl(storeInfo?.logo_url),
         storePhone: storeInfo?.phone?.trim() || '',
         storeAddress: storeInfo?.address?.trim() || '',
         cashier: user?.full_name?.trim() || user?.username || 'Nhan vien',
-        customerName: activeOrder.customerName.trim() || 'Khách vãng lai',
+        customerName: activeOrder.customerName.trim() || 'Khach vang lai',
         customerPhone: activeOrder.customerPhone.trim(),
         note: activeOrder.note.trim(),
-        paymentMethod: debtAmount > 0 ? 'Mua nợ' : (options?.paymentLabel ?? 'Tiền mặt'),
+        paymentMethod: debtAmount > 0 ? 'Mua no' : (options?.paymentLabel ?? 'Tien mat'),
         amountPaid,
         changeAmount: paymentChange,
         debtAmount,
@@ -2159,17 +2191,17 @@ export function Pos() {
       }))
 
       setActionMessage(
-        `Thanh toán thành công ${invoice.code}. Thành tiền: ${formatCurrency(grandTotal)}. Tiền thừa: ${formatCurrency(paymentChange)}.`,
+        `Thanh toan thanh cong ${invoice.code}. Thanh tien: ${formatCurrency(grandTotal)}. Tien thua: ${formatCurrency(paymentChange)}.`,
       )
       return true
     } catch (error) {
       if (error instanceof ApiError) setActionError(error.message)
-      else setActionError('Không thể thanh toán hóa đơn.')
+      else setActionError('Khong the thanh toan hoa don.')
       return false
     } finally {
       setCheckingOut(false)
     }
-  }, [activeOrder, token?.access_token, user, storeInfo, returnPolicyText, buildCheckoutLines, grandTotal, updateOrder, printInvoicePreview, sellByLot, findFirstPolicyViolation])
+  }, [activeOrder, token?.access_token, user, storeInfo, returnPolicyText, buildCheckoutLines, grandTotal, cashRoundingEnabled, cashRoundingUnit, updateOrder, printInvoicePreview, sellByLot, findFirstPolicyViolation])
 
   const handleGenerateBankQr = useCallback(async () => {
     if (!activeOrder || !token?.access_token) return
@@ -2738,15 +2770,15 @@ export function Pos() {
 
               <div className="rounded-2xl border border-ink-900/10 bg-white p-4 text-sm text-ink-700">
                 <div className="flex items-center justify-between py-1">
-                  <span>Tạm tính thuốc</span>
+                  <span>Tam tinh thuoc</span>
                   <span className="font-semibold text-ink-900">{formatCurrency(subtotal)}</span>
                 </div>
                 <div className="flex items-center justify-between py-1">
-                  <span>Phí dịch vụ</span>
+                  <span>Phi dich vu</span>
                   <span className="font-semibold text-ink-900">{formatCurrency(serviceFee)}</span>
                 </div>
                 <div className="mt-2 flex items-center justify-between border-t border-ink-900/10 pt-2">
-                  <span className="font-semibold">Thành tiền</span>
+                  <span className="font-semibold">Thanh tien</span>
                   <span className="text-lg font-semibold text-ink-900">{formatCurrency(grandTotal)}</span>
                 </div>
               </div>
@@ -2764,7 +2796,7 @@ export function Pos() {
                   className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
                 >
                   <option value="cash">Tien mat</option>
-                  <option value="debt">Mua n?</option>
+                  <option value="debt">Mua no</option>
                 </select>
               </label>
 
@@ -2789,7 +2821,7 @@ export function Pos() {
                     activeOrder.paymentMode === 'cash' && changeAmount < 0 ? 'text-coral-500' : 'text-ink-900'
                   }`}
                 >
-                  {formatCurrency(activeOrder.paymentMode === 'debt' ? outstandingAmount : Math.abs(changeAmount))}
+                  {formatCurrency(activeOrder.paymentMode === 'debt' ? outstandingAmount : roundedCashChangeAmount)}
                 </p>
                 {activeOrder.paymentMode === 'cash' && changeAmount < 0 ? (
                   <p className="mt-1 text-xs text-coral-500">Khách đưa chua du tien.</p>

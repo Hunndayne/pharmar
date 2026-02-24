@@ -131,6 +131,22 @@ func DefaultSettings() map[string]DefaultSetting {
 			IsPublic:    true,
 		},
 		{
+			Key:         "sale.cash_rounding_enabled",
+			Value:       true,
+			GroupName:   "sale",
+			DataType:    "boolean",
+			Description: "Bat lam tron tien mat khi thanh toan",
+			IsPublic:    true,
+		},
+		{
+			Key:         "sale.cash_rounding_step",
+			Value:       1000,
+			GroupName:   "sale",
+			DataType:    "number",
+			Description: "Bac lam tron tien mat (dong)",
+			IsPublic:    true,
+		},
+		{
 			Key:         "sale.invoice_prefix",
 			Value:       "HD",
 			GroupName:   "sale",

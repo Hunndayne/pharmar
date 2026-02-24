@@ -31,6 +31,8 @@ type AdsTransition = 'none' | 'fade' | 'slide'
 type StoreSettingsForm = {
   autoPrint: boolean
   sellByLot: boolean
+  cashRoundingEnabled: boolean
+  cashRoundingStep: string
   defaultPaymentMethod: string
   bankQrAddInfoMode: BankQrAddInfoMode
   bankQrAddInfoCustom: string
@@ -67,6 +69,8 @@ const emptyStoreInfoForm: StoreInfoForm = {
 const defaultStoreSettings: StoreSettingsForm = {
   autoPrint: true,
   sellByLot: true,
+  cashRoundingEnabled: true,
+  cashRoundingStep: '1000',
   defaultPaymentMethod: 'cash',
   bankQrAddInfoMode: 'order_code',
   bankQrAddInfoCustom: '',
@@ -201,6 +205,8 @@ const mapStoreInfoToForm = (info: StoreInfo): StoreInfoForm => ({
 const mapSettingsToForm = (settings: StoreSettingsMap): StoreSettingsForm => ({
   autoPrint: asBoolean(settings['sale.auto_print'], true),
   sellByLot: asBoolean(settings['sale.enforce_lot_policy'], true),
+  cashRoundingEnabled: asBoolean(settings['sale.cash_rounding_enabled'], true),
+  cashRoundingStep: asNumberString(settings['sale.cash_rounding_step'], 1000),
   defaultPaymentMethod: asString(settings['sale.default_payment_method'], 'cash'),
   bankQrAddInfoMode: normalizeBankQrAddInfoMode(settings['sale.bank_qr_add_info_mode']),
   bankQrAddInfoCustom: asString(settings['sale.bank_qr_add_info_custom'], ''),
@@ -614,6 +620,7 @@ export function StoreSettings() {
     const expiryDays = Number(storeSettingsForm.expiryWarningDays)
     const nearDateDays = Number(storeSettingsForm.nearDateDays)
     const fefoThresholdDays = Number(storeSettingsForm.fefoThresholdDays)
+    const cashRoundingStep = Number(storeSettingsForm.cashRoundingStep)
     const returnWindowValue = Number(storeSettingsForm.returnWindowValue)
     const adsIntervalSeconds = Number(storeSettingsForm.customerDisplayAdsIntervalSeconds)
     const adsTransitionMs = Number(storeSettingsForm.customerDisplayAdsTransitionMs)
@@ -636,6 +643,10 @@ export function StoreSettings() {
     }
     if (!Number.isFinite(fefoThresholdDays) || fefoThresholdDays <= 0) {
       setSettingsError('Ngưỡng FEFO/FIFO không hợp lệ.')
+      return
+    }
+    if (!Number.isFinite(cashRoundingStep) || cashRoundingStep < 1) {
+      setSettingsError('Bac lam tron tien mat khong hop le.')
       return
     }
     if (!Number.isFinite(returnWindowValue) || returnWindowValue < 0) {
@@ -661,6 +672,8 @@ export function StoreSettings() {
         storeApi.updateSetting(token.access_token, 'sale.auto_print', storeSettingsForm.autoPrint),
         storeApi.updateSettingsBulk(token.access_token, {
           'sale.enforce_lot_policy': storeSettingsForm.sellByLot,
+          'sale.cash_rounding_enabled': storeSettingsForm.cashRoundingEnabled,
+          'sale.cash_rounding_step': Math.trunc(cashRoundingStep),
           'sale.default_payment_method': storeSettingsForm.defaultPaymentMethod.trim() || 'cash',
           'sale.bank_qr_add_info_mode': bankQrAddInfoMode,
           'sale.bank_qr_add_info_custom': bankQrAddInfoCustom,
@@ -980,7 +993,7 @@ export function StoreSettings() {
               }
               disabled={!canManageStore || storeLoading}
             />
-            Tự động in hóa đơn
+            Tu dong in hoa don
           </label>
           <label className="flex items-center gap-2 text-sm text-ink-700 md:col-span-2">
             <input
@@ -991,10 +1004,40 @@ export function StoreSettings() {
               }
               disabled={!canManageStore || storeLoading}
             />
-            Bán hàng theo lô (áp dụng FIFO/FEFO khi tạo hóa đơn)
+            Ban hang theo lo (ap dung FIFO/FEFO khi tao hoa don)
+          </label>
+          <label className="flex items-center gap-2 text-sm text-ink-700 md:col-span-2">
+            <input
+              type="checkbox"
+              checked={storeSettingsForm.cashRoundingEnabled}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({
+                  ...prev,
+                  cashRoundingEnabled: event.target.checked,
+                }))
+              }
+              disabled={!canManageStore || storeLoading}
+            />
+            Bat lam tron tien mat khi thanh toan
           </label>
           <label className="space-y-2 text-sm text-ink-700">
-            <span>Phương thức thanh toán mặc định</span>
+            <span>Bac lam tron tien mat (dong)</span>
+            <input
+              type="number"
+              min={1}
+              value={storeSettingsForm.cashRoundingStep}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({
+                  ...prev,
+                  cashRoundingStep: event.target.value,
+                }))
+              }
+              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              disabled={!canManageStore || storeLoading || !storeSettingsForm.cashRoundingEnabled}
+            />
+          </label>
+          <label className="space-y-2 text-sm text-ink-700">
+            <span>Phuong thuc thanh toan mac dinh</span>
             <input
               value={storeSettingsForm.defaultPaymentMethod}
               onChange={(event) =>
