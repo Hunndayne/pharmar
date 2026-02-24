@@ -2059,17 +2059,17 @@ export function Pos() {
 
       const amountPaid = options?.amountPaid ?? parseNonNegativeNumber(activeOrder.cashReceived)
       if (activeOrder.paymentMode === 'cash' && amountPaid < grandTotal) {
-        throw new ApiError('Tien khach dua chua du de thanh toan.', 400)
+        throw new ApiError('Tiền khách đưa chưa đủ để thanh toán.', 400)
       }
       if (activeOrder.customerMode === 'member' && !activeOrder.customerId) {
-        throw new ApiError('Vui long tim hoac tao thanh vien truoc khi thanh toan.', 400)
+        throw new ApiError('Vui lòng tìm hoặc tạo thành viên trước khi thanh toán.', 400)
       }
 
       const serviceFeeValue = parseNonNegativeNumber(activeOrder.serviceFee)
       const noteParts = [activeOrder.note.trim()].filter(Boolean)
       if (serviceFeeValue > 0) {
         noteParts.push(
-          `Phi dich vu: ${formatCurrency(serviceFeeValue)} (${activeOrder.serviceFeeMode === 'split' ? 'chia deu vao cac dong thuoc' : 'muc rieng'})`,
+          `Phí dịch vụ: ${formatCurrency(serviceFeeValue)} (${activeOrder.serviceFeeMode === 'split' ? 'chia đều vào các dòng thuốc' : 'mục riêng'})`,
         )
       }
       const debtAmount = Math.max(0, grandTotal - amountPaid)
@@ -2083,10 +2083,10 @@ export function Pos() {
       if (activeOrder.customerName.trim()) {
         if (activeOrder.customerMode === 'member') {
           noteParts.push(
-            `Khach thanh vien: ${activeOrder.customerName.trim()}${activeOrder.customerCode ? ` (${activeOrder.customerCode})` : ''}${activeOrder.customerPhone ? ` - ${activeOrder.customerPhone}` : ''}`,
+            `Khách thành viên: ${activeOrder.customerName.trim()}${activeOrder.customerCode ? ` (${activeOrder.customerCode})` : ''}${activeOrder.customerPhone ? ` - ${activeOrder.customerPhone}` : ''}`,
           )
         } else {
-          noteParts.push(`Khach vang lai: ${activeOrder.customerName.trim()}`)
+          noteParts.push(`Khách vãng lai: ${activeOrder.customerName.trim()}`)
         }
       }
       if (options?.noteSuffix?.trim()) {
@@ -2795,8 +2795,8 @@ export function Pos() {
                   }
                   className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
                 >
-                  <option value="cash">Tien mat</option>
-                  <option value="debt">Mua no</option>
+                  <option value="cash">Tiền mặt</option>
+                  <option value="debt">Mua nợ</option>
                 </select>
               </label>
 

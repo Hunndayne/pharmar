@@ -292,6 +292,7 @@
           : '';
       const buildApiUrl = (path) => `${API_BASE}${path}`;
       let lastRemoteUpdatedAt = '';
+      let hasRemoteState = false;
       const DEFAULT_ADS = [
         '/customer-display/ads/ad-01.svg',
         '/customer-display/ads/ad-02.svg',
@@ -578,6 +579,7 @@
           if (updatedAt && updatedAt === lastRemoteUpdatedAt) return;
 
           if (updatedAt) lastRemoteUpdatedAt = updatedAt;
+          hasRemoteState = true;
           onStateUpdate(payload.state);
         } catch (_) {
           // ignore network errors; local fallback still works on same device
@@ -613,9 +615,11 @@
       }
 
       setInterval(() => {
-        const localState = readState();
-        if (localState && typeof localState === 'object') {
-          onStateUpdate(localState);
+        if (!hasRemoteState) {
+          const localState = readState();
+          if (localState && typeof localState === 'object') {
+            onStateUpdate(localState);
+          }
         }
         void pullRemoteState();
       }, 1200);
