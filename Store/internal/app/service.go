@@ -831,6 +831,7 @@ func (s *Service) UpdateStoreInfo(ctx context.Context, payload domain.UpdateStor
 	taxCode := mergeOptional(current.TaxCode, payload.TaxCode)
 	licenseNumber := mergeOptional(current.LicenseNumber, payload.LicenseNumber)
 	ownerName := mergeOptional(current.OwnerName, payload.OwnerName)
+	logoURL := mergeOptional(current.LogoURL, payload.LogoURL)
 	bankAccount := mergeOptional(current.BankAccount, payload.BankAccount)
 	bankName := mergeOptional(current.BankName, payload.BankName)
 	bankBranch := mergeOptional(current.BankBranch, payload.BankBranch)
@@ -845,9 +846,10 @@ func (s *Service) UpdateStoreInfo(ctx context.Context, payload domain.UpdateStor
 		        tax_code=$6,
 		        license_number=$7,
 		        owner_name=$8,
-		        bank_account=$9,
-		        bank_name=$10,
-		        bank_branch=$11,
+		        logo_url=$9,
+		        bank_account=$10,
+		        bank_name=$11,
+		        bank_branch=$12,
 		        updated_at=NOW()
 		  WHERE id=$1
 		  RETURNING id::text, name, address, phone, email, tax_code, license_number, owner_name,
@@ -860,6 +862,7 @@ func (s *Service) UpdateStoreInfo(ctx context.Context, payload domain.UpdateStor
 		taxCode,
 		licenseNumber,
 		ownerName,
+		logoURL,
 		bankAccount,
 		bankName,
 		bankBranch,

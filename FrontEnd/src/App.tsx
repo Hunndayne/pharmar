@@ -1,7 +1,9 @@
+import { useEffect } from 'react'
 import { Route, Routes } from 'react-router-dom'
 import { AppShell } from './layout/AppShell'
 import { RequireAuth } from './routes/RequireAuth'
 import { RequireOwnerOrAdmin } from './routes/RequireOwnerOrAdmin'
+import { storeApi } from './api/storeService'
 import { Dashboard } from './pages/Dashboard'
 import { DrugCatalog } from './pages/DrugCatalog'
 import { DrugGroups } from './pages/DrugGroups'
@@ -22,8 +24,26 @@ import { StoreDrugGroups } from './pages/StoreDrugGroups'
 import { SystemHealth } from './pages/SystemHealth'
 import { Login } from './pages/Login'
 import { NotFound } from './pages/NotFound'
+import { setDocumentFavicon } from './utils/assets'
 
 function App() {
+  useEffect(() => {
+    let mounted = true
+    const loadStoreLogo = async () => {
+      try {
+        const info = await storeApi.getInfo()
+        if (!mounted) return
+        setDocumentFavicon(info.logo_url)
+      } catch {
+        // keep default favicon
+      }
+    }
+    void loadStoreLogo()
+    return () => {
+      mounted = false
+    }
+  }, [])
+
   return (
     <Routes>
       <Route path="/login" element={<Login />} />

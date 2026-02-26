@@ -80,7 +80,7 @@ func Authenticated(cfg config.Config) func(http.Handler) http.Handler {
 	}
 }
 
-// OwnerOnly requires the token role to be "owner".
+// OwnerOnly requires the token role to be "owner" or "admin".
 func OwnerOnly(cfg config.Config) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -89,8 +89,9 @@ func OwnerOnly(cfg config.Config) func(http.Handler) http.Handler {
 				writeError(w, http.StatusUnauthorized, "Invalid token")
 				return
 			}
-			if !strings.EqualFold(strings.TrimSpace(claims.Role), "owner") {
-				writeError(w, http.StatusForbidden, "Only owner is allowed")
+			role := strings.ToLower(strings.TrimSpace(claims.Role))
+			if role != "owner" && role != "admin" {
+				writeError(w, http.StatusForbidden, "Only owner/admin is allowed")
 				return
 			}
 

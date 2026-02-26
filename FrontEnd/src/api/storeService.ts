@@ -25,6 +25,7 @@ export type UpdateStoreInfoPayload = {
   tax_code?: string | null
   license_number?: string | null
   owner_name?: string | null
+  logo_url?: string | null
   bank_account?: string | null
   bank_name?: string | null
   bank_branch?: string | null

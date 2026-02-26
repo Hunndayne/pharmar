@@ -27,6 +27,7 @@ type UpdateStoreInfoRequest struct {
 	TaxCode       *string `json:"tax_code"`
 	LicenseNumber *string `json:"license_number"`
 	OwnerName     *string `json:"owner_name"`
+	LogoURL       *string `json:"logo_url"`
 	BankAccount   *string `json:"bank_account"`
 	BankName      *string `json:"bank_name"`
 	BankBranch    *string `json:"bank_branch"`

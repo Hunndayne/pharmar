@@ -8,9 +8,11 @@ import {
 } from 'react'
 import { ApiError } from '../api/usersService'
 import { storeApi, type BackupRecord, type StoreInfo, type StoreSettingsMap } from '../api/storeService'
+import { fileApi, type FileRecord } from '../api/fileService'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
 import { BANK_OPTIONS } from '../constants/bankList'
+import { resolveAssetUrl, setDocumentFavicon } from '../utils/assets'
 
 type StoreInfoForm = {
   name: string
@@ -91,6 +93,10 @@ const defaultStoreSettings: StoreSettingsForm = {
   currency: 'VND',
 }
 
+const ADS_REF_TYPE = 'customer_display_ads'
+const ADS_REF_ID = 'default'
+const LOGO_REF_TYPE = 'store_logo'
+
 const formatDateTime = (value: string | null) => {
   if (!value) return '-'
   const date = new Date(value)
@@ -159,6 +165,13 @@ const settingValueToStringArray = (value: unknown): string[] => {
   }
   return []
 }
+
+const mapFilesToAdsUrls = (files: FileRecord[]): string[] =>
+  files
+    .slice()
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    .map((item) => (typeof item.url === 'string' ? item.url.trim() : ''))
+    .filter(Boolean)
 
 const normalizeText = (value: string) =>
   value
@@ -247,6 +260,7 @@ export function StoreSettings() {
 
   const [storeInfoSubmitting, setStoreInfoSubmitting] = useState(false)
   const [logoSubmitting, setLogoSubmitting] = useState(false)
+  const [logoPreviewFailed, setLogoPreviewFailed] = useState(false)
   const [storeInfoMessage, setStoreInfoMessage] = useState<string | null>(null)
   const [storeInfoError, setStoreInfoError] = useState<string | null>(null)
 
@@ -271,9 +285,10 @@ export function StoreSettings() {
   const [bkAutoEnabled, setBkAutoEnabled] = useState(false)
   const [bkAutoInterval, setBkAutoInterval] = useState('24')
   const [bkMaxFiles, setBkMaxFiles] = useState('10')
-  const [bkSyncUrl, setBkSyncUrl] = useState('')
-  const [bkSyncKey, setBkSyncKey] = useState('')
   const [bkSettingsSaving, setBkSettingsSaving] = useState(false)
+  const [adsFiles, setAdsFiles] = useState<FileRecord[]>([])
+  const [adsFilesLoading, setAdsFilesLoading] = useState(false)
+  const [adsFilesUploading, setAdsFilesUploading] = useState(false)
 
   const bankSuggestions = useMemo(() => {
     const keyword = normalizeText(bankPickerKeyword.trim())
@@ -282,6 +297,16 @@ export function StoreSettings() {
       : BANK_OPTIONS.filter((bank) => normalizeText(bankSearchKey(bank)).includes(keyword))
     return filtered
   }, [bankPickerKeyword])
+
+  const adsFilesSorted = useMemo(
+    () =>
+      adsFiles
+        .slice()
+        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
+    [adsFiles],
+  )
+
+  const adsUrlsFromFiles = useMemo(() => mapFilesToAdsUrls(adsFiles), [adsFiles])
 
   const loadStoreData = useCallback(async () => {
     setStoreLoading(true)
@@ -320,6 +345,14 @@ export function StoreSettings() {
     void loadStoreData()
   }, [loadStoreData])
 
+  useEffect(() => {
+    setDocumentFavicon(storeInfo?.logo_url)
+  }, [storeInfo?.logo_url])
+
+  useEffect(() => {
+    setLogoPreviewFailed(false)
+  }, [storeInfo?.logo_url])
+
   // --- Backup data loading ---
   const loadBackups = useCallback(async () => {
     if (!token?.access_token || !canManageStore) return
@@ -341,8 +374,6 @@ export function StoreSettings() {
       setBkAutoEnabled(asBoolean(bs['backup.auto_enabled'], false))
       setBkAutoInterval(asNumberString(bs['backup.auto_interval_hours'], 24))
       setBkMaxFiles(asNumberString(bs['backup.max_files'], 10))
-      setBkSyncUrl(asString(bs['backup.sync_server_url'], ''))
-      setBkSyncKey(asString(bs['backup.sync_api_key'], ''))
     } catch {
       // silent
     }
@@ -353,14 +384,80 @@ export function StoreSettings() {
     void loadBackupSettings()
   }, [loadBackups, loadBackupSettings])
 
+  const loadAdsFiles = useCallback(async () => {
+    if (!token?.access_token) return
+    setAdsFilesLoading(true)
+    try {
+      const response = await fileApi.list(token.access_token, {
+        category: 'general',
+        ref_type: ADS_REF_TYPE,
+        ref_id: ADS_REF_ID,
+        per_page: 200,
+      })
+      setAdsFiles(response.files)
+    } catch {
+      // keep current state
+    } finally {
+      setAdsFilesLoading(false)
+    }
+  }, [token?.access_token])
+
+  useEffect(() => {
+    void loadAdsFiles()
+  }, [loadAdsFiles])
+
+  const uploadBackupToR2KeepLatest = useCallback(
+    async (accessToken: string, backupRecord: BackupRecord) => {
+      const { blob, filename } = await storeApi.downloadBackup(accessToken, backupRecord.id)
+      const backupFile = new File([blob], filename || backupRecord.filename, {
+        type: blob.type || 'application/gzip',
+      })
+      const uploaded = await fileApi.upload(accessToken, backupFile, {
+        category: 'backup',
+        refType: 'store_backup',
+        refId: backupRecord.id,
+      })
+
+      // Keep only the latest backup on R2.
+      try {
+        const remoteBackups = await fileApi.list(accessToken, {
+          category: 'backup',
+          ref_type: 'store_backup',
+          per_page: 200,
+        })
+        const staleFiles = remoteBackups.files.filter((item) => item.id !== uploaded.id)
+        await Promise.all(
+          staleFiles.map((item) =>
+            fileApi.delete(accessToken, item.id).catch(() => undefined),
+          ),
+        )
+      } catch {
+        // Best effort cleanup only.
+      }
+    },
+    [],
+  )
+
   const onCreateBackup = async () => {
     if (!token?.access_token) return
     setBackupCreating(true)
     setBackupError(null)
     setBackupMessage(null)
     try {
-      await storeApi.createBackup(token.access_token, 'Thủ công')
-      setBackupMessage('Đã tạo bản sao lưu thành công.')
+      const created = await storeApi.createBackup(token.access_token, 'Thủ công')
+      const backupRecord = created.data
+      let uploadedToR2 = false
+      try {
+        await uploadBackupToR2KeepLatest(token.access_token, backupRecord)
+        uploadedToR2 = true
+      } catch {
+        uploadedToR2 = false
+      }
+      setBackupMessage(
+        uploadedToR2
+          ? 'Đã tạo bản sao lưu. R2 chỉ giữ bản mới nhất.'
+          : 'Đã tạo bản sao lưu local. Chưa đồng bộ R2 được, vui lòng thử lại.',
+      )
       void loadBackups()
     } catch (err) {
       if (err instanceof ApiError) setBackupError(err.message)
@@ -449,8 +546,6 @@ export function StoreSettings() {
         'backup.auto_enabled': bkAutoEnabled,
         'backup.auto_interval_hours': Math.max(1, Math.trunc(Number(bkAutoInterval) || 24)),
         'backup.max_files': Math.max(1, Math.trunc(Number(bkMaxFiles) || 10)),
-        'backup.sync_server_url': bkSyncUrl.trim(),
-        'backup.sync_api_key': bkSyncKey.trim(),
       })
       setBackupMessage('Đã lưu cấu hình sao lưu.')
     } catch (err) {
@@ -463,13 +558,15 @@ export function StoreSettings() {
 
   const onSyncPush = async () => {
     if (!token?.access_token) return
-    if (!window.confirm('Đẩy bản sao lưu lên server đồng bộ?')) return
+    if (!window.confirm('Tạo bản sao lưu mới và đồng bộ lên R2?')) return
     setBackupSyncing('push')
     setBackupError(null)
     setBackupMessage(null)
     try {
-      await storeApi.syncPush(token.access_token)
-      setBackupMessage('Đã đẩy bản sao lưu lên server đồng bộ.')
+      const created = await storeApi.createBackup(token.access_token, 'Đồng bộ R2')
+      const backupRecord = created.data
+      await uploadBackupToR2KeepLatest(token.access_token, backupRecord)
+      setBackupMessage('Đã đồng bộ lên R2. R2 chỉ giữ bản mới nhất.')
       void loadBackups()
     } catch (err) {
       if (err instanceof ApiError) setBackupError(err.message)
@@ -481,13 +578,35 @@ export function StoreSettings() {
 
   const onSyncPull = async () => {
     if (!token?.access_token) return
-    if (!window.confirm('Kéo bản sao lưu từ server đồng bộ? Dữ liệu mới sẽ được lưu vào danh sách.')) return
+    if (!window.confirm('Kéo bản sao lưu mới nhất từ R2 về danh sách backup?')) return
     setBackupSyncing('pull')
     setBackupError(null)
     setBackupMessage(null)
     try {
-      await storeApi.syncPull(token.access_token)
-      setBackupMessage('Đã kéo bản sao lưu từ server đồng bộ.')
+      const remoteBackups = await fileApi.list(token.access_token, {
+        category: 'backup',
+        ref_type: 'store_backup',
+        per_page: 200,
+      })
+      if (!remoteBackups.files.length) {
+        throw new ApiError('Không có bản sao lưu nào trên R2.', 404)
+      }
+
+      const latest = remoteBackups.files
+        .slice()
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
+
+      const presigned = await fileApi.presignDownload(token.access_token, latest.id)
+      const response = await fetch(presigned.url)
+      if (!response.ok) {
+        throw new ApiError(`Không thể tải file từ R2 (${response.status})`, response.status)
+      }
+      const blob = await response.blob()
+      const backupFile = new File([blob], latest.original_name || latest.filename, {
+        type: blob.type || latest.content_type || 'application/gzip',
+      })
+      await storeApi.uploadBackup(token.access_token, backupFile)
+      setBackupMessage('Đã kéo bản sao lưu mới nhất từ R2.')
       void loadBackups()
     } catch (err) {
       if (err instanceof ApiError) setBackupError(err.message)
@@ -553,7 +672,7 @@ export function StoreSettings() {
   const onUploadLogo = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     event.target.value = ''
-    if (!file || !token?.access_token) return
+    if (!file || !token?.access_token || !storeInfo?.id) return
 
     if (!canManageStore) {
       setStoreInfoError('Chỉ owner/admin được cập nhật logo cửa hàng.')
@@ -565,8 +684,21 @@ export function StoreSettings() {
     setStoreInfoMessage(null)
 
     try {
-      const response = await storeApi.uploadLogo(token.access_token, file)
+      await fileApi.deleteByRef(token.access_token, LOGO_REF_TYPE, storeInfo.id).catch(() => undefined)
+      const uploaded = await fileApi.upload(token.access_token, file, {
+        category: 'logo',
+        refType: LOGO_REF_TYPE,
+        refId: storeInfo.id,
+      })
+      if (!uploaded.url) {
+        throw new Error('Logo URL is empty')
+      }
+      const response = await storeApi.updateInfo(token.access_token, {
+        logo_url: uploaded.url,
+      })
       setStoreInfo(response.data)
+      setStoreInfoForm(mapStoreInfoToForm(response.data))
+      setDocumentFavicon(uploaded.url)
       setStoreInfoMessage('Đã cập nhật logo cửa hàng.')
     } catch (uploadError) {
       if (uploadError instanceof ApiError) setStoreInfoError(uploadError.message)
@@ -577,7 +709,7 @@ export function StoreSettings() {
   }
 
   const onDeleteLogo = async () => {
-    if (!token?.access_token || !storeInfo?.logo_url) return
+    if (!token?.access_token || !storeInfo?.logo_url || !storeInfo.id) return
 
     if (!canManageStore) {
       setStoreInfoError('Chỉ owner/admin được xóa logo cửa hàng.')
@@ -589,14 +721,89 @@ export function StoreSettings() {
     setStoreInfoMessage(null)
 
     try {
-      const response = await storeApi.deleteLogo(token.access_token)
+      await fileApi.deleteByRef(token.access_token, LOGO_REF_TYPE, storeInfo.id).catch(() => undefined)
+      const response = await storeApi.updateInfo(token.access_token, {
+        logo_url: '',
+      })
       setStoreInfo(response.data)
+      setStoreInfoForm(mapStoreInfoToForm(response.data))
+      setDocumentFavicon(null)
       setStoreInfoMessage('Đã xóa logo cửa hàng.')
     } catch (deleteError) {
       if (deleteError instanceof ApiError) setStoreInfoError(deleteError.message)
       else setStoreInfoError('Không thể xóa logo cửa hàng.')
     } finally {
       setLogoSubmitting(false)
+    }
+  }
+
+  const onApplyUploadedAds = (files: FileRecord[] = adsFiles) => {
+    const urls = mapFilesToAdsUrls(files)
+    setStoreSettingsForm((prev) => ({
+      ...prev,
+      customerDisplayAds: urls.join('\n'),
+    }))
+  }
+
+  const onUploadAdsFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    if (!files.length || !token?.access_token) return
+
+    if (!canManageStore) {
+      setSettingsError('Chỉ owner/admin được quản lý danh sách ảnh quảng cáo.')
+      return
+    }
+
+    setAdsFilesUploading(true)
+    setSettingsError(null)
+    setSettingsMessage(null)
+
+    try {
+      await fileApi.uploadMultiple(token.access_token, files, {
+        category: 'general',
+        refType: ADS_REF_TYPE,
+        refId: ADS_REF_ID,
+      })
+      const refreshed = await fileApi.list(token.access_token, {
+        category: 'general',
+        ref_type: ADS_REF_TYPE,
+        ref_id: ADS_REF_ID,
+        per_page: 200,
+      })
+      setAdsFiles(refreshed.files)
+      onApplyUploadedAds(refreshed.files)
+      setSettingsMessage('Đã tải ảnh quảng cáo. Nhấn "Cập nhật cấu hình" để áp dụng cho màn hình khách.')
+    } catch (uploadError) {
+      if (uploadError instanceof ApiError) setSettingsError(uploadError.message)
+      else setSettingsError('Không thể tải ảnh quảng cáo lên.')
+    } finally {
+      setAdsFilesUploading(false)
+    }
+  }
+
+  const onDeleteAdsFile = async (fileRecord: FileRecord) => {
+    if (!token?.access_token) return
+    if (!canManageStore) {
+      setSettingsError('Chỉ owner/admin được xóa ảnh quảng cáo.')
+      return
+    }
+
+    const confirmed = window.confirm(`Xóa ảnh quảng cáo "${fileRecord.original_name}"?`)
+    if (!confirmed) return
+
+    setSettingsError(null)
+    setSettingsMessage(null)
+
+    try {
+      await fileApi.delete(token.access_token, fileRecord.id)
+      const nextFiles = adsFiles.filter((item) => item.id !== fileRecord.id)
+      setAdsFiles(nextFiles)
+      onApplyUploadedAds(nextFiles)
+      setSettingsMessage('Đã xóa ảnh quảng cáo. Nhấn "Cập nhật cấu hình" để áp dụng cho màn hình khách.')
+    } catch (deleteError) {
+      if (deleteError instanceof ApiError) setSettingsError(deleteError.message)
+      else setSettingsError('Không thể xóa ảnh quảng cáo.')
     }
   }
 
@@ -752,13 +959,7 @@ export function StoreSettings() {
   }
 
   const logoPreviewUrl = useMemo(() => {
-    if (!storeInfo?.logo_url) return null
-    if (storeInfo.logo_url.startsWith('http')) return storeInfo.logo_url
-
-    const apiBase = String(import.meta.env.VITE_API_BASE_URL ?? '').trim().replace(/\/+$/, '')
-    if (apiBase) return `${apiBase}${storeInfo.logo_url}`
-
-    return `${window.location.origin}${storeInfo.logo_url}`
+    return resolveAssetUrl(storeInfo?.logo_url)
   }, [storeInfo?.logo_url])
 
   return (
@@ -929,8 +1130,14 @@ export function StoreSettings() {
 
           <div className="md:col-span-2 rounded-2xl border border-ink-900/10 bg-white p-4">
             <p className="text-xs uppercase tracking-[0.25em] text-ink-500">Logo cửa hàng</p>
-            {logoPreviewUrl ? (
-              <img src={logoPreviewUrl} alt="Store logo" className="mt-3 h-14 w-auto object-contain" />
+            <p className="mt-2 text-xs text-ink-500">Logo sẽ được dùng làm favicon của trang web.</p>
+            {logoPreviewUrl && !logoPreviewFailed ? (
+              <img
+                src={logoPreviewUrl}
+                alt="Store logo"
+                className="mt-3 h-14 w-auto object-contain"
+                onError={() => setLogoPreviewFailed(true)}
+              />
             ) : (
               <p className="mt-3 text-sm text-ink-600">Chưa có logo.</p>
             )}
@@ -1109,8 +1316,88 @@ export function StoreSettings() {
             Màn hình khách: hiển thị tổng tiền hóa đơn
           </label>
 
-          <label className="space-y-2 text-sm text-ink-700 md:col-span-2">
-            <span>Danh sách ads màn hình khách (mỗi dòng 1 URL hình)</span>
+          <div className="space-y-3 text-sm text-ink-700 md:col-span-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>Danh sách ads màn hình khách</span>
+              {canManageStore ? (
+                <div className="flex flex-wrap gap-2">
+                  <label className="cursor-pointer rounded-full border border-ink-900/10 bg-white px-4 py-1.5 text-xs font-semibold text-ink-900">
+                    {adsFilesUploading ? 'Đang tải...' : 'Tải ảnh quảng cáo'}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      disabled={adsFilesUploading || storeLoading}
+                      onChange={(event) => {
+                        void onUploadAdsFiles(event)
+                      }}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => onApplyUploadedAds()}
+                    disabled={!adsUrlsFromFiles.length || storeLoading}
+                    className="rounded-full border border-ink-900/10 bg-white px-4 py-1.5 text-xs font-semibold text-ink-900 disabled:opacity-60"
+                  >
+                    Dùng danh sách ảnh đã tải lên
+                  </button>
+                </div>
+              ) : null}
+            </div>
+
+            {adsFilesLoading ? (
+              <p className="text-xs text-ink-500">Đang tải danh sách ảnh quảng cáo...</p>
+            ) : null}
+            {!adsFilesLoading && adsFilesSorted.length === 0 ? (
+              <p className="text-xs text-ink-500">Chưa có ảnh quảng cáo trên File Service.</p>
+            ) : null}
+            {adsFilesSorted.length > 0 ? (
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {adsFilesSorted.map((item) => {
+                  const previewUrl = resolveAssetUrl(item.url)
+                  return (
+                    <div key={item.id} className="rounded-2xl border border-ink-900/10 bg-white p-2">
+                      {previewUrl ? (
+                        <img
+                          src={previewUrl}
+                          alt={item.original_name}
+                          className="h-24 w-full rounded-xl object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-24 items-center justify-center rounded-xl bg-fog-50 text-xs text-ink-500">
+                          Không có preview
+                        </div>
+                      )}
+                      <p className="mt-2 truncate text-xs font-medium text-ink-800">{item.original_name}</p>
+                      <p className="text-[11px] text-ink-500">{formatFileSize(item.size)}</p>
+                      <div className="mt-2 flex gap-2">
+                        {previewUrl ? (
+                          <a
+                            href={previewUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="rounded-full border border-ink-900/10 px-3 py-1 text-[11px] font-semibold text-ink-900"
+                          >
+                            Xem trước
+                          </a>
+                        ) : null}
+                        {canManageStore ? (
+                          <button
+                            type="button"
+                            onClick={() => void onDeleteAdsFile(item)}
+                            className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-[11px] font-semibold text-coral-500"
+                          >
+                            Xóa
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : null}
+
             <textarea
               value={storeSettingsForm.customerDisplayAds}
               onChange={(event) =>
@@ -1124,9 +1411,9 @@ export function StoreSettings() {
               disabled={!canManageStore || storeLoading}
             />
             <p className="text-xs text-ink-500">
-              Có thể dùng link tuyệt đối (https://...) hoặc đường dẫn static từ public/.
+              Mỗi dòng 1 URL ảnh. Bạn có thể dùng ảnh từ File Service hoặc dán URL thủ công.
             </p>
-          </label>
+          </div>
 
           <label className="space-y-2 text-sm text-ink-700">
             <span>Kiểu transition ads</span>
@@ -1477,31 +1764,10 @@ export function StoreSettings() {
 
           {/* Sync settings */}
           <div className="mt-6 border-t border-ink-900/10 pt-4">
-            <h4 className="text-sm font-semibold uppercase tracking-wider text-ink-500">Đồng bộ với server khác</h4>
+            <h4 className="text-sm font-semibold uppercase tracking-wider text-ink-500">Đồng bộ với R2</h4>
             <p className="mt-1 text-xs text-ink-500">
-              Cấu hình URL và API key của server dự phòng để đồng bộ dữ liệu.
+              Đẩy bản sao lưu mới nhất lên R2 hoặc kéo bản sao lưu mới nhất từ R2 về danh sách local.
             </p>
-            <div className="mt-3 grid gap-4 md:grid-cols-2">
-              <label className="space-y-1 text-sm text-ink-700">
-                <span>URL server đồng bộ</span>
-                <input
-                  value={bkSyncUrl}
-                  onChange={(e) => setBkSyncUrl(e.target.value)}
-                  placeholder="https://backup-server.example.com"
-                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-                />
-              </label>
-              <label className="space-y-1 text-sm text-ink-700">
-                <span>API Key đồng bộ</span>
-                <input
-                  type="password"
-                  value={bkSyncKey}
-                  onChange={(e) => setBkSyncKey(e.target.value)}
-                  placeholder="Nhập API key"
-                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-                />
-              </label>
-            </div>
             <div className="mt-4 flex flex-wrap gap-2">
               <button
                 type="button"
@@ -1514,18 +1780,18 @@ export function StoreSettings() {
               <button
                 type="button"
                 onClick={() => void onSyncPush()}
-                disabled={backupSyncing !== null || !bkSyncUrl.trim()}
+                disabled={backupSyncing !== null}
                 className="rounded-full border border-ink-900/10 bg-white px-5 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
               >
-                {backupSyncing === 'push' ? 'Đang đẩy...' : 'Đẩy lên server'}
+                {backupSyncing === 'push' ? 'Đang đẩy...' : 'Đẩy lên R2'}
               </button>
               <button
                 type="button"
                 onClick={() => void onSyncPull()}
-                disabled={backupSyncing !== null || !bkSyncUrl.trim()}
+                disabled={backupSyncing !== null}
                 className="rounded-full border border-ink-900/10 bg-white px-5 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
               >
-                {backupSyncing === 'pull' ? 'Đang kéo...' : 'Kéo từ server'}
+                {backupSyncing === 'pull' ? 'Đang kéo...' : 'Kéo từ R2'}
               </button>
             </div>
           </div>
