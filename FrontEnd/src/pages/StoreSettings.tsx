@@ -285,6 +285,7 @@ export function StoreSettings() {
   const [bkAutoEnabled, setBkAutoEnabled] = useState(false)
   const [bkAutoInterval, setBkAutoInterval] = useState('24')
   const [bkMaxFiles, setBkMaxFiles] = useState('10')
+  const [bkInternalTokenTtlMinutes, setBkInternalTokenTtlMinutes] = useState('30')
   const [bkSettingsSaving, setBkSettingsSaving] = useState(false)
   const [adsFiles, setAdsFiles] = useState<FileRecord[]>([])
   const [adsFilesLoading, setAdsFilesLoading] = useState(false)
@@ -374,6 +375,9 @@ export function StoreSettings() {
       setBkAutoEnabled(asBoolean(bs['backup.auto_enabled'], false))
       setBkAutoInterval(asNumberString(bs['backup.auto_interval_hours'], 24))
       setBkMaxFiles(asNumberString(bs['backup.max_files'], 10))
+      setBkInternalTokenTtlMinutes(
+        asNumberString(bs['backup.internal_service_token_expire_minutes'], 30),
+      )
     } catch {
       // silent
     }
@@ -546,6 +550,10 @@ export function StoreSettings() {
         'backup.auto_enabled': bkAutoEnabled,
         'backup.auto_interval_hours': Math.max(1, Math.trunc(Number(bkAutoInterval) || 24)),
         'backup.max_files': Math.max(1, Math.trunc(Number(bkMaxFiles) || 10)),
+        'backup.internal_service_token_expire_minutes': Math.max(
+          1,
+          Math.trunc(Number(bkInternalTokenTtlMinutes) || 30),
+        ),
       })
       setBackupMessage('Đã lưu cấu hình sao lưu.')
     } catch (err) {
@@ -1728,7 +1736,7 @@ export function StoreSettings() {
           {/* Auto backup settings */}
           <div className="mt-6 border-t border-ink-900/10 pt-4">
             <h4 className="text-sm font-semibold uppercase tracking-wider text-ink-500">Sao lưu tự động</h4>
-            <div className="mt-3 grid gap-4 md:grid-cols-3">
+            <div className="mt-3 grid gap-4 md:grid-cols-4">
               <label className="flex items-center gap-2 text-sm text-ink-700">
                 <input
                   type="checkbox"
@@ -1756,6 +1764,16 @@ export function StoreSettings() {
                   min={1}
                   value={bkMaxFiles}
                   onChange={(e) => setBkMaxFiles(e.target.value)}
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                />
+              </label>
+              <label className="space-y-1 text-sm text-ink-700">
+                <span>Hết hạn token nội bộ (phút)</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={bkInternalTokenTtlMinutes}
+                  onChange={(e) => setBkInternalTokenTtlMinutes(e.target.value)}
                   className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
                 />
               </label>

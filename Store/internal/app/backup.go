@@ -387,15 +387,50 @@ func (s *Service) SaveUploadedBackup(ctx context.Context, reader io.Reader, orig
 	return record, nil
 }
 
-func (s *Service) createFileServiceToken() (string, error) {
+func (s *Service) getInternalServiceTokenTTL(ctx context.Context) time.Duration {
+	ttl := s.cfg.InternalTokenTTL
+	settings, err := s.GetSettingsByGroup(ctx, "backup")
+	if err != nil {
+		return ttl
+	}
+
+	raw, exists := settings["backup.internal_service_token_expire_minutes"]
+	if !exists {
+		return ttl
+	}
+
+	var minutes float64
+	switch value := raw.(type) {
+	case float64:
+		minutes = value
+	case int:
+		minutes = float64(value)
+	case int64:
+		minutes = float64(value)
+	default:
+		return ttl
+	}
+
+	if minutes < 1 {
+		minutes = 1
+	}
+	if minutes > 24*60 {
+		minutes = 24 * 60
+	}
+
+	return time.Duration(minutes * float64(time.Minute))
+}
+
+func (s *Service) createFileServiceToken(ctx context.Context) (string, error) {
 	now := time.Now()
+	ttl := s.getInternalServiceTokenTTL(ctx)
 	claims := jwt.MapClaims{
 		"sub":  "store-service",
 		"role": "owner",
 		"type": "access",
 		"iat":  now.Unix(),
 		"nbf":  now.Unix(),
-		"exp":  now.Add(10 * time.Minute).Unix(),
+		"exp":  now.Add(ttl).Unix(),
 	}
 
 	method := jwt.GetSigningMethod(s.cfg.JWTAlgorithm)
@@ -424,7 +459,7 @@ func (s *Service) syncBackupToR2KeepLatest(ctx context.Context, record domain.Ba
 	}
 	defer file.Close()
 
-	token, err := s.createFileServiceToken()
+	token, err := s.createFileServiceToken(ctx)
 	if err != nil {
 		return err
 	}

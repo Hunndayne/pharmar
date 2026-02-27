@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { customerApi, type CustomerRecord } from '../api/customerService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
+import { readLocalDraft, removeLocalDraft, writeLocalDraft } from '../utils/localDraft'
 
 type StatusFilter = 'all' | 'active' | 'inactive'
 type ModalMode = 'create' | 'edit'
@@ -18,6 +19,7 @@ type CustomerForm = {
 }
 
 const pageSize = 10
+const CUSTOMER_FORM_DRAFT_STORAGE_KEY = 'pharmar.customers.form.draft.v1'
 
 const emptyForm: CustomerForm = {
   name: '',
@@ -69,6 +71,21 @@ export function Customers() {
   const [formError, setFormError] = useState<string | null>(null)
   const [formSubmitting, setFormSubmitting] = useState(false)
 
+  const loadCreateDraft = useCallback(() => {
+    const draft = readLocalDraft<Partial<CustomerForm>>(CUSTOMER_FORM_DRAFT_STORAGE_KEY)
+    if (!draft) return emptyForm
+    return {
+      ...emptyForm,
+      ...draft,
+      id: undefined,
+      code: undefined,
+    }
+  }, [])
+
+  const clearCreateDraft = useCallback(() => {
+    removeLocalDraft(CUSTOMER_FORM_DRAFT_STORAGE_KEY)
+  }, [])
+
   const loadRows = useCallback(async () => {
     if (!accessToken) return
 
@@ -104,7 +121,7 @@ export function Customers() {
 
   const openCreate = () => {
     setModalMode('create')
-    setForm(emptyForm)
+    setForm(loadCreateDraft())
     setFormError(null)
     setModalOpen(true)
   }
@@ -154,6 +171,7 @@ export function Customers() {
 
       if (modalMode === 'create') {
         await customerApi.createCustomer(accessToken, payload)
+        clearCreateDraft()
       } else if (form.id) {
         await customerApi.updateCustomer(accessToken, form.id, payload)
       }
@@ -189,6 +207,11 @@ export function Customers() {
     }),
     [rows, total],
   )
+
+  useEffect(() => {
+    if (!modalOpen || modalMode !== 'create') return
+    writeLocalDraft(CUSTOMER_FORM_DRAFT_STORAGE_KEY, form)
+  }, [form, modalMode, modalOpen])
 
   return (
     <div className="space-y-6">

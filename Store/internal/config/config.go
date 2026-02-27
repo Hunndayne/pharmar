@@ -17,6 +17,7 @@ type Config struct {
 	DatabaseURL        string
 	RedisURL           string
 	FileServiceURL     string
+	InternalTokenTTL   time.Duration
 	SettingsCacheTTL   time.Duration
 	JWTSecretKey       string
 	JWTAlgorithm       string
@@ -49,6 +50,14 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("SETTINGS_CACHE_TTL_SECONDS must be >= 0")
 	}
 
+	internalTokenTTLMinutes, err := getEnvInt("INTERNAL_SERVICE_TOKEN_EXPIRE_MINUTES", 30)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid INTERNAL_SERVICE_TOKEN_EXPIRE_MINUTES: %w", err)
+	}
+	if internalTokenTTLMinutes <= 0 {
+		return Config{}, fmt.Errorf("INTERNAL_SERVICE_TOKEN_EXPIRE_MINUTES must be > 0")
+	}
+
 	corsRaw := strings.TrimSpace(getEnv("CORS_ALLOWED_ORIGINS", `["http://localhost:3000","http://localhost:5173"]`))
 	var corsOrigins []string
 	if strings.HasPrefix(corsRaw, "[") {
@@ -77,6 +86,7 @@ func Load() (Config, error) {
 		DatabaseURL:        getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/pharmar_store?sslmode=disable"),
 		RedisURL:           getEnv("REDIS_URL", "redis://localhost:6379/0"),
 		FileServiceURL:     strings.TrimRight(getEnv("FILE_SERVICE_URL", "http://file-service:8009"), "/"),
+		InternalTokenTTL:   time.Duration(internalTokenTTLMinutes) * time.Minute,
 		SettingsCacheTTL:   time.Duration(settingsCacheTTLSeconds) * time.Second,
 		JWTSecretKey:       getEnv("JWT_SECRET_KEY", "change-this-secret"),
 		JWTAlgorithm:       getEnv("JWT_ALGORITHM", "HS256"),

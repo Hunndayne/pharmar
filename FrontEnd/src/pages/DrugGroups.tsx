@@ -3,6 +3,7 @@ import { catalogApi, type DrugGroupItem } from '../api/catalogService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
+import { readLocalDraft, removeLocalDraft, writeLocalDraft } from '../utils/localDraft'
 
 type StatusFilter = 'all' | 'active' | 'inactive'
 type ModalMode = 'create' | 'edit'
@@ -23,6 +24,7 @@ const emptyForm: DrugGroupForm = {
 }
 
 const pageSize = 10
+const DRUG_GROUP_FORM_DRAFT_STORAGE_KEY = 'pharmar.drug-groups.form.draft.v1'
 
 export function DrugGroups() {
   const { token, user } = useAuth()
@@ -47,6 +49,21 @@ export function DrugGroups() {
   const [formError, setFormError] = useState<string | null>(null)
   const [formSubmitting, setFormSubmitting] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
+
+  const loadCreateDraft = useCallback(() => {
+    const draft = readLocalDraft<Partial<DrugGroupForm>>(DRUG_GROUP_FORM_DRAFT_STORAGE_KEY)
+    if (!draft) return emptyForm
+    return {
+      ...emptyForm,
+      ...draft,
+      id: undefined,
+      code: '',
+    }
+  }, [])
+
+  const clearCreateDraft = useCallback(() => {
+    removeLocalDraft(DRUG_GROUP_FORM_DRAFT_STORAGE_KEY)
+  }, [])
 
   const loadRows = useCallback(async () => {
     if (!accessToken) return
@@ -82,7 +99,7 @@ export function DrugGroups() {
 
   const openCreate = () => {
     setModalMode('create')
-    setForm(emptyForm)
+    setForm(loadCreateDraft())
     setFormError(null)
     setModalOpen(true)
   }
@@ -140,6 +157,7 @@ export function DrugGroups() {
 
       if (modalMode === 'create') {
         await catalogApi.createDrugGroup(accessToken, payload)
+        clearCreateDraft()
       } else if (form.id) {
         await catalogApi.updateDrugGroup(accessToken, form.id, payload)
       }
@@ -176,6 +194,11 @@ export function DrugGroups() {
     }),
     [rows, total],
   )
+
+  useEffect(() => {
+    if (!modalOpen || modalMode !== 'create') return
+    writeLocalDraft(DRUG_GROUP_FORM_DRAFT_STORAGE_KEY, form)
+  }, [form, modalMode, modalOpen])
 
   return (
     <div className="space-y-6">

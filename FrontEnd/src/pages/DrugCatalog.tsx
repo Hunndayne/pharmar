@@ -13,6 +13,7 @@ import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
 import { downloadCsv, parseDelimitedText } from '../utils/csv'
+import { readLocalDraft, removeLocalDraft, writeLocalDraft } from '../utils/localDraft'
 
 type Unit = {
   id: string
@@ -103,6 +104,7 @@ const unitNames = [
 ]
 
 const initialDrugs: Drug[] = []
+const DRUG_FORM_DRAFT_STORAGE_KEY = 'pharmar.drug-catalog.form.draft.v1'
 
 const statusStyles: Record<string, string> = {
   'Đang bán': 'bg-brand-500/15 text-brand-600 border border-brand-500/30',
@@ -358,6 +360,8 @@ const buildDesiredUnits = (form: FormState): DesiredUnit[] => {
 }
 
 const normalizeGroupKey = (value: string) => value.trim().toLocaleLowerCase('vi-VN')
+const loadDrugFormDraft = (): Partial<FormState> | null =>
+  readLocalDraft<Partial<FormState>>(DRUG_FORM_DRAFT_STORAGE_KEY)
 
 // ============================================================
 // Barcode Scanning Engine (Quagga2)
@@ -483,6 +487,10 @@ export function DrugCatalog() {
   const scanTargetRef = useRef<ScanTarget>('search')
   const scanActiveRef = useRef(false)
   const scanStabilityRef = useRef<{ value: string; count: number; lastSeen: number } | null>(null)
+
+  const clearDrugFormDraft = useCallback(() => {
+    removeLocalDraft(DRUG_FORM_DRAFT_STORAGE_KEY)
+  }, [])
 
   const pageSize = 6
 
@@ -823,7 +831,30 @@ export function DrugCatalog() {
       return
     }
     setErrors({})
-    setForm(emptyForm('', makerOptions[0]?.id ?? '', ''))
+    const fallback = emptyForm('', makerOptions[0]?.id ?? '', '')
+    const draft = loadDrugFormDraft()
+    if (!draft) {
+      setForm(fallback)
+      setModalOpen(true)
+      return
+    }
+    setForm({
+      ...fallback,
+      ...draft,
+      id: undefined,
+      importUnit: {
+        ...fallback.importUnit,
+        ...(draft.importUnit ?? {}),
+      },
+      intermediateUnit: {
+        ...fallback.intermediateUnit,
+        ...(draft.intermediateUnit ?? {}),
+      },
+      retailUnit: {
+        ...fallback.retailUnit,
+        ...(draft.retailUnit ?? {}),
+      },
+    })
     setModalOpen(true)
   }
 
@@ -907,6 +938,11 @@ export function DrugCatalog() {
       hasIntermediate: next,
     }))
   }
+
+  useEffect(() => {
+    if (!modalOpen || Boolean(form.id)) return
+    writeLocalDraft(DRUG_FORM_DRAFT_STORAGE_KEY, form)
+  }, [form, modalOpen])
 
   const validate = () => {
     const next: Record<string, string> = {}
@@ -996,6 +1032,7 @@ export function DrugCatalog() {
           },
         })
         await syncProductUnits(created.id, created.units, desiredUnits)
+        clearDrugFormDraft()
         setAlert('Đã thêm thuốc.')
       }
 

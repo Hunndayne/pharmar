@@ -3,6 +3,7 @@ import { catalogApi, type SupplierItem } from '../api/catalogService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
+import { readLocalDraft, removeLocalDraft, writeLocalDraft } from '../utils/localDraft'
 
 type StatusFilter = 'all' | 'active' | 'inactive'
 type ModalMode = 'create' | 'edit'
@@ -75,6 +76,7 @@ const emptyPaymentForm: DebtPaymentForm = {
 }
 
 const pageSize = 10
+const DISTRIBUTOR_FORM_DRAFT_STORAGE_KEY = 'pharmar.distributors.form.draft.v1'
 
 const parseMoneyValue = (value: string | number | null | undefined) => {
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0
@@ -154,6 +156,21 @@ export function Distributors() {
   const [paymentSubmitting, setPaymentSubmitting] = useState(false)
   const [paymentError, setPaymentError] = useState<string | null>(null)
 
+  const loadCreateDraft = useCallback(() => {
+    const draft = readLocalDraft<Partial<DistributorForm>>(DISTRIBUTOR_FORM_DRAFT_STORAGE_KEY)
+    if (!draft) return emptyForm
+    return {
+      ...emptyForm,
+      ...draft,
+      id: undefined,
+      code: '',
+    }
+  }, [])
+
+  const clearCreateDraft = useCallback(() => {
+    removeLocalDraft(DISTRIBUTOR_FORM_DRAFT_STORAGE_KEY)
+  }, [])
+
   const loadRows = useCallback(async () => {
     if (!accessToken) return
     setLoading(true)
@@ -188,7 +205,7 @@ export function Distributors() {
 
   const openCreate = () => {
     setModalMode('create')
-    setForm(emptyForm)
+    setForm(loadCreateDraft())
     setFormError(null)
     setModalOpen(true)
   }
@@ -243,6 +260,7 @@ export function Distributors() {
 
       if (modalMode === 'create') {
         await catalogApi.createSupplier(accessToken, payload)
+        clearCreateDraft()
       } else if (form.id) {
         await catalogApi.updateSupplier(accessToken, form.id, payload)
       }
@@ -277,6 +295,11 @@ export function Distributors() {
     setPaymentError(null)
     setPaymentForm({ amount: debt > 0 ? Math.round(debt).toString() : '', note: '' })
   }
+
+  useEffect(() => {
+    if (!modalOpen || modalMode !== 'create') return
+    writeLocalDraft(DISTRIBUTOR_FORM_DRAFT_STORAGE_KEY, form)
+  }, [form, modalMode, modalOpen])
 
   const handlePayDebt = async () => {
     if (!accessToken || !paymentTarget || !canManage) return

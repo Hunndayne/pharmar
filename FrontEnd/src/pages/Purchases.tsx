@@ -21,6 +21,7 @@ import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
 import { downloadCsv } from '../utils/csv'
+import { readLocalDraft, removeLocalDraft, writeLocalDraft } from '../utils/localDraft'
 
 type Unit = {
   id: string
@@ -396,6 +397,7 @@ const getLotLabelPrice = (line: LineItemForm) => {
 }
 
 const RECEIPT_EXTRAS_STORAGE_KEY = 'pharmar.receipt.extras.v1'
+const PURCHASE_FORM_DRAFT_STORAGE_KEY = 'pharmar.purchases.form.draft.v1'
 
 const loadReceiptExtras = (): Record<string, ReceiptExtra> => {
   if (typeof window === 'undefined') return {}
@@ -409,6 +411,9 @@ const loadReceiptExtras = (): Record<string, ReceiptExtra> => {
     return {}
   }
 }
+
+const loadPurchaseFormDraft = (): Partial<OrderFormState> | null =>
+  readLocalDraft<Partial<OrderFormState>>(PURCHASE_FORM_DRAFT_STORAGE_KEY)
 
 const toPromoNote = (line: LineItemForm) => {
   if (line.promoType === 'none') return null
@@ -935,6 +940,7 @@ export function Purchases() {
 
   const [form, setForm] = useState<OrderFormState>(() => createEmptyOrder(initialOrders, todayISO(), suppliers))
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [lineDrugSearch, setLineDrugSearch] = useState<Record<string, string>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [modalOpen, setModalOpen] = useState(false)
   const [alert, setAlert] = useState<string | null>(null)
@@ -966,6 +972,10 @@ export function Purchases() {
   const formFieldRefs = useRef<Record<string, HTMLElement | null>>({})
   const lineCardRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const pendingNewLineIdRef = useRef<string | null>(null)
+
+  const clearPurchaseFormDraft = useCallback(() => {
+    removeLocalDraft(PURCHASE_FORM_DRAFT_STORAGE_KEY)
+  }, [])
 
   useEffect(() => {
     receiptExtrasRef.current = receiptExtras
@@ -1158,6 +1168,43 @@ export function Purchases() {
   )
 
   const drugMap = useMemo(() => new Map(drugOptions.map((drug) => [drug.id, drug])), [drugOptions])
+
+  const formatDrugOptionLabel = useCallback((drug: Drug) => `${drug.code} - ${drug.name}`, [])
+
+  const buildLineDrugSearch = useCallback(
+    (lines: LineItemForm[]) => {
+      const next: Record<string, string> = {}
+      lines.forEach((line) => {
+        const selectedDrug = drugMap.get(line.drugId)
+        if (selectedDrug) {
+          next[line.id] = formatDrugOptionLabel(selectedDrug)
+        }
+      })
+      return next
+    },
+    [drugMap, formatDrugOptionLabel],
+  )
+
+  const getLineDrugOptions = useCallback(
+    (lineId: string, selectedDrugId: string) => {
+      const keyword = (lineDrugSearch[lineId] ?? '').trim().toLowerCase()
+      const filtered = keyword
+        ? drugOptions.filter((item) =>
+            [item.code, item.name, item.regNo, item.barcode]
+              .join(' ')
+              .toLowerCase()
+              .includes(keyword),
+          )
+        : drugOptions
+
+      if (!selectedDrugId) return filtered
+      if (filtered.some((item) => item.id === selectedDrugId)) return filtered
+
+      const selected = drugOptions.find((item) => item.id === selectedDrugId)
+      return selected ? [selected, ...filtered] : filtered
+    },
+    [drugOptions, lineDrugSearch],
+  )
 
   const barcodeIndex = useMemo(() => {
     const index = new Map<string, string>()
@@ -1365,7 +1412,33 @@ export function Purchases() {
   const openCreate = () => {
     setErrors({})
     setEditingId(null)
-    setForm(createEmptyOrder(orders, todayISO(), supplierOptions))
+    const fallback = createEmptyOrder(orders, todayISO(), supplierOptions)
+    const draft = loadPurchaseFormDraft()
+    if (!draft) {
+      setForm(fallback)
+      setLineDrugSearch(buildLineDrugSearch(fallback.lines))
+      setModalOpen(true)
+      return
+    }
+
+    const nextLines =
+      Array.isArray(draft.lines) && draft.lines.length
+        ? draft.lines.map((line, index) => ({
+            ...createLine(index + 1),
+            ...line,
+            id: line.id || `line-${Date.now()}-${index + 1}`,
+            unitRetailPrices: Array.isArray(line.unitRetailPrices) ? line.unitRetailPrices : [],
+          }))
+        : fallback.lines
+
+    const nextForm = {
+      ...fallback,
+      ...draft,
+      id: undefined,
+      lines: nextLines,
+    }
+    setForm(nextForm)
+    setLineDrugSearch(buildLineDrugSearch(nextForm.lines))
     setModalOpen(true)
   }
 
@@ -1380,7 +1453,7 @@ export function Purchases() {
     }
     setErrors({})
     setEditingId(order.id)
-    setForm({
+    const nextForm = {
       id: order.id,
       code: order.code,
       date: order.date,
@@ -1397,13 +1470,16 @@ export function Purchases() {
         promoDiscountPercent: line.promoDiscountPercent ?? '',
         unitRetailPrices: buildRetailPrices(line.drugId, line.unitRetailPrices),
       })),
-    })
+    }
+    setForm(nextForm)
+    setLineDrugSearch(buildLineDrugSearch(nextForm.lines))
     setModalOpen(true)
   }
 
   const closeModal = () => {
     setModalOpen(false)
     setEditingId(null)
+    setLineDrugSearch({})
     setScanOpen(false)
   }
 
@@ -1431,6 +1507,10 @@ export function Purchases() {
 
   const handleDrugChange = (id: string, drugId: string) => {
     const drug = drugMap.get(drugId)
+    setLineDrugSearch((prev) => ({
+      ...prev,
+      [id]: drug ? formatDrugOptionLabel(drug) : '',
+    }))
     setForm((prev) => ({
       ...prev,
       lines: prev.lines.map((line) => {
@@ -1525,6 +1605,12 @@ export function Purchases() {
   }
 
   const removeLine = (id: string) => {
+    setLineDrugSearch((prev) => {
+      if (!(id in prev)) return prev
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
     setForm((prev) => ({
       ...prev,
       lines: prev.lines.length > 1 ? prev.lines.filter((line) => line.id !== id) : prev.lines,
@@ -1542,6 +1628,11 @@ export function Purchases() {
     const focused = focusAndScrollField(`line-drug-${pendingLineId}`)
     if (focused) pendingNewLineIdRef.current = null
   }, [focusAndScrollField, form.lines])
+
+  useEffect(() => {
+    if (!modalOpen || editingId) return
+    writeLocalDraft(PURCHASE_FORM_DRAFT_STORAGE_KEY, form)
+  }, [editingId, form, modalOpen])
 
   const validate = () => {
     const next: Record<string, string> = {}
@@ -1632,6 +1723,7 @@ export function Purchases() {
       setEditingId(null)
       setErrors({})
       if (isCreating) {
+        clearPurchaseFormDraft()
         openLabelConfirm(mappedOrder)
       }
 
@@ -2884,7 +2976,8 @@ export function Purchases() {
                   {form.lines.map((line, index) => {
                     const drug = drugMap.get(line.drugId)
                     const pricing = calcLinePricing(line)
-                                        return (
+                    const lineDrugOptions = getLineDrugOptions(line.id, line.drugId)
+                    return (
                       <div key={line.id} ref={setLineCardRef(line.id)} className="rounded-2xl bg-fog-50 p-4 space-y-4">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div>
@@ -2914,6 +3007,17 @@ export function Purchases() {
                         <div className="grid grid-cols-2 gap-3">
                           <label className="col-span-2 space-y-1 text-xs text-ink-600">
                             Thuốc *
+                            <input
+                              value={lineDrugSearch[line.id] ?? ''}
+                              onChange={(event) =>
+                                setLineDrugSearch((prev) => ({
+                                  ...prev,
+                                  [line.id]: event.target.value,
+                                }))
+                              }
+                              className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
+                              placeholder="Tìm thuốc theo mã/tên/số đăng ký/barcode"
+                            />
                             <select
                               ref={setFormFieldRef(`line-drug-${line.id}`)}
                               value={line.drugId}
@@ -2921,12 +3025,15 @@ export function Purchases() {
                               className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
                             >
                               <option value="">Chọn thuốc</option>
-                              {drugOptions.map((item) => (
+                              {lineDrugOptions.map((item) => (
                                 <option key={item.id} value={item.id}>
-                                  {item.code} - {item.name}
+                                  {formatDrugOptionLabel(item)}
                                 </option>
                               ))}
                             </select>
+                            {(lineDrugSearch[line.id] ?? '').trim() && lineDrugOptions.length === 0 ? (
+                              <span className="text-xs text-amber-700">Không tìm thấy thuốc phù hợp.</span>
+                            ) : null}
                             {errors[`line-drug-${index}`] ? (
                               <span className="text-xs text-coral-500">{errors[`line-drug-${index}`]}</span>
                             ) : null}

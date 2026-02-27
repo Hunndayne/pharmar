@@ -7,6 +7,7 @@ import {
 } from '../api/customerService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
+import { readLocalDraft, removeLocalDraft, writeLocalDraft } from '../utils/localDraft'
 
 type StatusFilter = 'all' | 'active' | 'inactive'
 type AutoApplyFilter = 'all' | 'auto' | 'manual'
@@ -48,6 +49,7 @@ const emptyForm: PromotionForm = {
   autoApply: false,
   applicableTiers: [],
 }
+const PROMOTION_FORM_DRAFT_STORAGE_KEY = 'pharmar.promotions.form.draft.v1'
 
 const toNumber = (value: string | number | null | undefined) => {
   if (value === null || value === undefined || value === '') return 0
@@ -142,6 +144,20 @@ export function Promotions() {
   const [formSubmitting, setFormSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
 
+  const loadCreateDraft = useCallback(() => {
+    const draft = readLocalDraft<Partial<PromotionForm>>(PROMOTION_FORM_DRAFT_STORAGE_KEY)
+    if (!draft) return emptyForm
+    return {
+      ...emptyForm,
+      ...draft,
+      id: undefined,
+    }
+  }, [])
+
+  const clearCreateDraft = useCallback(() => {
+    removeLocalDraft(PROMOTION_FORM_DRAFT_STORAGE_KEY)
+  }, [])
+
   const loadRows = useCallback(async () => {
     if (!accessToken) return
     setLoading(true)
@@ -188,7 +204,7 @@ export function Promotions() {
 
   const openCreate = () => {
     setModalMode('create')
-    setForm(emptyForm)
+    setForm(loadCreateDraft())
     setFormError(null)
     setModalOpen(true)
   }
@@ -278,6 +294,7 @@ export function Promotions() {
 
       if (modalMode === 'create') {
         await customerApi.createPromotion(accessToken, payload)
+        clearCreateDraft()
       } else if (form.id) {
         await customerApi.updatePromotion(accessToken, form.id, payload)
       }
@@ -325,6 +342,11 @@ export function Promotions() {
     }),
     [rows, total],
   )
+
+  useEffect(() => {
+    if (!modalOpen || modalMode !== 'create') return
+    writeLocalDraft(PROMOTION_FORM_DRAFT_STORAGE_KEY, form)
+  }, [form, modalMode, modalOpen])
 
   const renderTierBadges = (applicableTiers: string[] | null) => {
     if (!applicableTiers || applicableTiers.length === 0) {

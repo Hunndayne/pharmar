@@ -153,6 +153,7 @@
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_store?sslmode=disable
       REDIS_URL: redis://redis:6379/0
       FILE_SERVICE_URL: http://file-service:8009
+      INTERNAL_SERVICE_TOKEN_EXPIRE_MINUTES: ${INTERNAL_SERVICE_TOKEN_EXPIRE_MINUTES:-30}
       SETTINGS_CACHE_TTL_SECONDS: 300
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}

@@ -323,6 +323,14 @@ func DefaultSettings() map[string]DefaultSetting {
 			IsPublic:    false,
 		},
 		{
+			Key:         "backup.internal_service_token_expire_minutes",
+			Value:       30,
+			GroupName:   "backup",
+			DataType:    "number",
+			Description: "TTL token noi bo khi goi file-service (phut)",
+			IsPublic:    false,
+		},
+		{
 			Key:         "backup.sync_server_url",
 			Value:       "",
 			GroupName:   "backup",
