@@ -63,7 +63,7 @@ async def login(payload: LoginRequest, request: Request, db: DbSession) -> AuthR
 
 
 @router.post("/refresh", response_model=TokenResponse)
-@limiter.limit("30/minute")
+@limiter.limit("120/minute")
 async def refresh(payload: RefreshTokenRequest, request: Request, db: DbSession) -> TokenResponse:
     _, access_token, refresh_token = await refresh_user_tokens(payload.refresh_token, db)
     return TokenResponse(

@@ -334,6 +334,32 @@ class BarcodeLookupResponse(BaseModel):
     unit: ProductUnitResponse
 
 
+class DrugReferenceUnitHint(BaseModel):
+    single_unit: bool
+    has_intermediate: bool
+    import_unit_name: str | None = None
+    import_conversion: int | None = None
+    intermediate_unit_name: str | None = None
+    intermediate_conversion: int | None = None
+    retail_unit_name: str
+    retail_conversion: int
+
+
+class DrugReferenceItemResponse(BaseModel):
+    registration_number: str
+    name: str
+    active_ingredient: str | None = None
+    strength: str | None = None
+    dosage_form: str | None = None
+    packaging: str | None = None
+    manufacturer: str | None = None
+    manufacturer_country: str | None = None
+    registrant: str | None = None
+    instruction_url: str | None = None
+    is_otc: bool
+    unit_hint: DrugReferenceUnitHint | None = None
+
+
 class ProductImportResult(BaseModel):
     imported: int
     failed: int

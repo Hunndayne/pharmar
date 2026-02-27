@@ -21,6 +21,7 @@ from Source.dependencies import (
     oauth2_scheme,
     require_roles,
 )
+from Source.events import publish_sale_event
 from Source.sale import (
     extract_item_sku,
     fetch_customer_by_id,
@@ -64,6 +65,31 @@ AccessToken = Annotated[str, Depends(oauth2_scheme)]
 
 def _normalize_decimal(value: Decimal) -> Decimal:
     return quantize_money(value)
+
+
+def _decimal_to_float(value: Decimal | None) -> float:
+    if value is None:
+        return 0.0
+    return float(value)
+
+
+def _invoice_event_payload(invoice: Invoice) -> dict[str, Any]:
+    return {
+        "invoice_id": str(invoice.id),
+        "invoice_code": invoice.code,
+        "customer_id": str(invoice.customer_id) if invoice.customer_id else None,
+        "customer_name": invoice.customer_name,
+        "customer_phone": invoice.customer_phone,
+        "total_amount": _decimal_to_float(invoice.total_amount),
+        "amount_paid": _decimal_to_float(invoice.amount_paid),
+        "change_amount": _decimal_to_float(invoice.change_amount),
+        "payment_method": invoice.payment_method,
+        "status": invoice.status,
+        "created_by": invoice.created_by,
+        "created_by_name": invoice.created_by_name,
+        "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
+        "updated_at": invoice.updated_at.isoformat() if invoice.updated_at else None,
+    }
 
 
 async def _get_invoice_with_details(invoice_id: UUID, db: AsyncSession) -> Invoice:
@@ -478,6 +504,11 @@ async def create_invoice(
     db: DbSession,
 ) -> InvoiceResponse:
     invoice = await process_checkout(payload, current_user, token, db)
+    await publish_sale_event(
+        event_type="sale.invoice.created",
+        routing_key="sale.invoice.created",
+        payload=_invoice_event_payload(invoice),
+    )
     return InvoiceResponse.model_validate(invoice)
 
 
@@ -566,6 +597,17 @@ async def cancel_invoice(
             shift.total_cancelled = quantize_money(shift.total_cancelled + invoice.total_amount)
 
     await db.commit()
+
+    await publish_sale_event(
+        event_type="sale.invoice.cancelled",
+        routing_key="sale.invoice.cancelled",
+        payload={
+            **_invoice_event_payload(invoice),
+            "cancel_reason": invoice.cancel_reason,
+            "cancelled_at": invoice.cancelled_at.isoformat() if invoice.cancelled_at else None,
+            "cancelled_by": invoice.cancelled_by,
+        },
+    )
 
     return {
         "message": "Invoice cancelled",

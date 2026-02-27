@@ -62,6 +62,10 @@ class Settings(BaseSettings):
 
     DEFAULT_COMMISSION_RATE: float = 1.5
 
+    RABBITMQ_ENABLED: bool = True
+    RABBITMQ_URL: str = "amqp://guest:guest@rabbitmq:5672/"
+    RABBITMQ_EXCHANGE: str = "pharmar.events"
+
     INVOICE_PREFIX: str = "HD"
     RETURN_PREFIX: str = "TH"
     SHIFT_PREFIX: str = "CA"

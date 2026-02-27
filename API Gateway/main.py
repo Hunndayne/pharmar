@@ -1,7 +1,6 @@
 import asyncio
 import secrets
 import time
-from collections import defaultdict
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
@@ -34,9 +33,9 @@ class Settings(BaseSettings):
     MAX_REQUEST_BODY_SIZE: int = 100 * 1024 * 1024  # 100MB (supports backup uploads)
 
     # Rate limiting: requests per minute per IP for API endpoints
-    RATE_LIMIT_RPM: int = 300
+    RATE_LIMIT_RPM: int = 1200
     # Rate limiting for auth endpoints (stricter)
-    AUTH_RATE_LIMIT_RPM: int = 20
+    AUTH_RATE_LIMIT_RPM: int = 120
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -114,20 +113,31 @@ def _cleanup_token_blacklist() -> None:
 # ---------------------------------------------------------------------------
 # Simple per-IP rate limiter (token bucket, in-memory).
 # ---------------------------------------------------------------------------
-_rate_buckets: dict[str, dict[str, Any]] = defaultdict(lambda: {"tokens": 0.0, "last": time.time()})
+_rate_buckets: dict[str, dict[str, Any]] = {}
 
 
-def _check_rate_limit(ip: str, rpm: int) -> bool:
+def _check_rate_limit(key: str, rpm: int) -> bool:
     """Return True if the request is allowed, False if rate-limited."""
-    bucket = _rate_buckets[ip]
     now = time.time()
-    elapsed = now - bucket["last"]
-    refill = elapsed * (rpm / 60.0)
-    bucket["tokens"] = min(float(rpm), bucket["tokens"] + refill)
-    bucket["last"] = now
-    if bucket["tokens"] >= 1.0:
-        bucket["tokens"] -= 1.0
+    bucket = _rate_buckets.get(key)
+
+    # New bucket: start full so the first request burst is not rejected.
+    if bucket is None:
+        _rate_buckets[key] = {"tokens": float(max(rpm - 1, 0)), "last": now}
         return True
+
+    elapsed = now - float(bucket.get("last", now))
+    refill = elapsed * (rpm / 60.0)
+    tokens = min(float(rpm), float(bucket.get("tokens", 0.0)) + refill)
+
+    if tokens >= 1.0:
+        tokens -= 1.0
+        bucket["tokens"] = tokens
+        bucket["last"] = now
+        return True
+
+    bucket["tokens"] = tokens
+    bucket["last"] = now
     return False
 
 
@@ -317,7 +327,8 @@ async def proxy(service: str, request: Request, resource_path: str = "") -> Resp
     # ------------------------------------------------------------------
     is_auth_endpoint = service in {"auth", "users"} and resource_path.startswith("login")
     rpm_limit = settings.AUTH_RATE_LIMIT_RPM if is_auth_endpoint else settings.RATE_LIMIT_RPM
-    if not _check_rate_limit(f"{client_ip}:{service}", rpm_limit):
+    scope = "auth" if is_auth_endpoint else "api"
+    if not _check_rate_limit(f"{client_ip}:{service}:{scope}", rpm_limit):
         raise HTTPException(status_code=429, detail="Too many requests. Please slow down.")
 
     # ------------------------------------------------------------------

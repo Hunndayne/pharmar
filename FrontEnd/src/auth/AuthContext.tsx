@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { usersApi, type AuthToken, type UserProfile } from '../api/usersService'
 import { readAuthStorage, writeAuthStorage } from './authStorage'
 
@@ -22,6 +22,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null)
   const [token, setToken] = useState<AuthToken | null>(null)
   const [loading, setLoading] = useState(true)
+  const refreshPromiseRef = useRef<Promise<AuthToken | null> | null>(null)
 
   const persistAuth = useCallback((nextUser: UserProfile | null, nextToken: AuthToken | null) => {
     setUser(nextUser)
@@ -44,11 +45,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const tryRefreshToken = useCallback(async (currentToken: AuthToken | null) => {
     if (!currentToken?.refresh_token) return null
-    const refreshed = await usersApi.refresh(currentToken.refresh_token)
-    return {
-      ...refreshed,
-      refresh_token: refreshed.refresh_token ?? currentToken.refresh_token,
-    }
+    if (refreshPromiseRef.current) return refreshPromiseRef.current
+
+    const task = usersApi
+      .refresh(currentToken.refresh_token)
+      .then((refreshed) => ({
+        ...refreshed,
+        refresh_token: refreshed.refresh_token ?? currentToken.refresh_token,
+      }))
+      .finally(() => {
+        refreshPromiseRef.current = null
+      })
+
+    refreshPromiseRef.current = task
+    return task
   }, [])
 
   useEffect(() => {

@@ -17,6 +17,7 @@ from .db import models  # noqa: F401
 from .db.base import Base
 from .db.models import PaymentMethod, SCHEMA_NAME
 from .db.session import SessionLocal, engine
+from .events import close_event_publisher, init_event_publisher
 from .sale import DEFAULT_PAYMENT_METHODS, cleanup_expired_held_orders
 
 
@@ -64,6 +65,11 @@ async def lifespan(_: FastAPI):
         await connection.run_sync(Base.metadata.create_all)
 
     await _seed_default_payment_methods()
+    await init_event_publisher(
+        enabled=settings.RABBITMQ_ENABLED,
+        url=settings.RABBITMQ_URL,
+        exchange_name=settings.RABBITMQ_EXCHANGE,
+    )
 
     stop_event = asyncio.Event()
     worker_task: asyncio.Task | None = None
@@ -78,6 +84,7 @@ async def lifespan(_: FastAPI):
         with suppress(asyncio.CancelledError):
             await worker_task
 
+    await close_event_publisher()
     await engine.dispose()
 
 

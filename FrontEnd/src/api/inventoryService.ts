@@ -1,4 +1,5 @@
 import { ApiError, buildUsersApiUrl } from './usersService'
+import { controlledFetch } from './fetchControl'
 
 export type InventoryMetaSupplier = {
   id: string
@@ -247,15 +248,22 @@ const requestInventoryJson = async <T>(
   init: RequestInit = {},
   token?: string,
   params?: Record<string, string | number | boolean | undefined>,
+  fetchOptions?: {
+    dedupe?: boolean
+    dedupeKey?: string
+    getCacheMs?: number
+    retryOn429?: boolean
+    max429Retries?: number
+  },
 ): Promise<T> => {
   const headers = new Headers(init.headers)
   if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json')
   if (token) headers.set('Authorization', `Bearer ${token}`)
 
-  const response = await fetch(buildUsersApiUrl(path, params), {
+  const response = await controlledFetch(buildUsersApiUrl(path, params), {
     ...init,
     headers,
-  })
+  }, fetchOptions)
 
   const contentType = response.headers.get('content-type') ?? ''
   const isJson = contentType.includes('application/json')
@@ -360,7 +368,13 @@ export const inventoryApi = {
     ),
 
   getStockSummary: (token?: string) =>
-    requestInventoryJson<InventoryStockSummary[]>('/inventory/stock/summary', { method: 'GET' }, token),
+    requestInventoryJson<InventoryStockSummary[]>(
+      '/inventory/stock/summary',
+      { method: 'GET' },
+      token,
+      undefined,
+      { getCacheMs: 4000, max429Retries: 2 },
+    ),
 
   getStockDrugDetail: (drugId: string, token?: string) =>
     requestInventoryJson<InventoryStockDrugDetail>(

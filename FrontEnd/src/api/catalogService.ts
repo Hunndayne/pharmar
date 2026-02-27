@@ -92,6 +92,32 @@ export type ProductDetailItem = {
   updated_at: string
 }
 
+export type DrugReferenceUnitHint = {
+  single_unit: boolean
+  has_intermediate: boolean
+  import_unit_name: string | null
+  import_conversion: number | null
+  intermediate_unit_name: string | null
+  intermediate_conversion: number | null
+  retail_unit_name: string
+  retail_conversion: number
+}
+
+export type DrugReferenceItem = {
+  registration_number: string
+  name: string
+  active_ingredient: string | null
+  strength: string | null
+  dosage_form: string | null
+  packaging: string | null
+  manufacturer: string | null
+  manufacturer_country: string | null
+  registrant: string | null
+  instruction_url: string | null
+  is_otc: boolean
+  unit_hint: DrugReferenceUnitHint | null
+}
+
 export type SupplierItem = {
   id: string
   code: string
@@ -127,6 +153,12 @@ export type SupplierDebtResponse = {
   supplier_name: string
   current_debt: string | number
   history: CatalogPageResponse<SupplierDebtHistoryItem>
+}
+
+export type MasterDataImportResult = {
+  imported: number
+  failed: number
+  errors: string[]
 }
 
 type ListManufacturersParams = {
@@ -315,6 +347,56 @@ const requestCatalogJson = async <T>(
   return payload as T
 }
 
+const requestCatalogBlob = async (
+  path: string,
+  token: string,
+  params?: Record<string, string | number | boolean | undefined>,
+) => {
+  const response = await fetch(buildUsersApiUrl(path, params), {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  })
+
+  if (!response.ok) {
+    const contentType = response.headers.get('content-type') ?? ''
+    const payload = contentType.includes('application/json') ? await response.json() : null
+    const detail = payload?.detail ?? payload?.message ?? `Request failed (${response.status})`
+    throw new ApiError(detail, response.status)
+  }
+
+  return response.blob()
+}
+
+const uploadCatalogFile = async <T>(
+  path: string,
+  token: string,
+  file: File,
+) => {
+  const form = new FormData()
+  form.append('file', file)
+
+  const response = await fetch(buildUsersApiUrl(path), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: form,
+  })
+
+  const contentType = response.headers.get('content-type') ?? ''
+  const isJson = contentType.includes('application/json')
+  const payload = isJson ? await response.json() : null
+
+  if (!response.ok) {
+    const detail = payload?.detail ?? payload?.message ?? `Request failed (${response.status})`
+    throw new ApiError(detail, response.status)
+  }
+
+  return payload as T
+}
+
 export const catalogApi = {
   listDrugGroups: (token: string, params?: ListDrugGroupsParams) =>
     requestCatalogJson<CatalogPageResponse<DrugGroupItem>>(
@@ -400,6 +482,12 @@ export const catalogApi = {
       { method: 'DELETE' },
     ),
 
+  exportManufacturers: (token: string) =>
+    requestCatalogBlob('/catalog/manufacturers/export', token),
+
+  importManufacturers: (token: string, file: File) =>
+    uploadCatalogFile<MasterDataImportResult>('/catalog/manufacturers/import', token, file),
+
   listSuppliers: (token: string, params?: ListSuppliersParams) =>
     requestCatalogJson<CatalogPageResponse<SupplierItem>>(
       '/catalog/suppliers',
@@ -442,6 +530,12 @@ export const catalogApi = {
       { method: 'DELETE' },
     ),
 
+  exportSuppliers: (token: string) =>
+    requestCatalogBlob('/catalog/suppliers/export', token),
+
+  importSuppliers: (token: string, file: File) =>
+    uploadCatalogFile<MasterDataImportResult>('/catalog/suppliers/import', token, file),
+
   getSupplierDebt: (token: string, supplierId: string, params?: { page?: number; size?: number }) =>
     requestCatalogJson<SupplierDebtResponse>(
       `/catalog/suppliers/${supplierId}/debt`,
@@ -463,6 +557,29 @@ export const catalogApi = {
   listProducts: (token: string, params?: ListProductsParams) =>
     requestCatalogJson<CatalogPageResponse<ProductListItem>>(
       '/catalog/products',
+      token,
+      { method: 'GET' },
+      params,
+    ),
+
+  searchDrugReferences: (
+    token: string,
+    params: { q: string; limit?: number; otc_only?: boolean },
+  ) =>
+    requestCatalogJson<DrugReferenceItem[]>(
+      '/catalog/reference/drugs/search',
+      token,
+      { method: 'GET' },
+      params,
+    ),
+
+  getDrugReferenceByRegistration: (
+    token: string,
+    registrationNumber: string,
+    params?: { otc_only?: boolean },
+  ) =>
+    requestCatalogJson<DrugReferenceItem>(
+      `/catalog/reference/drugs/registration/${encodeURIComponent(registrationNumber)}`,
       token,
       { method: 'GET' },
       params,

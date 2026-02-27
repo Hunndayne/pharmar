@@ -1,4 +1,5 @@
 import { ApiError } from './usersService'
+import { controlledFetch } from './fetchControl'
 
 export type StoreInfo = {
   id: string
@@ -150,15 +151,22 @@ const requestStoreJson = async <T>(
   init: RequestInit = {},
   token?: string,
   params?: Record<string, string | number | boolean | undefined>,
+  fetchOptions?: {
+    dedupe?: boolean
+    dedupeKey?: string
+    getCacheMs?: number
+    retryOn429?: boolean
+    max429Retries?: number
+  },
 ): Promise<T> => {
   const headers = new Headers(init.headers)
   if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json')
   if (token) headers.set('Authorization', `Bearer ${token}`)
 
-  const response = await fetch(buildStoreApiUrl(path, params), {
+  const response = await controlledFetch(buildStoreApiUrl(path, params), {
     ...init,
     headers,
-  })
+  }, fetchOptions)
 
   const contentType = response.headers.get('content-type') ?? ''
   const isJson = contentType.includes('application/json')
@@ -175,7 +183,11 @@ const requestStoreJson = async <T>(
 export const storeApi = {
   health: () => requestStoreJson<{ service: string; status: string }>('/health', { method: 'GET' }),
 
-  getInfo: () => requestStoreJson<StoreInfo>('/info', { method: 'GET' }),
+  getInfo: () =>
+    requestStoreJson<StoreInfo>('/info', { method: 'GET' }, undefined, undefined, {
+      getCacheMs: 10000,
+      max429Retries: 2,
+    }),
 
   updateInfo: (token: string, payload: UpdateStoreInfoPayload) =>
     requestStoreJson<{ message: string; data: StoreInfo }>(

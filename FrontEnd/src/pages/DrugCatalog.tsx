@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import Quagga from '@ericblade/quagga2'
 import {
   catalogApi,
+  type DrugReferenceItem,
   type DrugGroupItem,
   type ManufacturerItem,
   type ProductDetailItem,
@@ -363,6 +364,151 @@ const normalizeGroupKey = (value: string) => value.trim().toLocaleLowerCase('vi-
 const loadDrugFormDraft = (): Partial<FormState> | null =>
   readLocalDraft<Partial<FormState>>(DRUG_FORM_DRAFT_STORAGE_KEY)
 
+const normalizeMatchText = (value: string) =>
+  value
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const normalizeCompanyKey = (value: string) => {
+  const text = normalizeMatchText(value)
+  if (!text) return ''
+  const stopWords = new Set([
+    'cong',
+    'ty',
+    'co',
+    'phan',
+    'trach',
+    'nhiem',
+    'huu',
+    'han',
+    'tnhh',
+    'mtv',
+    'cp',
+    'duoc',
+    'pham',
+  ])
+  return text
+    .split(' ')
+    .filter((token) => token && !stopWords.has(token))
+    .join(' ')
+}
+
+const findBestMakerId = (rawName: string, makers: ManufacturerItem[]) => {
+  const source = rawName.trim()
+  if (!source) return ''
+  const sourceKey = normalizeMatchText(source)
+  const sourceCompanyKey = normalizeCompanyKey(source)
+  if (!sourceKey) return ''
+
+  const exact = makers.find((item) => normalizeMatchText(item.name) === sourceKey)
+  if (exact) return exact.id
+
+  if (sourceCompanyKey) {
+    const companyExact = makers.find((item) => normalizeCompanyKey(item.name) === sourceCompanyKey)
+    if (companyExact) return companyExact.id
+  }
+
+  const partial = makers.find((item) => {
+    const nameKey = normalizeMatchText(item.name)
+    if (nameKey.includes(sourceKey) || sourceKey.includes(nameKey)) return true
+    if (!sourceCompanyKey) return false
+    const companyKey = normalizeCompanyKey(item.name)
+    return Boolean(companyKey) && (companyKey.includes(sourceCompanyKey) || sourceCompanyKey.includes(companyKey))
+  })
+  return partial?.id ?? ''
+}
+
+const combineActiveIngredientText = (activeIngredient: string | null, strength: string | null) => {
+  const ingredient = (activeIngredient ?? '').trim()
+  const dose = (strength ?? '').trim()
+  if (!ingredient) return dose
+  if (!dose) return ingredient
+  return ingredient.toLocaleLowerCase('vi-VN').includes(dose.toLocaleLowerCase('vi-VN'))
+    ? ingredient
+    : `${ingredient} ${dose}`
+}
+
+const applyReferenceUnitHintToForm = (
+  prev: FormState,
+  unitHint: DrugReferenceItem['unit_hint'],
+): FormState => {
+  if (!unitHint) return prev
+
+  const retailName = unitHint.retail_unit_name?.trim() || prev.retailUnit.name
+
+  if (unitHint.single_unit) {
+    return {
+      ...prev,
+      singleUnit: true,
+      hasIntermediate: false,
+      retailUnit: {
+        ...prev.retailUnit,
+        name: retailName,
+        conversion: '1',
+      },
+    }
+  }
+
+  const importName = unitHint.import_unit_name?.trim() || prev.importUnit.name
+  const importConversion = Math.max(1, Number(unitHint.import_conversion ?? 1))
+
+  if (unitHint.has_intermediate) {
+    const intermediateName = unitHint.intermediate_unit_name?.trim() || prev.intermediateUnit.name
+    const intermediateConversion = Math.max(1, Number(unitHint.intermediate_conversion ?? 1))
+    return {
+      ...prev,
+      singleUnit: false,
+      hasIntermediate: true,
+      importUnit: {
+        ...prev.importUnit,
+        name: importName,
+        conversion: importConversion.toString(),
+      },
+      intermediateUnit: {
+        ...prev.intermediateUnit,
+        name: intermediateName,
+        conversion: intermediateConversion.toString(),
+      },
+      retailUnit: {
+        ...prev.retailUnit,
+        name: retailName,
+        conversion: '1',
+      },
+    }
+  }
+
+  return {
+    ...prev,
+    singleUnit: false,
+    hasIntermediate: false,
+    importUnit: {
+      ...prev.importUnit,
+      name: importName,
+      conversion: importConversion.toString(),
+    },
+    retailUnit: {
+      ...prev.retailUnit,
+      name: retailName,
+      conversion: '1',
+    },
+  }
+}
+
+const buildReferenceNote = (reference: DrugReferenceItem) => {
+  const parts = [
+    reference.registration_number ? `SDK: ${reference.registration_number}` : '',
+    reference.manufacturer ? `NSX: ${reference.manufacturer}` : '',
+    reference.manufacturer_country ? `Nước SX: ${reference.manufacturer_country}` : '',
+  ].filter(Boolean)
+  return parts.length ? `Tham chiếu Bộ Y tế - ${parts.join(' | ')}` : ''
+}
+
 // ============================================================
 // Barcode Scanning Engine (Quagga2)
 //
@@ -467,8 +613,14 @@ export function DrugCatalog() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const [form, setForm] = useState<FormState>(emptyForm())
+  const [makerQuery, setMakerQuery] = useState('')
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [modalOpen, setModalOpen] = useState(false)
+  const [referenceQuery, setReferenceQuery] = useState('')
+  const [referenceResults, setReferenceResults] = useState<DrugReferenceItem[]>([])
+  const [referenceLoading, setReferenceLoading] = useState(false)
+  const [referenceError, setReferenceError] = useState<string | null>(null)
+  const [unitSectionTouched, setUnitSectionTouched] = useState(false)
   const [alert, setAlert] = useState<string | null>(null)
   const [importFile, setImportFile] = useState<string | null>(null)
   const [scanOpen, setScanOpen] = useState(false)
@@ -484,6 +636,7 @@ export function DrugCatalog() {
   const [scanEngine, setScanEngine] = useState<'quagga' | ''>('')
 
   const quaggaContainerRef = useRef<HTMLDivElement | null>(null)
+  const referenceSearchRequestRef = useRef(0)
   const scanTargetRef = useRef<ScanTarget>('search')
   const scanActiveRef = useRef(false)
   const scanStabilityRef = useRef<{ value: string; count: number; lastSeen: number } | null>(null)
@@ -524,9 +677,27 @@ export function DrugCatalog() {
         return allProducts
       }
 
-      const [groupPage, manufacturerPage, products, stockSummary] = await Promise.all([
+      const fetchAllManufacturers = async () => {
+        const allMakers: ManufacturerItem[] = []
+        let currentPage = 1
+        let totalPages = 1
+
+        while (currentPage <= totalPages) {
+          const pageResponse = await catalogApi.listManufacturers(accessToken, {
+            is_active: true,
+            page: currentPage,
+            size: 200,
+          })
+          allMakers.push(...pageResponse.items)
+          totalPages = Math.max(1, pageResponse.pages)
+          currentPage += 1
+        }
+        return allMakers
+      }
+
+      const [groupPage, allManufacturers, products, stockSummary] = await Promise.all([
         catalogApi.listDrugGroups(accessToken, { is_active: true, page: 1, size: 200 }),
-        catalogApi.listManufacturers(accessToken, { is_active: true, page: 1, size: 200 }),
+        fetchAllManufacturers(),
         fetchAllProducts(),
         inventoryApi.getStockSummary(accessToken).catch(() => []),
       ])
@@ -624,7 +795,11 @@ export function DrugCatalog() {
       )
       setGroupCategoryById(nextGroupCategoryById)
       setGroupTaxById(nextGroupTaxById)
-      setMakerOptions(manufacturerPage.items)
+      setMakerOptions(
+        allManufacturers
+          .slice()
+          .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN')),
+      )
       setInventoryStats({
         lowStock: stockSummary.filter(
           (item) => item.status === 'low_stock' || item.status === 'out_of_stock',
@@ -804,6 +979,27 @@ export function DrugCatalog() {
     return groupTaxById[form.groupId] ?? null
   }, [form.groupId, groupTaxById])
 
+  const selectedMakerName = useMemo(() => {
+    if (!form.makerId) return ''
+    return makerOptions.find((maker) => maker.id === form.makerId)?.name ?? ''
+  }, [form.makerId, makerOptions])
+
+  const resolveMakerIdByQuery = useCallback(
+    (query: string) => {
+      return findBestMakerId(query, makerOptions)
+    },
+    [makerOptions],
+  )
+
+  const handleMakerQueryChange = useCallback(
+    (value: string) => {
+      setMakerQuery(value)
+      const makerId = resolveMakerIdByQuery(value)
+      updateForm('makerId', makerId)
+    },
+    [resolveMakerIdByQuery],
+  )
+
   const handleGroupCategoryChange = (groupCategory: string) => {
     setForm((prev) => {
       const firstGroupId = groupOptions.find(
@@ -831,14 +1027,20 @@ export function DrugCatalog() {
       return
     }
     setErrors({})
+    setReferenceQuery('')
+    setReferenceResults([])
+    setReferenceError(null)
+    setUnitSectionTouched(false)
     const fallback = emptyForm('', makerOptions[0]?.id ?? '', '')
     const draft = loadDrugFormDraft()
     if (!draft) {
       setForm(fallback)
+      setMakerQuery(fallback.makerId ? (makerOptions.find((item) => item.id === fallback.makerId)?.name ?? '') : '')
+      setUnitSectionTouched(false)
       setModalOpen(true)
       return
     }
-    setForm({
+    const nextForm: FormState = {
       ...fallback,
       ...draft,
       id: undefined,
@@ -854,7 +1056,14 @@ export function DrugCatalog() {
         ...fallback.retailUnit,
         ...(draft.retailUnit ?? {}),
       },
-    })
+    }
+    setForm(nextForm)
+    setMakerQuery(
+      nextForm.makerId ? (makerOptions.find((item) => item.id === nextForm.makerId)?.name ?? '') : '',
+    )
+    // Chỉ đánh dấu "đã chạm đơn vị" khi người dùng sửa trong phiên hiện tại.
+    // Draft cũ không nên chặn auto-fill từ tra cứu Bộ Y tế.
+    setUnitSectionTouched(false)
     setModalOpen(true)
   }
 
@@ -864,6 +1073,10 @@ export function DrugCatalog() {
       return
     }
     setErrors({})
+    setReferenceQuery('')
+    setReferenceResults([])
+    setReferenceError(null)
+    setUnitSectionTouched(false)
     const unitForm = inferFormFromDrug(drug)
     setForm({
       id: drug.id,
@@ -882,6 +1095,7 @@ export function DrugCatalog() {
       active: drug.active,
       ...unitForm,
     })
+    setMakerQuery(drug.maker || '')
     setModalOpen(true)
   }
 
@@ -910,7 +1124,15 @@ export function DrugCatalog() {
     setForm((prev) => ({ ...prev, [field]: value }))
   }
 
-  const updateUnit = (scope: 'importUnit' | 'intermediateUnit' | 'retailUnit', field: keyof FormUnit, value: string) => {
+  const updateUnit = (
+    scope: 'importUnit' | 'intermediateUnit' | 'retailUnit',
+    field: keyof FormUnit,
+    value: string,
+    options?: { markTouched?: boolean },
+  ) => {
+    if (options?.markTouched !== false) {
+      setUnitSectionTouched(true)
+    }
     setForm((prev) => ({
       ...prev,
       [scope]: {
@@ -920,7 +1142,10 @@ export function DrugCatalog() {
     }))
   }
 
-  const updateSingleUnit = (next: boolean) => {
+  const updateSingleUnit = (next: boolean, options?: { markTouched?: boolean }) => {
+    if (options?.markTouched !== false) {
+      setUnitSectionTouched(true)
+    }
     setForm((prev) => ({
       ...prev,
       singleUnit: next,
@@ -932,7 +1157,10 @@ export function DrugCatalog() {
     }))
   }
 
-  const updateHasIntermediate = (next: boolean) => {
+  const updateHasIntermediate = (next: boolean, options?: { markTouched?: boolean }) => {
+    if (options?.markTouched !== false) {
+      setUnitSectionTouched(true)
+    }
     setForm((prev) => ({
       ...prev,
       hasIntermediate: next,
@@ -943,6 +1171,108 @@ export function DrugCatalog() {
     if (!modalOpen || Boolean(form.id)) return
     writeLocalDraft(DRUG_FORM_DRAFT_STORAGE_KEY, form)
   }, [form, modalOpen])
+
+  useEffect(() => {
+    if (modalOpen) return
+    setMakerQuery('')
+    setReferenceQuery('')
+    setReferenceResults([])
+    setReferenceError(null)
+    setReferenceLoading(false)
+    setUnitSectionTouched(false)
+  }, [modalOpen])
+
+  useEffect(() => {
+    if (!modalOpen) return
+    if (!form.makerId) return
+    if (makerQuery.trim()) return
+    if (!selectedMakerName) return
+    setMakerQuery(selectedMakerName)
+  }, [modalOpen, form.makerId, makerQuery, selectedMakerName])
+
+  useEffect(() => {
+    if (!modalOpen || !accessToken) return
+    const query = referenceQuery.trim()
+    if (query.length < 2) {
+      setReferenceResults([])
+      setReferenceLoading(false)
+      setReferenceError(null)
+      return
+    }
+
+    const requestId = referenceSearchRequestRef.current + 1
+    referenceSearchRequestRef.current = requestId
+    setReferenceLoading(true)
+    setReferenceError(null)
+
+    const timeoutId = window.setTimeout(() => {
+      void catalogApi
+        .searchDrugReferences(accessToken, { q: query, limit: 8 })
+        .then((items) => {
+          if (referenceSearchRequestRef.current !== requestId) return
+          setReferenceResults(items)
+        })
+        .catch((error: unknown) => {
+          if (referenceSearchRequestRef.current !== requestId) return
+          const message = getApiErrorMessage(error, 'Không thể tra cứu dữ liệu tham chiếu Bộ Y tế.')
+          setReferenceError(message)
+          setReferenceResults([])
+        })
+        .finally(() => {
+          if (referenceSearchRequestRef.current !== requestId) return
+          setReferenceLoading(false)
+        })
+    }, 280)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [modalOpen, accessToken, referenceQuery, getApiErrorMessage])
+
+  const applyReferenceSuggestion = useCallback(
+    (reference: DrugReferenceItem) => {
+      const referenceManufacturerName = (reference.manufacturer ?? '').trim()
+      const matchedMakerId = findBestMakerId(referenceManufacturerName, makerOptions)
+
+      setErrors((prev) => {
+        const next = { ...prev }
+        delete next.name
+        delete next.regNo
+        delete next.maker
+        delete next['retail-name']
+        delete next['import-name']
+        delete next['intermediate-name']
+        return next
+      })
+      setForm((prev) => {
+        const noteSuggestion = buildReferenceNote(reference)
+        const next: FormState = {
+          ...prev,
+          name: reference.name?.trim() || prev.name,
+          activeIngredient: combineActiveIngredientText(
+            reference.active_ingredient ?? null,
+            reference.strength ?? null,
+          ) || prev.activeIngredient,
+          regNo: reference.registration_number?.trim() || prev.regNo,
+          makerId: matchedMakerId,
+          note: prev.note.trim() ? prev.note : noteSuggestion || prev.note,
+        }
+        if (unitSectionTouched) {
+          return next
+        }
+        return applyReferenceUnitHintToForm(next, reference.unit_hint)
+      })
+      setMakerQuery(
+        matchedMakerId
+          ? (makerOptions.find((item) => item.id === matchedMakerId)?.name ?? referenceManufacturerName)
+          : '',
+      )
+      setReferenceQuery(`${reference.registration_number} - ${reference.name}`)
+      setReferenceResults([])
+      setReferenceError(null)
+    },
+    [makerOptions, unitSectionTouched],
+  )
 
   const validate = () => {
     const next: Record<string, string> = {}
@@ -1961,6 +2291,43 @@ export function DrugCatalog() {
             </div>
             <div className="flex-1 overflow-y-auto px-6 py-5">
               <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-2 text-sm text-ink-700 md:col-span-2">
+                  <span>Tra cứu tham chiếu Bộ Y tế</span>
+                  <input
+                    value={referenceQuery}
+                    onChange={(e) => setReferenceQuery(e.target.value)}
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    placeholder="Nhập số đăng ký hoặc tên thuốc"
+                  />
+                  {referenceLoading ? (
+                    <p className="text-xs text-ink-500">Đang tìm dữ liệu tham chiếu...</p>
+                  ) : null}
+                  {referenceError ? (
+                    <p className="text-xs text-coral-500">{referenceError}</p>
+                  ) : null}
+                  {referenceResults.length > 0 ? (
+                    <div className="max-h-56 overflow-y-auto rounded-2xl border border-ink-900/10 bg-white">
+                      {referenceResults.map((item) => (
+                        <button
+                          key={`${item.registration_number}-${item.name}`}
+                          type="button"
+                          onClick={() => applyReferenceSuggestion(item)}
+                          className="w-full border-b border-ink-900/5 px-4 py-2 text-left text-sm text-ink-800 last:border-b-0 hover:bg-fog-50"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-ink-900">{item.name}</span>
+                            {item.is_otc ? (
+                              <span className="rounded-full border border-brand-500/30 bg-brand-500/10 px-2 py-0.5 text-[10px] font-semibold text-brand-700">
+                                OTC
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="mt-1 text-xs text-ink-600">{item.registration_number}</p>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </label>
                 <label className="space-y-2 text-sm text-ink-700">
                   <span>Mã thuốc</span>
                   <div className="w-full rounded-2xl border border-ink-900/10 bg-fog-50 px-4 py-2 text-ink-700">
@@ -2018,10 +2385,23 @@ export function DrugCatalog() {
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">
                   <span>Hãng sản xuất *</span>
-                  <select value={form.makerId} onChange={(e) => updateForm('makerId', e.target.value)} className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2">
-                    <option value="">Chọn hãng sản xuất</option>
-                    {makerOptions.map((maker) => <option key={maker.id} value={maker.id}>{maker.name}</option>)}
-                  </select>
+                  <input
+                    value={makerQuery}
+                    onChange={(e) => handleMakerQueryChange(e.target.value)}
+                    list="drug-maker-options"
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    placeholder="Tìm hãng sản xuất..."
+                  />
+                  <datalist id="drug-maker-options">
+                    {makerOptions.map((maker) => (
+                      <option key={maker.id} value={maker.name} />
+                    ))}
+                  </datalist>
+                  {form.makerId ? (
+                    <p className="text-xs text-ink-500">Đã chọn: {selectedMakerName || makerQuery}</p>
+                  ) : makerQuery.trim() ? (
+                    <p className="text-xs text-amber-700">Không có trong danh mục hãng sản xuất. Vui lòng chọn công ty hợp lệ.</p>
+                  ) : null}
                   {errors.maker ? <span className="text-xs text-coral-500">{errors.maker}</span> : null}
                 </label>
                 <label className="space-y-2 text-sm text-ink-700">

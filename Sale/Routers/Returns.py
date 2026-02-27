@@ -17,6 +17,7 @@ from Source.dependencies import (
     oauth2_scheme,
     require_roles,
 )
+from Source.events import publish_sale_event
 from Source.sale import (
     clamp_return_quantity,
     customer_internal_post,
@@ -261,6 +262,24 @@ async def approve_return(
     return_doc.approved_at = now_utc()
 
     await db.commit()
+
+    await publish_sale_event(
+        event_type="sale.return.approved",
+        routing_key="sale.return.approved",
+        payload={
+            "return_id": str(return_doc.id),
+            "return_code": return_doc.code,
+            "invoice_id": str(invoice.id),
+            "invoice_code": invoice.code,
+            "customer_id": str(invoice.customer_id) if invoice.customer_id else None,
+            "customer_name": invoice.customer_name,
+            "status": return_doc.status,
+            "total_return_amount": float(return_doc.total_return_amount),
+            "refund_amount": float(return_doc.refund_amount),
+            "approved_at": return_doc.approved_at.isoformat() if return_doc.approved_at else None,
+            "approved_by": return_doc.approved_by,
+        },
+    )
 
     return {
         "message": "Return approved",

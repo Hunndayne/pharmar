@@ -6,11 +6,13 @@ from sqlalchemy import text
 
 from Routers.MasterData import router as master_data_router
 from Routers.Products import router as products_router
+from Routers.ReferenceDrugs import router as reference_drugs_router
 
 from .core.config import get_settings
 from .db import models  # noqa: F401
 from .db.base import Base
 from .db.models import SCHEMA_NAME
+from .reference_drug import drug_reference_store
 from .db.session import engine
 
 
@@ -57,6 +59,8 @@ async def lifespan(_: FastAPI):
             )
         )
 
+    drug_reference_store.warmup()
+
     yield
     await engine.dispose()
 
@@ -77,6 +81,7 @@ app.add_middleware(
 
 app.include_router(master_data_router, prefix="/api/v1")
 app.include_router(products_router, prefix="/api/v1")
+app.include_router(reference_drugs_router, prefix="/api/v1")
 
 
 @app.get("/", tags=["system"])

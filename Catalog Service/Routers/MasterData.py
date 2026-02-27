@@ -1,9 +1,12 @@
 from decimal import Decimal
+from io import BytesIO
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import StreamingResponse
+from openpyxl import Workbook, load_workbook
+from sqlalchemy import func, select
 
 from Source.catalog import (
     ensure_unique_code,
@@ -14,6 +17,7 @@ from Source.catalog import (
     normalize_code,
     normalize_optional_string,
     paginate_scalars,
+    parse_decimal,
     search_filter,
     to_supplier_debt_history,
 )
@@ -40,6 +44,7 @@ from Source.schemas.catalog import (
     SupplierDebtHistoryResponse,
     SupplierResponse,
     SupplierUpdateRequest,
+    ProductImportResult,
 )
 
 
@@ -48,6 +53,27 @@ router = APIRouter(prefix="/catalog", tags=["catalog-master-data"])
 AnyUser = Annotated[TokenUser, Depends(get_current_user)]
 ManagerOrOwner = Annotated[TokenUser, Depends(require_roles(ROLE_OWNER, ROLE_MANAGER))]
 OwnerOnly = Annotated[TokenUser, Depends(require_roles(ROLE_OWNER))]
+
+_XLSX_MAGIC = b"PK\x03\x04"
+_MAX_IMPORT_FILE_SIZE = 10 * 1024 * 1024
+
+
+def _parse_excel_bool(value: object, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    return text in {"1", "true", "yes", "y", "active", "đang hoạt động", "hoat dong", "x"}
+
+
+def _cell_value(row_values: tuple[object, ...], index_map: dict[str, int], key: str):
+    idx = index_map.get(key)
+    if idx is None or idx >= len(row_values):
+        return None
+    return row_values[idx]
 
 
 @router.get("/drug-groups", response_model=PageResponse[DrugGroupResponse])
@@ -176,7 +202,7 @@ async def list_manufacturers(
     )
 
 
-@router.get("/manufacturers/{manufacturer_id}", response_model=ManufacturerResponse)
+@router.get("/manufacturers/{manufacturer_id:uuid}", response_model=ManufacturerResponse)
 async def get_manufacturer(manufacturer_id: UUID, _: AnyUser, db: DbSession) -> ManufacturerResponse:
     item = await get_manufacturer_or_404(manufacturer_id, db)
     return ManufacturerResponse.model_validate(item)
@@ -205,7 +231,7 @@ async def create_manufacturer(
     return ManufacturerResponse.model_validate(item)
 
 
-@router.put("/manufacturers/{manufacturer_id}", response_model=ManufacturerResponse)
+@router.put("/manufacturers/{manufacturer_id:uuid}", response_model=ManufacturerResponse)
 async def update_manufacturer(
     manufacturer_id: UUID,
     payload: ManufacturerUpdateRequest,
@@ -238,7 +264,7 @@ async def update_manufacturer(
     return ManufacturerResponse.model_validate(item)
 
 
-@router.delete("/manufacturers/{manufacturer_id}")
+@router.delete("/manufacturers/{manufacturer_id:uuid}")
 async def delete_manufacturer(manufacturer_id: UUID, _: OwnerOnly, db: DbSession):
     item = await get_manufacturer_or_404(manufacturer_id, db)
     linked_product = await db.scalar(
@@ -256,6 +282,112 @@ async def delete_manufacturer(manufacturer_id: UUID, _: OwnerOnly, db: DbSession
     item.is_active = False
     await db.commit()
     return {"message": "Manufacturer deleted (soft delete)"}
+
+
+@router.get("/manufacturers/export")
+async def export_manufacturers(_: ManagerOrOwner, db: DbSession):
+    rows = list((await db.scalars(select(Manufacturer).order_by(Manufacturer.code.asc()))).all())
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Manufacturers"
+    sheet.append(["code", "name", "country", "address", "phone", "is_active"])
+    for item in rows:
+        sheet.append([item.code, item.name, item.country, item.address, item.phone, item.is_active])
+
+    stream = BytesIO()
+    workbook.save(stream)
+    stream.seek(0)
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=catalog_manufacturers.xlsx"},
+    )
+
+
+@router.post("/manufacturers/import", response_model=ProductImportResult)
+async def import_manufacturers(
+    _: ManagerOrOwner,
+    db: DbSession,
+    file: UploadFile = File(...),
+) -> ProductImportResult:
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".xlsx"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only .xlsx files are supported")
+
+    content = await file.read()
+    if len(content) > _MAX_IMPORT_FILE_SIZE:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File too large (max 10 MB)")
+    if len(content) < 4 or content[:4] != _XLSX_MAGIC:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid .xlsx file")
+
+    workbook = load_workbook(filename=BytesIO(content), data_only=True)
+    sheet = workbook.active
+    rows = list(sheet.iter_rows(values_only=True))
+    if not rows:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Excel file is empty")
+
+    headers = [str(cell).strip().lower() if cell is not None else "" for cell in rows[0]]
+    if "name" not in headers:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Header must include: name")
+    index_map = {name: idx for idx, name in enumerate(headers)}
+
+    imported = 0
+    errors: list[str] = []
+
+    for row_index, row_values in enumerate(rows[1:], start=2):
+        if row_values is None:
+            continue
+        name_raw = _cell_value(row_values, index_map, "name")
+        name = normalize_optional_string(str(name_raw) if name_raw is not None else None)
+        if not name:
+            continue
+
+        code_raw = _cell_value(row_values, index_map, "code")
+        code = normalize_code(str(code_raw) if code_raw is not None else None)
+        country = normalize_optional_string(str(_cell_value(row_values, index_map, "country") or ""))
+        address = normalize_optional_string(str(_cell_value(row_values, index_map, "address") or ""))
+        phone = normalize_optional_string(str(_cell_value(row_values, index_map, "phone") or ""))
+        is_active = _parse_excel_bool(_cell_value(row_values, index_map, "is_active"), default=True)
+
+        try:
+            existing = None
+            if code:
+                existing = await db.scalar(select(Manufacturer).where(Manufacturer.code == code))
+            if existing is None:
+                existing = await db.scalar(
+                    select(Manufacturer).where(func.lower(Manufacturer.name) == name.lower())
+                )
+
+            if existing is not None:
+                existing.name = name
+                existing.country = country
+                existing.address = address
+                existing.phone = phone
+                existing.is_active = is_active
+                await db.commit()
+                imported += 1
+                continue
+
+            final_code = code or await generate_next_code(db, Manufacturer, "MFG")
+            await ensure_unique_code(db, Manufacturer, final_code)
+
+            item = Manufacturer(
+                code=final_code,
+                name=name,
+                country=country,
+                address=address,
+                phone=phone,
+                is_active=is_active,
+            )
+            db.add(item)
+            await db.commit()
+            imported += 1
+        except Exception:
+            await db.rollback()
+            errors.append(f"Row {row_index}: failed to import manufacturer")
+
+    return ProductImportResult(imported=imported, failed=len(errors), errors=errors)
 
 
 @router.get("/suppliers", response_model=PageResponse[SupplierResponse])
@@ -282,7 +414,7 @@ async def list_suppliers(
     )
 
 
-@router.get("/suppliers/{supplier_id}", response_model=SupplierResponse)
+@router.get("/suppliers/{supplier_id:uuid}", response_model=SupplierResponse)
 async def get_supplier(supplier_id: UUID, _: AnyUser, db: DbSession) -> SupplierResponse:
     item = await get_supplier_or_404(supplier_id, db)
     return SupplierResponse.model_validate(item)
@@ -315,7 +447,7 @@ async def create_supplier(
     return SupplierResponse.model_validate(item)
 
 
-@router.put("/suppliers/{supplier_id}", response_model=SupplierResponse)
+@router.put("/suppliers/{supplier_id:uuid}", response_model=SupplierResponse)
 async def update_supplier(
     supplier_id: UUID,
     payload: SupplierUpdateRequest,
@@ -354,7 +486,7 @@ async def update_supplier(
     return SupplierResponse.model_validate(item)
 
 
-@router.delete("/suppliers/{supplier_id}")
+@router.delete("/suppliers/{supplier_id:uuid}")
 async def delete_supplier(supplier_id: UUID, _: OwnerOnly, db: DbSession):
     item = await get_supplier_or_404(supplier_id, db)
     linked_import = await db.scalar(
@@ -374,7 +506,163 @@ async def delete_supplier(supplier_id: UUID, _: OwnerOnly, db: DbSession):
     return {"message": "Supplier deleted (soft delete)"}
 
 
-@router.get("/suppliers/{supplier_id}/debt", response_model=SupplierDebtResponse)
+@router.get("/suppliers/export")
+async def export_suppliers(_: ManagerOrOwner, db: DbSession):
+    rows = list((await db.scalars(select(Supplier).order_by(Supplier.code.asc()))).all())
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Suppliers"
+    sheet.append(
+        [
+            "code",
+            "name",
+            "contact_person",
+            "phone",
+            "email",
+            "tax_code",
+            "address",
+            "note",
+            "current_debt",
+            "is_active",
+        ]
+    )
+    for item in rows:
+        sheet.append(
+            [
+                item.code,
+                item.name,
+                item.contact_person,
+                item.phone,
+                item.email,
+                item.tax_code,
+                item.address,
+                item.note,
+                float(item.current_debt),
+                item.is_active,
+            ]
+        )
+
+    stream = BytesIO()
+    workbook.save(stream)
+    stream.seek(0)
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=catalog_suppliers.xlsx"},
+    )
+
+
+@router.post("/suppliers/import", response_model=ProductImportResult)
+async def import_suppliers(
+    _: ManagerOrOwner,
+    db: DbSession,
+    file: UploadFile = File(...),
+) -> ProductImportResult:
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".xlsx"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only .xlsx files are supported")
+
+    content = await file.read()
+    if len(content) > _MAX_IMPORT_FILE_SIZE:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File too large (max 10 MB)")
+    if len(content) < 4 or content[:4] != _XLSX_MAGIC:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid .xlsx file")
+
+    workbook = load_workbook(filename=BytesIO(content), data_only=True)
+    sheet = workbook.active
+    rows = list(sheet.iter_rows(values_only=True))
+    if not rows:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Excel file is empty")
+
+    headers = [str(cell).strip().lower() if cell is not None else "" for cell in rows[0]]
+    required = {"name", "phone"}
+    if not required.issubset(set(headers)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Header must include: name, phone")
+    index_map = {name: idx for idx, name in enumerate(headers)}
+
+    imported = 0
+    errors: list[str] = []
+
+    for row_index, row_values in enumerate(rows[1:], start=2):
+        if row_values is None:
+            continue
+
+        name_raw = _cell_value(row_values, index_map, "name")
+        phone_raw = _cell_value(row_values, index_map, "phone")
+        name = normalize_optional_string(str(name_raw) if name_raw is not None else None)
+        phone = normalize_optional_string(str(phone_raw) if phone_raw is not None else None)
+        if not name:
+            continue
+        if not phone:
+            errors.append(f"Row {row_index}: phone is required")
+            continue
+
+        code_raw = _cell_value(row_values, index_map, "code")
+        code = normalize_code(str(code_raw) if code_raw is not None else None)
+        contact_person = normalize_optional_string(str(_cell_value(row_values, index_map, "contact_person") or ""))
+        email = normalize_optional_string(str(_cell_value(row_values, index_map, "email") or ""))
+        tax_code = normalize_optional_string(str(_cell_value(row_values, index_map, "tax_code") or ""))
+        address = normalize_optional_string(str(_cell_value(row_values, index_map, "address") or ""))
+        note = normalize_optional_string(str(_cell_value(row_values, index_map, "note") or ""))
+        is_active = _parse_excel_bool(_cell_value(row_values, index_map, "is_active"), default=True)
+        current_debt_raw = _cell_value(row_values, index_map, "current_debt")
+        current_debt = parse_decimal(current_debt_raw, Decimal("0.00"))
+        if current_debt < 0:
+            errors.append(f"Row {row_index}: current_debt must be >= 0")
+            continue
+
+        try:
+            existing = None
+            if code:
+                existing = await db.scalar(select(Supplier).where(Supplier.code == code))
+            if existing is None:
+                existing = await db.scalar(
+                    select(Supplier).where(
+                        func.lower(Supplier.name) == name.lower(),
+                        Supplier.phone == phone,
+                    )
+                )
+
+            if existing is not None:
+                existing.name = name
+                existing.phone = phone
+                existing.address = address
+                existing.email = email
+                existing.tax_code = tax_code
+                existing.contact_person = contact_person
+                existing.note = note
+                existing.current_debt = current_debt
+                existing.is_active = is_active
+                await db.commit()
+                imported += 1
+                continue
+
+            final_code = code or await generate_next_code(db, Supplier, "SUP")
+            await ensure_unique_code(db, Supplier, final_code)
+            item = Supplier(
+                code=final_code,
+                name=name,
+                address=address,
+                phone=phone,
+                email=email,
+                tax_code=tax_code,
+                contact_person=contact_person,
+                current_debt=current_debt,
+                is_active=is_active,
+                note=note,
+            )
+            db.add(item)
+            await db.commit()
+            imported += 1
+        except Exception:
+            await db.rollback()
+            errors.append(f"Row {row_index}: failed to import supplier")
+
+    return ProductImportResult(imported=imported, failed=len(errors), errors=errors)
+
+
+@router.get("/suppliers/{supplier_id:uuid}/debt", response_model=SupplierDebtResponse)
 async def get_supplier_debt(
     supplier_id: UUID,
     _: ManagerOrOwner,
@@ -406,7 +694,7 @@ async def get_supplier_debt(
     )
 
 
-@router.post("/suppliers/{supplier_id}/debt/payment")
+@router.post("/suppliers/{supplier_id:uuid}/debt/payment")
 async def pay_supplier_debt(
     supplier_id: UUID,
     payload: SupplierDebtPaymentRequest,
@@ -447,4 +735,3 @@ async def pay_supplier_debt(
         "current_debt": supplier.current_debt,
         "entry": to_supplier_debt_history(history).model_dump(),
     }
-

@@ -30,6 +30,14 @@ const emptyForm: ManufacturerForm = {
 const pageSize = 10
 const MANUFACTURER_FORM_DRAFT_STORAGE_KEY = 'pharmar.manufacturers.form.draft.v1'
 
+const downloadBlob = (filename: string, blob: Blob) => {
+  const link = document.createElement('a')
+  link.href = URL.createObjectURL(blob)
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(link.href)
+}
+
 export function Manufacturers() {
   const { token, user } = useAuth()
   const accessToken = token?.access_token ?? ''
@@ -40,6 +48,9 @@ export function Manufacturers() {
   const [rows, setRows] = useState<ManufacturerItem[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [exporting, setExporting] = useState(false)
 
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
@@ -103,6 +114,7 @@ export function Manufacturers() {
   }, [loadRows])
 
   const openCreate = () => {
+    setNotice(null)
     setModalMode('create')
     setForm(loadCreateDraft())
     setFormError(null)
@@ -113,6 +125,7 @@ export function Manufacturers() {
     if (!accessToken) return
 
     setModalMode('edit')
+    setNotice(null)
     setFormError(null)
     setModalOpen(true)
     setDetailLoading(true)
@@ -156,6 +169,7 @@ export function Manufacturers() {
 
     setFormSubmitting(true)
     setFormError(null)
+    setNotice(null)
 
     try {
       const payload = {
@@ -190,10 +204,53 @@ export function Manufacturers() {
 
     try {
       await catalogApi.deleteManufacturer(accessToken, item.id)
+      setNotice('Đã xóa nhà sản xuất.')
       await loadRows()
     } catch (deleteError) {
       if (deleteError instanceof ApiError) setError(deleteError.message)
       else setError('Không thể xóa nhà sản xuất.')
+    }
+  }
+
+  const handleExportExcel = async () => {
+    if (!accessToken || !canManage || exporting) return
+    setExporting(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const blob = await catalogApi.exportManufacturers(accessToken)
+      downloadBlob('nha-san-xuat.xlsx', blob)
+      setNotice('Đã xuất file Excel nhà sản xuất.')
+    } catch (exportError) {
+      if (exportError instanceof ApiError) setError(exportError.message)
+      else setError('Không thể xuất Excel nhà sản xuất.')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const handleImportExcel = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.currentTarget.value = ''
+    if (!file) return
+    if (!accessToken || !canManage || importing) return
+
+    setImporting(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await catalogApi.importManufacturers(accessToken, file)
+      const errorPreview = result.errors.slice(0, 3).join(' | ')
+      setNotice(`Đã nhập ${result.imported} dòng, lỗi ${result.failed} dòng.`)
+      if (result.failed > 0 && errorPreview) {
+        setError(`Chi tiết lỗi: ${errorPreview}`)
+      }
+      await loadRows()
+    } catch (importError) {
+      if (importError instanceof ApiError) setError(importError.message)
+      else setError('Không thể nhập Excel nhà sản xuất.')
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -219,19 +276,40 @@ export function Manufacturers() {
           <h2 className="mt-2 text-3xl font-semibold text-ink-900">Nhà sản xuất</h2>
           <p className="mt-2 text-sm text-ink-600">Quản lý hồ sơ công ty sản xuất thuốc.</p>
         </div>
-        <button
-          type="button"
-          onClick={openCreate}
-          disabled={!canManage}
-          className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift disabled:opacity-60"
-        >
-          Thêm NSX
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="cursor-pointer rounded-full border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900">
+            {importing ? 'Đang nhập...' : 'Import Excel'}
+            <input
+              type="file"
+              className="hidden"
+              accept=".xlsx"
+              disabled={!canManage || importing}
+              onChange={(event) => void handleImportExcel(event)}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => void handleExportExcel()}
+            disabled={!canManage || exporting}
+            className="rounded-full border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
+          >
+            {exporting ? 'Đang xuất...' : 'Export Excel'}
+          </button>
+          <button
+            type="button"
+            onClick={openCreate}
+            disabled={!canManage}
+            className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift disabled:opacity-60"
+          >
+            Thêm NSX
+          </button>
+        </div>
       </header>
 
       {!canManage ? (
         <p className="text-sm text-amber-700">Bạn chỉ có quyền xem danh sách nhà sản xuất.</p>
       ) : null}
+      {notice ? <p className="text-sm text-brand-700">{notice}</p> : null}
 
       <section className="grid gap-4 sm:grid-cols-3">
         <div className="glass-card rounded-3xl p-5">

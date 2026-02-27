@@ -1,3 +1,5 @@
+import { controlledFetch } from './fetchControl'
+
 export type UserRole = 'owner' | 'manager' | 'staff'
 
 export type UserProfile = {
@@ -134,15 +136,22 @@ const requestJson = async <T>(
   init: RequestInit = {},
   token?: string,
   params?: Record<string, string | number | boolean | undefined>,
+  fetchOptions?: {
+    dedupe?: boolean
+    dedupeKey?: string
+    getCacheMs?: number
+    retryOn429?: boolean
+    max429Retries?: number
+  },
 ): Promise<T> => {
   const headers = new Headers(init.headers)
   if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json')
   if (token) headers.set('Authorization', `Bearer ${token}`)
 
-  const response = await fetch(buildUsersApiUrl(path, params), {
+  const response = await controlledFetch(buildUsersApiUrl(path, params), {
     ...init,
     headers,
-  })
+  }, fetchOptions)
 
   const contentType = response.headers.get('content-type') ?? ''
   const isJson = contentType.includes('application/json')
@@ -175,7 +184,11 @@ export const usersApi = {
       body: JSON.stringify({ username, password }),
     }),
 
-  me: (token: string) => requestJson<UserProfile>('/auth/me', { method: 'GET' }, token),
+  me: (token: string) =>
+    requestJson<UserProfile>('/auth/me', { method: 'GET' }, token, undefined, {
+      getCacheMs: 3000,
+      max429Retries: 2,
+    }),
 
   logout: (token: string, refreshToken?: string | null) =>
     requestJson<void>(
@@ -188,10 +201,21 @@ export const usersApi = {
     ),
 
   refresh: (refreshToken: string) =>
-    requestJson<AuthToken>('/auth/refresh', {
-      method: 'POST',
-      body: JSON.stringify({ refresh_token: refreshToken }),
-    }),
+    requestJson<AuthToken>(
+      '/auth/refresh',
+      {
+        method: 'POST',
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      },
+      undefined,
+      undefined,
+      {
+        dedupe: true,
+        dedupeKey: `POST::/auth/refresh::${refreshToken}`,
+        retryOn429: true,
+        max429Retries: 2,
+      },
+    ),
 
   changePassword: (token: string, payload: ChangePasswordPayload) =>
     requestJson<{ message: string }>(

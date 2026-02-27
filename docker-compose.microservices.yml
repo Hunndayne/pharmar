@@ -35,8 +35,14 @@
   redis:
     image: redis:7-alpine
     container_name: pharmar-redis
-    ports:
-      - "6379:6379"
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: pharmar-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    restart: unless-stopped
 
   users-service:
     build:
@@ -108,6 +114,9 @@
       ENABLE_HELD_ORDER_CLEANUP_JOB: ${ENABLE_HELD_ORDER_CLEANUP_JOB:-true}
       REQUIRE_SHIFT_FOR_SALE: ${REQUIRE_SHIFT_FOR_SALE:-false}
       DEFAULT_COMMISSION_RATE: ${DEFAULT_COMMISSION_RATE:-1.5}
+      RABBITMQ_ENABLED: ${RABBITMQ_ENABLED:-true}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-pharmar.events}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
     ports:
       - "8003:8003"
@@ -126,6 +135,8 @@
         condition: service_started
       customer-service:
         condition: service_started
+      rabbitmq:
+        condition: service_started
     restart: unless-stopped
 
   report-service:
@@ -135,10 +146,17 @@
     container_name: pharmar-report-service
     environment:
       REDIS_URL: redis://redis:6379/0
+      RABBITMQ_ENABLED: ${RABBITMQ_ENABLED:-true}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-pharmar.events}
+      RABBITMQ_QUEUE: ${REPORT_RABBITMQ_QUEUE:-report.sale.events}
+      RABBITMQ_ROUTING_KEYS: ${REPORT_RABBITMQ_ROUTING_KEYS:-sale.invoice.created,sale.invoice.cancelled,sale.return.approved}
     ports:
       - "8004:8004"
     depends_on:
       redis:
+        condition: service_started
+      rabbitmq:
         condition: service_started
     restart: unless-stopped
 
@@ -297,6 +315,8 @@
       CATALOG_SERVICE_URL: http://catalog-service:8006
       CUSTOMER_SERVICE_URL: http://customer-service:8007
       PAYMENT_QR_SERVICE_URL: http://payment-qr-service:8008
+      RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-1200}
+      AUTH_RATE_LIMIT_RPM: ${AUTH_RATE_LIMIT_RPM:-120}
       FILE_SERVICE_URL: http://file-service:8009
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
     ports:

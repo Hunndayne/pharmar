@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { inventoryApi } from '../api/inventoryService'
 import {
   saleApi,
@@ -30,6 +30,7 @@ const MAX_REPORT_PAGES = 25
 const PAGE_SIZE = 200
 const MAX_INVOICES_FOR_TOP = 80
 const DETAIL_CHUNK_SIZE = 10
+const DASHBOARD_AUTO_REFRESH_GAP_MS = 15000
 
 const toNumber = (value: string | number | null | undefined) => {
   const parsed = Number(value)
@@ -71,6 +72,8 @@ const getErrorMessage = (error: unknown, fallback: string) => {
 
 export function Dashboard() {
   const { token } = useAuth()
+  const lastLoadedAtRef = useRef(0)
+  const inFlightRef = useRef(false)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -145,13 +148,21 @@ export function Dashboard() {
     [],
   )
 
-  const loadDashboard = useCallback(async () => {
+  const loadDashboard = useCallback(async (options?: { force?: boolean }) => {
+    const force = Boolean(options?.force)
+    if (!force) {
+      if (inFlightRef.current) return
+      if (kpis.length > 0 && Date.now() - lastLoadedAtRef.current < DASHBOARD_AUTO_REFRESH_GAP_MS) {
+        return
+      }
+    }
     const accessToken = token?.access_token
     if (!accessToken) {
       setError('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.')
       return
     }
 
+    inFlightRef.current = true
     setLoading(true)
     setError(null)
 
@@ -229,15 +240,17 @@ export function Dashboard() {
       setTopProducts(top)
 
       setUpdatedAt(new Date().toLocaleString('vi-VN'))
+      lastLoadedAtRef.current = Date.now()
     } catch (dashboardError) {
       setError(getErrorMessage(dashboardError, 'Không thể tải dữ liệu dashboard.'))
     } finally {
+      inFlightRef.current = false
       setLoading(false)
     }
-  }, [buildTopProducts, fetchInvoicesByRange, token?.access_token])
+  }, [buildTopProducts, fetchInvoicesByRange, kpis.length, token?.access_token])
 
   useEffect(() => {
-    void loadDashboard()
+    void loadDashboard({ force: true })
   }, [loadDashboard])
 
   const maxTrendAmount = useMemo(
@@ -256,7 +269,7 @@ export function Dashboard() {
         <button
           type="button"
           onClick={() => {
-            void loadDashboard()
+            void loadDashboard({ force: true })
           }}
           className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900"
           disabled={loading}
