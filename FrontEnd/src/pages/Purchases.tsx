@@ -1169,7 +1169,7 @@ export function Purchases() {
 
   const drugMap = useMemo(() => new Map(drugOptions.map((drug) => [drug.id, drug])), [drugOptions])
 
-  const formatDrugOptionLabel = useCallback((drug: Drug) => `${drug.code} - ${drug.name}`, [])
+  const normalizeDrugName = useCallback((value: string) => value.trim().toLocaleLowerCase('vi-VN'), [])
 
   const buildLineDrugSearch = useCallback(
     (lines: LineItemForm[]) => {
@@ -1177,24 +1177,19 @@ export function Purchases() {
       lines.forEach((line) => {
         const selectedDrug = drugMap.get(line.drugId)
         if (selectedDrug) {
-          next[line.id] = formatDrugOptionLabel(selectedDrug)
+          next[line.id] = selectedDrug.name
         }
       })
       return next
     },
-    [drugMap, formatDrugOptionLabel],
+    [drugMap],
   )
 
   const getLineDrugOptions = useCallback(
     (lineId: string, selectedDrugId: string) => {
-      const keyword = (lineDrugSearch[lineId] ?? '').trim().toLowerCase()
+      const keyword = normalizeDrugName(lineDrugSearch[lineId] ?? '')
       const filtered = keyword
-        ? drugOptions.filter((item) =>
-            [item.code, item.name, item.regNo, item.barcode]
-              .join(' ')
-              .toLowerCase()
-              .includes(keyword),
-          )
+        ? drugOptions.filter((item) => normalizeDrugName(item.name).includes(keyword))
         : drugOptions
 
       if (!selectedDrugId) return filtered
@@ -1203,7 +1198,7 @@ export function Purchases() {
       const selected = drugOptions.find((item) => item.id === selectedDrugId)
       return selected ? [selected, ...filtered] : filtered
     },
-    [drugOptions, lineDrugSearch],
+    [drugOptions, lineDrugSearch, normalizeDrugName],
   )
 
   const barcodeIndex = useMemo(() => {
@@ -1505,11 +1500,40 @@ export function Purchases() {
     }))
   }
 
+  const handleLineDrugSearchChange = (lineId: string, value: string) => {
+    setLineDrugSearch((prev) => ({
+      ...prev,
+      [lineId]: value,
+    }))
+
+    const keyword = normalizeDrugName(value)
+    if (!keyword) {
+      setForm((prev) => ({
+        ...prev,
+        lines: prev.lines.map((line) =>
+          line.id === lineId
+            ? {
+                ...line,
+                drugId: '',
+                unitRetailPrices: [],
+              }
+            : line,
+        ),
+      }))
+      return
+    }
+
+    const matchedDrug = drugOptions.find((item) => normalizeDrugName(item.name) === keyword)
+    if (matchedDrug) {
+      handleDrugChange(lineId, matchedDrug.id)
+    }
+  }
+
   const handleDrugChange = (id: string, drugId: string) => {
     const drug = drugMap.get(drugId)
     setLineDrugSearch((prev) => ({
       ...prev,
-      [id]: drug ? formatDrugOptionLabel(drug) : '',
+      [id]: drug ? drug.name : '',
     }))
     setForm((prev) => ({
       ...prev,
@@ -3008,29 +3032,18 @@ export function Purchases() {
                           <label className="col-span-2 space-y-1 text-xs text-ink-600">
                             Thuốc *
                             <input
-                              value={lineDrugSearch[line.id] ?? ''}
-                              onChange={(event) =>
-                                setLineDrugSearch((prev) => ({
-                                  ...prev,
-                                  [line.id]: event.target.value,
-                                }))
-                              }
-                              className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
-                              placeholder="Tìm thuốc theo mã/tên/số đăng ký/barcode"
-                            />
-                            <select
                               ref={setFormFieldRef(`line-drug-${line.id}`)}
-                              value={line.drugId}
-                              onChange={(event) => handleDrugChange(line.id, event.target.value)}
+                              list={`line-drug-options-${line.id}`}
+                              value={lineDrugSearch[line.id] ?? ''}
+                              onChange={(event) => handleLineDrugSearchChange(line.id, event.target.value)}
                               className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
-                            >
-                              <option value="">Chọn thuốc</option>
-                              {lineDrugOptions.map((item) => (
-                                <option key={item.id} value={item.id}>
-                                  {formatDrugOptionLabel(item)}
-                                </option>
+                              placeholder="Tìm tên thuốc"
+                            />
+                            <datalist id={`line-drug-options-${line.id}`}>
+                              {lineDrugOptions.slice(0, 50).map((item) => (
+                                <option key={item.id} value={item.name} />
                               ))}
-                            </select>
+                            </datalist>
                             {(lineDrugSearch[line.id] ?? '').trim() && lineDrugOptions.length === 0 ? (
                               <span className="text-xs text-amber-700">Không tìm thấy thuốc phù hợp.</span>
                             ) : null}
