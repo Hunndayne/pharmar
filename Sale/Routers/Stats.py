@@ -18,15 +18,6 @@ AnyUser = Annotated[TokenUser, Depends(get_current_user)]
 ManagerOrOwner = Annotated[TokenUser, Depends(require_roles(ROLE_OWNER, ROLE_MANAGER))]
 
 
-def _period_filter(date_from: date | None, date_to: date | None):
-    conditions = []
-    if date_from is not None:
-        conditions.append(Invoice.created_at >= date_from)
-    if date_to is not None:
-        conditions.append(Invoice.created_at <= date_to)
-    return conditions
-
-
 def _collect_cashier_stats(invoices: list[Invoice]) -> list[dict]:
     grouped: dict[str, dict] = {}
     for invoice in invoices:

@@ -533,6 +533,10 @@ async def get_unit_by_barcode(barcode: str, _: AnyUser, db: DbSession) -> Barcod
     )
 
 
+_XLSX_MAGIC = b"PK\x03\x04"  # ZIP/XLSX magic bytes (first 4 bytes)
+_MAX_IMPORT_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
 @router.post("/products/import", response_model=ProductImportResult)
 async def import_products_from_excel(
     _: ManagerOrOwner,
@@ -541,9 +545,19 @@ async def import_products_from_excel(
 ) -> ProductImportResult:
     filename = (file.filename or "").lower()
     if not filename.endswith(".xlsx"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only .xlsx is supported")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only .xlsx files are supported")
 
     content = await file.read()
+
+    if len(content) > _MAX_IMPORT_FILE_SIZE:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File too large (max 10 MB)")
+
+    if len(content) < 4 or content[:4] != _XLSX_MAGIC:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file format. The uploaded file is not a valid .xlsx workbook.",
+        )
+
     workbook = load_workbook(filename=BytesIO(content), data_only=True)
     sheet = workbook.active
 
@@ -658,9 +672,9 @@ async def import_products_from_excel(
             db.add(unit)
             await db.commit()
             imported += 1
-        except Exception as exc:
+        except Exception:
             await db.rollback()
-            errors.append(f"Row {row_index}: {exc}")
+            errors.append(f"Row {row_index}: failed to import product (internal error)")
 
     return ProductImportResult(
         imported=imported,
