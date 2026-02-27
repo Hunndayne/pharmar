@@ -408,7 +408,7 @@ async def process_checkout(
 
 @router.get("/invoices", response_model=PageResponse[InvoiceListItemResponse])
 async def list_invoices(
-    _: AnyUser,
+    current_user: AnyUser,
     db: DbSession,
     status_value: str | None = Query(default=None, alias="status"),
     date_from: date | None = Query(default=None),
@@ -422,12 +422,16 @@ async def list_invoices(
     stmt = invoice_status_filter(stmt, status_value)
     stmt = invoice_search_filter(stmt, search)
 
+    # Staff can only view their own invoices; managers and owners see all.
+    if current_user.role not in {ROLE_OWNER, ROLE_MANAGER}:
+        stmt = stmt.where(Invoice.created_by == current_user.sub)
+    elif cashier_id is not None and cashier_id.strip():
+        stmt = stmt.where(Invoice.created_by == cashier_id.strip())
+
     if date_from is not None:
         stmt = stmt.where(func.date(Invoice.created_at) >= date_from)
     if date_to is not None:
         stmt = stmt.where(func.date(Invoice.created_at) <= date_to)
-    if cashier_id is not None and cashier_id.strip():
-        stmt = stmt.where(Invoice.created_by == cashier_id.strip())
 
     rows, meta = await paginate_scalars(db, stmt, page, size)
     return PageResponse[InvoiceListItemResponse](

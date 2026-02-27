@@ -46,6 +46,17 @@ class Settings(BaseSettings):
                     "Set a strong secret (>=32 chars) before running in production."
                 )
             logger.warning("WARNING: JWT_SECRET_KEY is using a weak/default value. Change before production deploy.")
+        _default_passwords = _WEAK_SECRETS | {"admin", "123456", "admin123"}
+        if self.DEFAULT_OWNER_PASSWORD in _default_passwords or len(self.DEFAULT_OWNER_PASSWORD) < 8:
+            if self.APP_ENV == "production":
+                raise RuntimeError(
+                    "DEFAULT_OWNER_PASSWORD is using a weak or default value. "
+                    "Set a strong password via DEFAULT_OWNER_PASSWORD env variable before production."
+                )
+            logger.warning(
+                "WARNING: DEFAULT_OWNER_PASSWORD is weak or default. "
+                "Change before production deploy."
+            )
 
     model_config = SettingsConfigDict(
         env_file=str(BASE_DIR / ".env"),

@@ -38,21 +38,57 @@ AnyUser = Annotated[TokenUser, Depends(get_current_user)]
 AccessToken = Annotated[str, Depends(oauth2_scheme)]
 
 
+def _safe_decimal(value: object, default: Decimal = Decimal("0")) -> Decimal:
+    try:
+        parsed = Decimal(str(value))
+        if not parsed.is_finite():
+            return default
+        return parsed
+    except Exception:
+        return default
+
+
+def _safe_positive_int(value: object, default: int = 1) -> int:
+    try:
+        result = int(value)  # type: ignore[arg-type]
+        return result if result > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _held_item_to_checkout_item(raw: dict) -> InvoiceCheckoutItemRequest:
+    product_id = str(raw.get("product_id") or "").strip()
+    unit_id = str(raw.get("unit_id") or "").strip()
+    batch_id = str(raw.get("batch_id") or "").strip()
+    quantity = _safe_positive_int(raw.get("quantity"), default=1)
+    unit_price = _safe_decimal(raw.get("unit_price"))
+    discount_amount = _safe_decimal(raw.get("discount_amount"))
+
+    if not product_id:
+        raise HTTPException(status_code=400, detail="Held order item missing product_id")
+    if not unit_id:
+        raise HTTPException(status_code=400, detail="Held order item missing unit_id")
+    if not batch_id:
+        raise HTTPException(status_code=400, detail="Held order item missing batch_id")
+    if unit_price < Decimal("0"):
+        raise HTTPException(status_code=400, detail="Held order item has negative unit_price")
+    if discount_amount < Decimal("0"):
+        raise HTTPException(status_code=400, detail="Held order item has negative discount_amount")
+
     return InvoiceCheckoutItemRequest(
-        sku=raw.get("sku") or raw.get("product_code") or raw.get("product_id"),
-        product_id=str(raw.get("product_id") or ""),
+        sku=raw.get("sku") or raw.get("product_code") or product_id,
+        product_id=product_id,
         product_code=raw.get("product_code"),
         product_name=raw.get("product_name"),
-        unit_id=str(raw.get("unit_id") or ""),
+        unit_id=unit_id,
         unit_name=raw.get("unit_name"),
-        conversion_rate=int(raw.get("conversion_rate") or 1),
-        batch_id=str(raw.get("batch_id") or ""),
+        conversion_rate=_safe_positive_int(raw.get("conversion_rate"), default=1),
+        batch_id=batch_id,
         lot_number=raw.get("lot_number"),
         expiry_date=raw.get("expiry_date"),
-        quantity=int(raw.get("quantity") or 0),
-        unit_price=Decimal(str(raw.get("unit_price") or 0)),
-        discount_amount=Decimal(str(raw.get("discount_amount") or 0)),
+        quantity=quantity,
+        unit_price=unit_price,
+        discount_amount=discount_amount,
     )
 
 
