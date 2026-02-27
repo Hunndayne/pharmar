@@ -55,7 +55,7 @@ async def get_login_history(
     username: str | None = Query(default=None),
     user_id: int | None = Query(default=None),
     success: bool | None = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=500),
+    limit: int = Query(default=50, ge=1, le=200),
 ) -> list[LoginHistoryResponse]:
     history = await list_login_history(
         db,

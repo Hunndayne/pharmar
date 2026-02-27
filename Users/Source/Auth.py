@@ -575,7 +575,7 @@ async def list_login_history(
     success: bool | None = None,
     limit: int = 100,
 ) -> list[LoginHistory]:
-    capped_limit = min(max(limit, 1), 500)
+    capped_limit = min(max(limit, 1), 200)
     query: Select[tuple[LoginHistory]] = select(LoginHistory)
 
     if username is not None and username.strip():

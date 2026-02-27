@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     ENABLE_HELD_ORDER_CLEANUP_JOB: bool = True
     HELD_ORDER_CLEANUP_INTERVAL_MINUTES: int = 5
 
-    REQUIRE_SHIFT_FOR_SALE: bool = False  # Shifts feature disabled; enable after re-activating the Shifts router
+    REQUIRE_SHIFT_FOR_SALE: bool = False  # Set True to require an open shift before creating invoices
 
     DEFAULT_COMMISSION_RATE: float = 1.5
 
