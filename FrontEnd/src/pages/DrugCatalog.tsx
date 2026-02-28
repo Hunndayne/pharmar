@@ -593,6 +593,7 @@ export function DrugCatalog() {
   const [drugs, setDrugs] = useState<Drug[]>(initialDrugs)
   const [groupOptions, setGroupOptions] = useState<DrugGroupItem[]>([])
   const [groupCategoryById, setGroupCategoryById] = useState<Record<string, string>>({})
+  const [groupIdsByCategory, setGroupIdsByCategory] = useState<Record<string, string[]>>({})
   const [groupTaxById, setGroupTaxById] = useState<
     Record<string, { vatRate: number; otherTaxRate: number }>
   >({})
@@ -705,11 +706,29 @@ export function DrugCatalog() {
       let resolvedGroups = groupPage.items
       const groupCategoryByName: Record<string, string> = {}
       const groupTaxByName: Record<string, { vatRate: number; otherTaxRate: number }> = {}
+      let storeCategories: Array<{
+        name: string
+        groups: Array<{
+          name: string
+          is_active: boolean
+          vat_rate: number | string
+          other_tax_rate: number | string
+        }>
+      }> = []
 
       try {
         const storeCategoryPage = await storeApi.listDrugCategories({
           include_inactive: false,
         })
+        storeCategories = storeCategoryPage.items.map((category) => ({
+          name: category.name.trim(),
+          groups: category.groups.map((group) => ({
+            name: group.name.trim(),
+            is_active: group.is_active,
+            vat_rate: group.vat_rate,
+            other_tax_rate: group.other_tax_rate,
+          })),
+        }))
 
         const catalogGroupByKey = new Map(
           resolvedGroups.map((group) => [normalizeGroupKey(group.name), group]),
@@ -787,6 +806,36 @@ export function DrugCatalog() {
         acc[group.id] = byName ?? { vatRate: 0, otherTaxRate: 0 }
         return acc
       }, {})
+      const catalogGroupByKey = new Map(
+        resolvedGroups.map((group) => [normalizeGroupKey(group.name), group]),
+      )
+      const nextGroupIdsByCategory: Record<string, string[]> = {}
+      for (const category of storeCategories) {
+        if (!category.name) continue
+        const uniqueIds = new Set<string>()
+        for (const group of category.groups) {
+          if (!group.is_active) continue
+          const normalizedGroupName = normalizeGroupKey(group.name)
+          const catalogGroup = catalogGroupByKey.get(normalizedGroupName)
+          if (!catalogGroup) continue
+          uniqueIds.add(catalogGroup.id)
+
+          // 1 group có thể xuất hiện ở nhiều category.
+          // Map này chỉ dùng fallback khi không có category được chọn.
+          if (!nextGroupCategoryById[catalogGroup.id]) {
+            nextGroupCategoryById[catalogGroup.id] = category.name
+          }
+          if (!nextGroupTaxById[catalogGroup.id]) {
+            nextGroupTaxById[catalogGroup.id] = {
+              vatRate: toPriceNumber(group.vat_rate),
+              otherTaxRate: toPriceNumber(group.other_tax_rate),
+            }
+          }
+        }
+        if (uniqueIds.size) {
+          nextGroupIdsByCategory[category.name] = Array.from(uniqueIds)
+        }
+      }
 
       setGroupOptions(
         resolvedGroups
@@ -794,6 +843,7 @@ export function DrugCatalog() {
           .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN')),
       )
       setGroupCategoryById(nextGroupCategoryById)
+      setGroupIdsByCategory(nextGroupIdsByCategory)
       setGroupTaxById(nextGroupTaxById)
       setMakerOptions(
         allManufacturers
@@ -950,29 +1000,39 @@ export function DrugCatalog() {
   ])
 
   const categoryOptions = useMemo(
-    () =>
-      Array.from(
+    () => {
+      const fromStore = Object.keys(groupIdsByCategory).filter(Boolean)
+      if (fromStore.length) {
+        return fromStore.sort((a, b) => a.localeCompare(b, 'vi-VN'))
+      }
+      return Array.from(
         new Set(
           groupOptions
             .map((group) => groupCategoryById[group.id] ?? '')
             .filter((name): name is string => Boolean(name && name !== '-')),
         ),
-      ).sort((a, b) => a.localeCompare(b, 'vi-VN')),
-    [groupOptions, groupCategoryById],
+      ).sort((a, b) => a.localeCompare(b, 'vi-VN'))
+    },
+    [groupIdsByCategory, groupOptions, groupCategoryById],
   )
 
   const filteredGroupOptions = useMemo(() => {
     if (!form.groupCategory) return groupOptions
-    return groupOptions.filter(
-      (group) => (groupCategoryById[group.id] ?? '-') === form.groupCategory,
-    )
-  }, [form.groupCategory, groupOptions, groupCategoryById])
+    const ids = groupIdsByCategory[form.groupCategory]
+    if (ids?.length) {
+      const idSet = new Set(ids)
+      return groupOptions.filter((group) => idSet.has(group.id))
+    }
+    return groupOptions.filter((group) => (groupCategoryById[group.id] ?? '-') === form.groupCategory)
+  }, [form.groupCategory, groupIdsByCategory, groupOptions, groupCategoryById])
 
   const selectedGroupCategory = useMemo(() => {
     if (form.groupCategory) return form.groupCategory
     if (!form.groupId) return '-'
+    const fromStore = Object.entries(groupIdsByCategory).find(([, ids]) => ids.includes(form.groupId))
+    if (fromStore?.[0]) return fromStore[0]
     return groupCategoryById[form.groupId] ?? '-'
-  }, [form.groupCategory, form.groupId, groupCategoryById])
+  }, [form.groupCategory, form.groupId, groupIdsByCategory, groupCategoryById])
 
   const selectedGroupTax = useMemo(() => {
     if (!form.groupId) return null
@@ -1002,9 +1062,9 @@ export function DrugCatalog() {
 
   const handleGroupCategoryChange = (groupCategory: string) => {
     setForm((prev) => {
-      const firstGroupId = groupOptions.find(
-        (group) => (groupCategoryById[group.id] ?? '-') === groupCategory,
-      )?.id
+      const preferredIds = groupIdsByCategory[groupCategory] ?? []
+      const firstGroupId = preferredIds[0] ??
+        groupOptions.find((group) => (groupCategoryById[group.id] ?? '-') === groupCategory)?.id
       return {
         ...prev,
         groupCategory,
