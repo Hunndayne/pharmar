@@ -6,6 +6,7 @@ import {
   type DrugGroupItem,
   type ManufacturerItem,
   type ProductDetailItem,
+  type ProductListItem,
   type ProductUnitItem,
 } from '../api/catalogService'
 import { inventoryApi } from '../api/inventoryService'
@@ -43,6 +44,7 @@ type Drug = {
   units: Unit[]
   active: boolean
   hasTransactions: boolean
+  detailLoaded: boolean
 }
 
 type FormUnit = {
@@ -288,6 +290,43 @@ const toUiUnitsFromProductUnits = (units: ProductUnitItem[]): Unit[] => {
   ]
 }
 
+const mergeManufacturerLists = (...groups: ManufacturerItem[][]) => {
+  const map = new Map<string, ManufacturerItem>()
+  for (const group of groups) {
+    for (const item of group) {
+      if (!item?.id) continue
+      if (!map.has(item.id)) {
+        map.set(item.id, item)
+      }
+    }
+  }
+  return Array.from(map.values())
+}
+
+const mapProductListItemToDrug = (item: ProductListItem): Drug => {
+  return {
+    id: item.id,
+    code: item.code,
+    name: item.name,
+    activeIngredient: item.active_ingredient ?? '',
+    regNo: item.registration_number ?? '',
+    category: '-',
+    vatRate: toPriceNumber(item.vat_rate),
+    otherTaxRate: toPriceNumber(item.other_tax_rate),
+    groupId: null,
+    group: item.group_name ?? '-',
+    makerId: null,
+    maker: item.manufacturer_name ?? '-',
+    barcode: item.barcode ?? '',
+    usage: '',
+    note: '',
+    units: [],
+    active: item.is_active,
+    hasTransactions: false,
+    detailLoaded: false,
+  }
+}
+
 const mapProductDetailToDrug = (item: ProductDetailItem): Drug => {
   const units = toUiUnitsFromProductUnits(item.units)
   return {
@@ -309,6 +348,7 @@ const mapProductDetailToDrug = (item: ProductDetailItem): Drug => {
     units,
     active: item.is_active,
     hasTransactions: false,
+    detailLoaded: true,
   }
 }
 
@@ -603,6 +643,7 @@ export function DrugCatalog() {
     Record<string, { vatRate: number; otherTaxRate: number }>
   >({})
   const [makerOptions, setMakerOptions] = useState<ManufacturerItem[]>([])
+  const [knownMakers, setKnownMakers] = useState<ManufacturerItem[]>([])
   const [inventoryStats, setInventoryStats] = useState<{ lowStock: number; nearDate: number }>({
     lowStock: 0,
     nearDate: 0,
@@ -616,15 +657,22 @@ export function DrugCatalog() {
   const [debouncedBarcodeSearch, setDebouncedBarcodeSearch] = useState('')
   const [groupFilter, setGroupFilter] = useState('Tất cả')
   const [makerFilter, setMakerFilter] = useState('Tất cả')
+  const [makerFilterQuery, setMakerFilterQuery] = useState('')
+  const [debouncedMakerFilterQuery, setDebouncedMakerFilterQuery] = useState('')
+  const [makerFilterOptions, setMakerFilterOptions] = useState<ManufacturerItem[]>([])
+  const [makerFilterLoading, setMakerFilterLoading] = useState(false)
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
   const [page, setPage] = useState(1)
   const [totalItems, setTotalItems] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
   const [activeItems, setActiveItems] = useState(0)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [detailLoadingMap, setDetailLoadingMap] = useState<Record<string, boolean>>({})
 
   const [form, setForm] = useState<FormState>(emptyForm())
   const [makerQuery, setMakerQuery] = useState('')
+  const [debouncedMakerQuery, setDebouncedMakerQuery] = useState('')
+  const [makerLoading, setMakerLoading] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [modalOpen, setModalOpen] = useState(false)
   const [referenceQuery, setReferenceQuery] = useState('')
@@ -647,6 +695,11 @@ export function DrugCatalog() {
   const [scanEngine, setScanEngine] = useState<'quagga' | ''>('')
 
   const quaggaContainerRef = useRef<HTMLDivElement | null>(null)
+  const loadCatalogRequestRef = useRef(0)
+  const productDetailCacheRef = useRef<Map<string, ProductDetailItem>>(new Map())
+  const productDetailRequestRef = useRef<Map<string, Promise<ProductDetailItem>>>(new Map())
+  const makerSearchRequestRef = useRef(0)
+  const makerFilterSearchRequestRef = useRef(0)
   const referenceSearchRequestRef = useRef(0)
   const scanTargetRef = useRef<ScanTarget>('search')
   const scanActiveRef = useRef(false)
@@ -678,6 +731,20 @@ export function DrugCatalog() {
     return () => window.clearTimeout(timer)
   }, [barcodeSearch])
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedMakerQuery(makerQuery.trim())
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [makerQuery])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedMakerFilterQuery(makerFilterQuery.trim())
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [makerFilterQuery])
+
   const getApiErrorMessage = useCallback((error: unknown, fallback: string) => {
     if (error instanceof ApiError) {
       if (error.status === 401) return 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'
@@ -689,33 +756,16 @@ export function DrugCatalog() {
 
   const loadCatalogData = useCallback(async () => {
     if (!accessToken) return
+    const requestId = loadCatalogRequestRef.current + 1
+    loadCatalogRequestRef.current = requestId
     setLoading(true)
     try {
-      const fetchAllManufacturers = async () => {
-        const allMakers: ManufacturerItem[] = []
-        let currentPage = 1
-        let totalMakersPages = 1
-
-        while (currentPage <= totalMakersPages) {
-          const pageResponse = await catalogApi.listManufacturers(accessToken, {
-            is_active: true,
-            page: currentPage,
-            size: 200,
-          })
-          allMakers.push(...pageResponse.items)
-          totalMakersPages = Math.max(1, pageResponse.pages)
-          currentPage += 1
-        }
-        return allMakers
-      }
-
       const keyword = [debouncedSearch, debouncedBarcodeSearch].filter(Boolean).join(' ')
       const selectedGroupId = groupFilter === 'Tất cả' ? undefined : groupFilter
       const selectedMakerId = makerFilter === 'Tất cả' ? undefined : makerFilter
 
-      const [groupPage, allManufacturers, productPage, activeProductPage, totalProductPage, stockSummary] = await Promise.all([
+      const [groupPage, productPage, activeProductPage, totalProductPage, stockSummary] = await Promise.all([
         catalogApi.listDrugGroups(accessToken, { is_active: true, page: 1, size: 200 }),
-        fetchAllManufacturers(),
         catalogApi.listProducts(accessToken, {
           page,
           size: pageSize,
@@ -734,6 +784,7 @@ export function DrugCatalog() {
         }),
         inventoryApi.getStockSummary(accessToken).catch(() => []),
       ])
+      if (loadCatalogRequestRef.current !== requestId) return
 
       let resolvedGroups = groupPage.items
       const groupCategoryByName: Record<string, string> = {}
@@ -749,9 +800,8 @@ export function DrugCatalog() {
       }> = []
 
       try {
-        const storeCategoryPage = await storeApi.listDrugCategories({
-          include_inactive: false,
-        })
+        const storeCategoryPage = await storeApi.listDrugCategories({ include_inactive: false })
+        if (loadCatalogRequestRef.current !== requestId) return
         storeCategories = storeCategoryPage.items.map((category) => ({
           name: category.name.trim(),
           groups: category.groups.map((group) => ({
@@ -816,16 +866,13 @@ export function DrugCatalog() {
               page: 1,
               size: 200,
             })
+            if (loadCatalogRequestRef.current !== requestId) return
             resolvedGroups = refreshedGroups.items
           }
         }
       } catch (syncError) {
         console.warn('Skip syncing drug groups from store service:', syncError)
       }
-
-      const details = await Promise.all(
-        productPage.items.map((item) => catalogApi.getProduct(accessToken, item.id)),
-      )
 
       const nextGroupCategoryById = resolvedGroups.reduce<Record<string, string>>((acc, group) => {
         acc[group.id] = groupCategoryByName[normalizeGroupKey(group.name)] ?? '-'
@@ -851,9 +898,6 @@ export function DrugCatalog() {
           const catalogGroup = catalogGroupByKey.get(normalizedGroupName)
           if (!catalogGroup) continue
           uniqueIds.add(catalogGroup.id)
-
-          // 1 group có thể xuất hiện ở nhiều category.
-          // Map này chỉ dùng fallback khi không có category được chọn.
           if (!nextGroupCategoryById[catalogGroup.id]) {
             nextGroupCategoryById[catalogGroup.id] = category.name
           }
@@ -869,6 +913,8 @@ export function DrugCatalog() {
         }
       }
 
+      if (loadCatalogRequestRef.current !== requestId) return
+
       setGroupOptions(
         resolvedGroups
           .slice()
@@ -877,11 +923,6 @@ export function DrugCatalog() {
       setGroupCategoryById(nextGroupCategoryById)
       setGroupIdsByCategory(nextGroupIdsByCategory)
       setGroupTaxById(nextGroupTaxById)
-      setMakerOptions(
-        allManufacturers
-          .slice()
-          .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN')),
-      )
       setInventoryStats({
         lowStock: stockSummary.filter(
           (item) => item.status === 'low_stock' || item.status === 'out_of_stock',
@@ -893,24 +934,33 @@ export function DrugCatalog() {
       setTotalItems(totalProductPage.total)
       setActiveItems(activeProductPage.total)
       setTotalPages(Math.max(1, productPage.pages))
-      setDrugs(
-        details.map((item) => {
-          const mapped = mapProductDetailToDrug(item)
-          const groupTax = mapped.groupId ? nextGroupTaxById[mapped.groupId] : undefined
+      setDrugs(() =>
+        productPage.items.map((item) => {
+          const listDrug = mapProductListItemToDrug(item)
+          const cachedDetail = productDetailCacheRef.current.get(item.id)
+          const base = cachedDetail ? mapProductDetailToDrug(cachedDetail) : listDrug
+          const groupTax = base.groupId ? nextGroupTaxById[base.groupId] : undefined
+          const category =
+            base.groupId
+              ? (nextGroupCategoryById[base.groupId] ?? '-')
+              : (groupCategoryByName[normalizeGroupKey(base.group)] ?? '-')
           return {
-            ...mapped,
-            category: mapped.groupId
-              ? (nextGroupCategoryById[mapped.groupId] ?? '-')
-              : (groupCategoryByName[normalizeGroupKey(mapped.group)] ?? '-'),
-            vatRate: groupTax?.vatRate ?? mapped.vatRate,
-            otherTaxRate: groupTax?.otherTaxRate ?? mapped.otherTaxRate,
+            ...base,
+            category,
+            vatRate: groupTax?.vatRate ?? base.vatRate,
+            otherTaxRate: groupTax?.otherTaxRate ?? base.otherTaxRate,
+            detailLoaded: Boolean(cachedDetail) || base.detailLoaded,
           }
         }),
       )
     } catch (error) {
-      setAlert(getApiErrorMessage(error, 'Không thể tải danh mục thuốc từ cơ sở dữ liệu.'))
+      if (loadCatalogRequestRef.current === requestId) {
+        setAlert(getApiErrorMessage(error, 'Không thể tải danh mục thuốc từ cơ sở dữ liệu.'))
+      }
     } finally {
-      setLoading(false)
+      if (loadCatalogRequestRef.current === requestId) {
+        setLoading(false)
+      }
     }
   }, [
     accessToken,
@@ -931,6 +981,87 @@ export function DrugCatalog() {
   useEffect(() => {
     setPage((current) => Math.min(Math.max(1, current), totalPages))
   }, [totalPages])
+
+  const upsertKnownMakers = useCallback((items: ManufacturerItem[]) => {
+    if (!items.length) return
+    setKnownMakers((prev) =>
+      mergeManufacturerLists(prev, items).sort((a, b) => a.name.localeCompare(b.name, 'vi-VN')),
+    )
+  }, [])
+
+  useEffect(() => {
+    if (!accessToken) return
+    const requestId = makerFilterSearchRequestRef.current + 1
+    makerFilterSearchRequestRef.current = requestId
+    setMakerFilterLoading(true)
+    const query = debouncedMakerFilterQuery.trim()
+
+    void catalogApi
+      .listManufacturers(accessToken, {
+        search: query || undefined,
+        is_active: true,
+        page: 1,
+        size: 20,
+      })
+      .then((response) => {
+        if (makerFilterSearchRequestRef.current !== requestId) return
+        setMakerFilterOptions(response.items)
+        upsertKnownMakers(response.items)
+      })
+      .catch(() => {
+        if (makerFilterSearchRequestRef.current !== requestId) return
+        setMakerFilterOptions([])
+      })
+      .finally(() => {
+        if (makerFilterSearchRequestRef.current !== requestId) return
+        setMakerFilterLoading(false)
+      })
+  }, [accessToken, debouncedMakerFilterQuery, upsertKnownMakers])
+
+  useEffect(() => {
+    if (!accessToken) return
+    if (!makerFilter || makerFilter === 'Tất cả') return
+    const known = mergeManufacturerLists(makerFilterOptions, knownMakers).some(
+      (item) => item.id === makerFilter,
+    )
+    if (known) return
+    void catalogApi
+      .getManufacturer(accessToken, makerFilter)
+      .then((maker) => {
+        setMakerFilterOptions((prev) => mergeManufacturerLists(prev, [maker]))
+        upsertKnownMakers([maker])
+      })
+      .catch(() => undefined)
+  }, [accessToken, knownMakers, makerFilter, makerFilterOptions, upsertKnownMakers])
+
+  useEffect(() => {
+    if (!modalOpen || !accessToken) return
+    const requestId = makerSearchRequestRef.current + 1
+    makerSearchRequestRef.current = requestId
+    setMakerLoading(true)
+    const query = debouncedMakerQuery.trim()
+
+    void catalogApi
+      .listManufacturers(accessToken, {
+        search: query || undefined,
+        is_active: true,
+        page: 1,
+        size: 20,
+      })
+      .then((response) => {
+        if (makerSearchRequestRef.current !== requestId) return
+        setMakerOptions(response.items)
+        upsertKnownMakers(response.items)
+      })
+      .catch(() => {
+        if (makerSearchRequestRef.current !== requestId) return
+        setMakerOptions([])
+      })
+      .finally(() => {
+        if (makerSearchRequestRef.current !== requestId) return
+        setMakerLoading(false)
+      })
+  }, [accessToken, debouncedMakerQuery, modalOpen, upsertKnownMakers])
 
   const syncProductUnits = useCallback(
     async (productId: string, existingUnits: ProductUnitItem[], desiredUnits: DesiredUnit[]) => {
@@ -985,6 +1116,86 @@ export function DrugCatalog() {
       }
     },
     [accessToken],
+  )
+
+  const decorateDrugWithCurrentGroupMeta = useCallback(
+    (drug: Drug): Drug => {
+      const groupTax = drug.groupId ? groupTaxById[drug.groupId] : undefined
+      const groupFromName = groupOptions.find(
+        (item) => normalizeGroupKey(item.name) === normalizeGroupKey(drug.group),
+      )
+      const category = drug.groupId
+        ? (groupCategoryById[drug.groupId] ?? '-')
+        : (groupFromName ? (groupCategoryById[groupFromName.id] ?? '-') : '-')
+      return {
+        ...drug,
+        category,
+        vatRate: groupTax?.vatRate ?? drug.vatRate,
+        otherTaxRate: groupTax?.otherTaxRate ?? drug.otherTaxRate,
+      }
+    },
+    [groupCategoryById, groupOptions, groupTaxById],
+  )
+
+  const ensureDrugDetail = useCallback(
+    async (drug: Drug): Promise<Drug | null> => {
+      if (!accessToken) return null
+
+      const mergeToState = (detail: ProductDetailItem) => {
+        const merged = decorateDrugWithCurrentGroupMeta({
+          ...drug,
+          ...mapProductDetailToDrug(detail),
+          detailLoaded: true,
+        })
+        setDrugs((prev) => prev.map((item) => (item.id === drug.id ? merged : item)))
+        return merged
+      }
+
+      const cached = productDetailCacheRef.current.get(drug.id)
+      if (cached) return mergeToState(cached)
+
+      const pending = productDetailRequestRef.current.get(drug.id)
+      if (pending) {
+        try {
+          const detail = await pending
+          return mergeToState(detail)
+        } catch (error) {
+          setAlert(getApiErrorMessage(error, 'Không thể tải chi tiết thuốc.'))
+          return null
+        }
+      }
+
+      setDetailLoadingMap((prev) => ({ ...prev, [drug.id]: true }))
+      const request = catalogApi.getProduct(accessToken, drug.id)
+      productDetailRequestRef.current.set(drug.id, request)
+      try {
+        const detail = await request
+        productDetailCacheRef.current.set(drug.id, detail)
+        return mergeToState(detail)
+      } catch (error) {
+        setAlert(getApiErrorMessage(error, 'Không thể tải chi tiết thuốc.'))
+        return null
+      } finally {
+        productDetailRequestRef.current.delete(drug.id)
+        setDetailLoadingMap((prev) => {
+          const next = { ...prev }
+          delete next[drug.id]
+          return next
+        })
+      }
+    },
+    [accessToken, decorateDrugWithCurrentGroupMeta, getApiErrorMessage],
+  )
+
+  const handleOpenDetail = useCallback(
+    async (drug: Drug) => {
+      const willClose = expandedId === drug.id
+      setExpandedId(willClose ? null : drug.id)
+      if (willClose) return
+      if (drug.detailLoaded || detailLoadingMap[drug.id]) return
+      await ensureDrugDetail(drug)
+    },
+    [detailLoadingMap, ensureDrugDetail, expandedId],
   )
 
   const stats = [
@@ -1064,14 +1275,18 @@ export function DrugCatalog() {
 
   const selectedMakerName = useMemo(() => {
     if (!form.makerId) return ''
-    return makerOptions.find((maker) => maker.id === form.makerId)?.name ?? ''
-  }, [form.makerId, makerOptions])
+    return (
+      makerOptions.find((maker) => maker.id === form.makerId)?.name ??
+      knownMakers.find((maker) => maker.id === form.makerId)?.name ??
+      ''
+    )
+  }, [form.makerId, knownMakers, makerOptions])
 
   const resolveMakerIdByQuery = useCallback(
     (query: string) => {
-      return findBestMakerId(query, makerOptions)
+      return findBestMakerId(query, mergeManufacturerLists(makerOptions, knownMakers))
     },
-    [makerOptions],
+    [knownMakers, makerOptions],
   )
 
   const handleMakerQueryChange = useCallback(
@@ -1082,6 +1297,49 @@ export function DrugCatalog() {
     },
     [resolveMakerIdByQuery],
   )
+
+  const selectedMakerFilterName = useMemo(() => {
+    if (!makerFilter || makerFilter === 'Tất cả') return ''
+    return (
+      makerFilterOptions.find((item) => item.id === makerFilter)?.name ??
+      knownMakers.find((item) => item.id === makerFilter)?.name ??
+      ''
+    )
+  }, [knownMakers, makerFilter, makerFilterOptions])
+
+  const handleMakerFilterQueryChange = useCallback(
+    (value: string) => {
+      setMakerFilterQuery(value)
+      const normalized = normalizeMatchText(value)
+      if (!normalized) {
+        if (makerFilter !== 'Tất cả') {
+          setMakerFilter('Tất cả')
+          setPage(1)
+        }
+        return
+      }
+      const exactMatch = mergeManufacturerLists(makerFilterOptions, knownMakers).find(
+        (item) => normalizeMatchText(item.name) === normalized,
+      )
+      if (exactMatch && exactMatch.id !== makerFilter) {
+        setMakerFilter(exactMatch.id)
+        setPage(1)
+        return
+      }
+      if (!exactMatch && makerFilter !== 'Tất cả') {
+        setMakerFilter('Tất cả')
+        setPage(1)
+      }
+    },
+    [knownMakers, makerFilter, makerFilterOptions],
+  )
+
+  useEffect(() => {
+    if (makerFilter === 'Tất cả') return
+    if (!selectedMakerFilterName) return
+    if (normalizeMatchText(selectedMakerFilterName) === normalizeMatchText(makerFilterQuery)) return
+    setMakerFilterQuery(selectedMakerFilterName)
+  }, [makerFilter, makerFilterQuery, selectedMakerFilterName])
 
   const handleGroupCategoryChange = (groupCategory: string) => {
     setForm((prev) => {
@@ -1114,11 +1372,15 @@ export function DrugCatalog() {
     setReferenceResults([])
     setReferenceError(null)
     setUnitSectionTouched(false)
-    const fallback = emptyForm('', makerOptions[0]?.id ?? '', '')
+    const fallback = emptyForm('', '', '')
     const draft = loadDrugFormDraft()
     if (!draft) {
       setForm(fallback)
-      setMakerQuery(fallback.makerId ? (makerOptions.find((item) => item.id === fallback.makerId)?.name ?? '') : '')
+      setMakerQuery(
+        fallback.makerId
+          ? (knownMakers.find((item) => item.id === fallback.makerId)?.name ?? '')
+          : '',
+      )
       setUnitSectionTouched(false)
       setModalOpen(true)
       return
@@ -1142,7 +1404,7 @@ export function DrugCatalog() {
     }
     setForm(nextForm)
     setMakerQuery(
-      nextForm.makerId ? (makerOptions.find((item) => item.id === nextForm.makerId)?.name ?? '') : '',
+      nextForm.makerId ? (knownMakers.find((item) => item.id === nextForm.makerId)?.name ?? '') : '',
     )
     // Chỉ đánh dấu "đã chạm đơn vị" khi người dùng sửa trong phiên hiện tại.
     // Draft cũ không nên chặn auto-fill từ tra cứu Bộ Y tế.
@@ -1179,7 +1441,32 @@ export function DrugCatalog() {
       ...unitForm,
     })
     setMakerQuery(drug.maker || '')
+    if (drug.makerId && drug.maker) {
+      const makerSeed: ManufacturerItem = {
+        id: drug.makerId,
+        code: '',
+        name: drug.maker,
+        country: null,
+        address: null,
+        phone: null,
+        is_active: true,
+        created_at: '',
+        updated_at: '',
+      }
+      setMakerOptions((prev) => mergeManufacturerLists(prev, [makerSeed]))
+      upsertKnownMakers([makerSeed])
+    }
     setModalOpen(true)
+  }
+
+  const handleOpenEdit = async (drug: Drug) => {
+    if (!canManage) {
+      setAlert('Bạn không có quyền chỉnh sửa thuốc.')
+      return
+    }
+    const readyDrug = drug.detailLoaded ? drug : await ensureDrugDetail(drug)
+    if (!readyDrug) return
+    openEdit(readyDrug)
   }
 
   const removeDrug = async (drug: Drug) => {
@@ -1196,6 +1483,8 @@ export function DrugCatalog() {
     }
     try {
       await catalogApi.deleteProduct(accessToken, drug.id)
+      productDetailCacheRef.current.delete(drug.id)
+      productDetailRequestRef.current.delete(drug.id)
       await loadCatalogData()
       setAlert('Đã xóa thuốc.')
     } catch (error) {
@@ -1274,6 +1563,18 @@ export function DrugCatalog() {
   }, [modalOpen, form.makerId, makerQuery, selectedMakerName])
 
   useEffect(() => {
+    if (!modalOpen || !accessToken || !form.makerId) return
+    if (selectedMakerName) return
+    void catalogApi
+      .getManufacturer(accessToken, form.makerId)
+      .then((maker) => {
+        setMakerOptions((prev) => mergeManufacturerLists(prev, [maker]))
+        upsertKnownMakers([maker])
+      })
+      .catch(() => undefined)
+  }, [accessToken, form.makerId, modalOpen, selectedMakerName, upsertKnownMakers])
+
+  useEffect(() => {
     if (!modalOpen || !accessToken) return
     const query = referenceQuery.trim()
     if (query.length < 2) {
@@ -1313,9 +1614,35 @@ export function DrugCatalog() {
   }, [modalOpen, accessToken, referenceQuery, getApiErrorMessage])
 
   const applyReferenceSuggestion = useCallback(
-    (reference: DrugReferenceItem) => {
+    async (reference: DrugReferenceItem) => {
       const referenceManufacturerName = (reference.manufacturer ?? '').trim()
-      const matchedMakerId = findBestMakerId(referenceManufacturerName, makerOptions)
+      let matchedMakerId = findBestMakerId(
+        referenceManufacturerName,
+        mergeManufacturerLists(makerOptions, knownMakers),
+      )
+      let matchedMakerName = matchedMakerId
+        ? (mergeManufacturerLists(makerOptions, knownMakers).find((item) => item.id === matchedMakerId)?.name ?? '')
+        : ''
+
+      if (!matchedMakerId && accessToken && referenceManufacturerName) {
+        try {
+          const response = await catalogApi.listManufacturers(accessToken, {
+            search: referenceManufacturerName,
+            is_active: true,
+            page: 1,
+            size: 20,
+          })
+          const merged = mergeManufacturerLists(makerOptions, knownMakers, response.items)
+          upsertKnownMakers(response.items)
+          setMakerOptions((prev) => mergeManufacturerLists(prev, response.items))
+          matchedMakerId = findBestMakerId(referenceManufacturerName, merged)
+          matchedMakerName = matchedMakerId
+            ? (merged.find((item) => item.id === matchedMakerId)?.name ?? '')
+            : ''
+        } catch {
+          // Keep empty maker when lookup fails.
+        }
+      }
 
       setErrors((prev) => {
         const next = { ...prev }
@@ -1347,16 +1674,12 @@ export function DrugCatalog() {
         }
         return applyReferenceUnitHintToForm(next, reference.unit_hint)
       })
-      setMakerQuery(
-        matchedMakerId
-          ? (makerOptions.find((item) => item.id === matchedMakerId)?.name ?? referenceManufacturerName)
-          : '',
-      )
+      setMakerQuery(matchedMakerId ? (matchedMakerName || referenceManufacturerName) : '')
       setReferenceQuery(`${reference.registration_number} - ${reference.name}`)
       setReferenceResults([])
       setReferenceError(null)
     },
-    [makerOptions, unitSectionTouched],
+    [accessToken, knownMakers, makerOptions, unitSectionTouched, upsertKnownMakers],
   )
 
   const validate = () => {
@@ -1437,6 +1760,8 @@ export function DrugCatalog() {
       if (form.id) {
         const updated = await catalogApi.updateProduct(accessToken, form.id, productPayload)
         await syncProductUnits(updated.id, updated.units, desiredUnits)
+        productDetailCacheRef.current.delete(updated.id)
+        productDetailRequestRef.current.delete(updated.id)
         setAlert('Đã cập nhật thuốc.')
       } else {
         const created = await catalogApi.createProduct(accessToken, {
@@ -1447,6 +1772,8 @@ export function DrugCatalog() {
           },
         })
         await syncProductUnits(created.id, created.units, desiredUnits)
+        productDetailCacheRef.current.delete(created.id)
+        productDetailRequestRef.current.delete(created.id)
         clearDrugFormDraft()
         setAlert('Đã thêm thuốc.')
       }
@@ -1461,8 +1788,11 @@ export function DrugCatalog() {
     }
   }
 
-  const exportCsv = () => {
-    const rows = drugs.map((drug) => {
+  const exportCsv = async () => {
+    const exportDrugs = await Promise.all(
+      drugs.map(async (drug) => (drug.detailLoaded ? drug : (await ensureDrugDetail(drug)) ?? drug)),
+    )
+    const rows = exportDrugs.map((drug) => {
       const unitData = drug.units
         .map((unit) => `${unit.name}=${unit.conversion}:${unit.price}`)
         .join('|')
@@ -1556,6 +1886,27 @@ export function DrugCatalog() {
       reader.readAsText(file, 'utf-8')
     })
 
+  const fetchAllManufacturersForImport = useCallback(async () => {
+    if (!accessToken) return [] as ManufacturerItem[]
+    const collected: ManufacturerItem[] = []
+    let currentPage = 1
+    let totalPagesCount = 1
+
+    while (currentPage <= totalPagesCount) {
+      const pageResponse = await catalogApi.listManufacturers(accessToken, {
+        is_active: true,
+        page: currentPage,
+        size: 200,
+      })
+      collected.push(...pageResponse.items)
+      totalPagesCount = Math.max(1, pageResponse.pages)
+      currentPage += 1
+    }
+
+    upsertKnownMakers(collected)
+    return collected
+  }, [accessToken, upsertKnownMakers])
+
   const handleImportExcel = async (file: File | null) => {
     if (!file) return
     setImportFile(file.name)
@@ -1606,8 +1957,9 @@ export function DrugCatalog() {
         return
       }
 
+      const allManufacturers = await fetchAllManufacturersForImport()
       const groupByName = new Map(groupOptions.map((item) => [normalizeGroupKey(item.name), item.id]))
-      const makerByName = new Map(makerOptions.map((item) => [normalizeGroupKey(item.name), item.id]))
+      const makerByName = new Map(allManufacturers.map((item) => [normalizeGroupKey(item.name), item.id]))
       const existingByCode = new Map<string, { id: string }>(
         drugs
           .filter((item) => item.code)
@@ -1708,6 +2060,7 @@ export function DrugCatalog() {
     setBarcodeSearch('')
     setGroupFilter('Tất cả')
     setMakerFilter('Tất cả')
+    setMakerFilterQuery('')
     setMobileFiltersOpen(false)
     setPage(1)
   }
@@ -2040,7 +2393,7 @@ export function DrugCatalog() {
               }}
             />
           </label>
-          <button onClick={exportCsv} className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900">
+          <button onClick={() => void exportCsv()} className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900">
             Export Excel
           </button>
         </div>
@@ -2102,17 +2455,18 @@ export function DrugCatalog() {
             <option value={'T\u1ea5t c\u1ea3'}>{'T\u1ea5t c\u1ea3'}</option>
             {groupOptions.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
           </select>
-          <select
-            value={makerFilter}
-            onChange={(e) => {
-              setMakerFilter(e.target.value)
-              setPage(1)
-            }}
-            className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
-          >
-            <option value={'T\u1ea5t c\u1ea3'}>{'T\u1ea5t c\u1ea3'}</option>
-            {makerOptions.map((maker) => <option key={maker.id} value={maker.id}>{maker.name}</option>)}
-          </select>
+          <div className="space-y-1">
+            <input
+              value={makerFilterQuery}
+              onChange={(e) => handleMakerFilterQueryChange(e.target.value)}
+              list="drug-maker-filter-options"
+              className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
+              placeholder="Tìm nhà sản xuất để lọc"
+            />
+            {makerFilterLoading ? (
+              <p className="text-[11px] text-ink-500">Đang tải gợi ý nhà sản xuất...</p>
+            ) : null}
+          </div>
           <button onClick={resetFilters} className="rounded-2xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white">Reset</button>
         </div>
 
@@ -2129,20 +2483,26 @@ export function DrugCatalog() {
               <option value={'T\u1ea5t c\u1ea3'}>{'T\u1ea5t c\u1ea3'}</option>
               {groupOptions.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
             </select>
-            <select
-              value={makerFilter}
-              onChange={(e) => {
-                setMakerFilter(e.target.value)
-                setPage(1)
-              }}
-              className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
-            >
-              <option value={'T\u1ea5t c\u1ea3'}>{'T\u1ea5t c\u1ea3'}</option>
-              {makerOptions.map((maker) => <option key={maker.id} value={maker.id}>{maker.name}</option>)}
-            </select>
+            <div className="space-y-1">
+              <input
+                value={makerFilterQuery}
+                onChange={(e) => handleMakerFilterQueryChange(e.target.value)}
+                list="drug-maker-filter-options"
+                className="w-full rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm"
+                placeholder="Tìm nhà sản xuất để lọc"
+              />
+              {makerFilterLoading ? (
+                <p className="text-[11px] text-ink-500">Đang tải gợi ý nhà sản xuất...</p>
+              ) : null}
+            </div>
             <button onClick={resetFilters} className="rounded-2xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white">Reset</button>
           </div>
         ) : null}
+        <datalist id="drug-maker-filter-options">
+          {makerFilterOptions.map((maker) => (
+            <option key={maker.id} value={maker.name} />
+          ))}
+        </datalist>
 
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <input
@@ -2204,7 +2564,11 @@ export function DrugCatalog() {
                     <td className="px-6 py-4 text-ink-700">{drug.category || '-'}</td>
                     <td className="px-6 py-4 text-ink-700">{drug.group}</td>
                     <td className="px-6 py-4 text-ink-700">{drug.maker}</td>
-                    <td className="px-6 py-4 text-ink-900">{formatUnits(drug.units)}</td>
+                    <td className="px-6 py-4 text-ink-900">
+                      {drug.detailLoaded
+                        ? formatUnits(drug.units)
+                        : (detailLoadingMap[drug.id] ? 'Đang tải chi tiết...' : 'Mở chi tiết để xem')}
+                    </td>
                     <td className="px-6 py-4 text-ink-700">{drug.barcode || '-'}</td>
                     <td className="px-6 py-4">
                       <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusStyles[drug.active ? 'Đang bán' : 'Ngừng bán']}`}>
@@ -2213,9 +2577,9 @@ export function DrugCatalog() {
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex flex-wrap gap-2">
-                        <button onClick={() => setExpandedId((prev) => (prev === drug.id ? null : drug.id))} className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900">Chi tiết</button>
+                        <button onClick={() => void handleOpenDetail(drug)} className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900">Chi tiết</button>
                         <button
-                          onClick={() => openEdit(drug)}
+                          onClick={() => void handleOpenEdit(drug)}
                           disabled={!canManage}
                           className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-60"
                         >
@@ -2241,21 +2605,25 @@ export function DrugCatalog() {
                               <p><span className="font-semibold text-ink-900">Hoạt chất:</span> {drug.activeIngredient || '-'}</p>
                               <p><span className="font-semibold text-ink-900">Số đăng ký:</span> {drug.regNo}</p>
                               <p><span className="font-semibold text-ink-900">Thuế:</span> VAT {drug.vatRate}% · Thuế khác {drug.otherTaxRate}%</p>
-                              <p><span className="font-semibold text-ink-900">Hướng dẫn:</span> {drug.usage || '-'}</p>
-                              <p><span className="font-semibold text-ink-900">Ghi chú:</span> {drug.note || '-'}</p>
+                              <p><span className="font-semibold text-ink-900">Hướng dẫn:</span> {drug.detailLoaded ? (drug.usage || '-') : 'Đang tải chi tiết...'}</p>
+                              <p><span className="font-semibold text-ink-900">Ghi chú:</span> {drug.detailLoaded ? (drug.note || '-') : 'Đang tải chi tiết...'}</p>
                             </div>
                             <div>
                               <p className="text-xs uppercase tracking-[0.25em] text-ink-600">Đơn vị tính</p>
-                              <div className="mt-3 space-y-2 text-sm text-ink-700">
-                                {drug.units.slice().sort((a, b) => unitLevelOrder[a.level] - unitLevelOrder[b.level]).map((unit) => (
-                                  <div key={unit.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white px-3 py-2">
-                                    <span className="font-semibold text-ink-900">{unit.name}</span>
-                                    <span>{unitLevelLabel[unit.level]}</span>
-                                    <span>{unit.conversion} quy đổi</span>
-                                    <span>{unit.price.toLocaleString('vi-VN')}đ</span>
-                                  </div>
-                                ))}
-                              </div>
+                              {!drug.detailLoaded ? (
+                                <p className="mt-3 text-sm text-ink-600">Đang tải thông tin đơn vị...</p>
+                              ) : (
+                                <div className="mt-3 space-y-2 text-sm text-ink-700">
+                                  {drug.units.slice().sort((a, b) => unitLevelOrder[a.level] - unitLevelOrder[b.level]).map((unit) => (
+                                    <div key={unit.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white px-3 py-2">
+                                      <span className="font-semibold text-ink-900">{unit.name}</span>
+                                      <span>{unitLevelLabel[unit.level]}</span>
+                                      <span>{unit.conversion} quy đổi</span>
+                                      <span>{unit.price.toLocaleString('vi-VN')}đ</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -2301,15 +2669,18 @@ export function DrugCatalog() {
                     <p><span className="font-semibold text-ink-900">Barcode:</span> {drug.barcode || '-'}</p>
                   </div>
                   <p className="mt-3 text-xs text-ink-700">
-                    <span className="font-semibold text-ink-900">Đơn vị:</span> {formatUnits(drug.units)}
+                    <span className="font-semibold text-ink-900">Đơn vị:</span>{' '}
+                    {drug.detailLoaded
+                      ? formatUnits(drug.units)
+                      : (detailLoadingMap[drug.id] ? 'Đang tải chi tiết...' : 'Mở chi tiết để xem')}
                   </p>
 
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <button onClick={() => setExpandedId((prev) => (prev === drug.id ? null : drug.id))} className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900">
+                    <button onClick={() => void handleOpenDetail(drug)} className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900">
                       {expandedId === drug.id ? 'Ẩn' : 'Chi tiết'}
                     </button>
                     <button
-                      onClick={() => openEdit(drug)}
+                      onClick={() => void handleOpenEdit(drug)}
                       disabled={!canManage}
                       className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-60"
                     >
@@ -2329,21 +2700,25 @@ export function DrugCatalog() {
                       <div className="space-y-1.5">
                         <p><span className="font-semibold text-ink-900">Số đăng ký:</span> {drug.regNo || '-'}</p>
                         <p><span className="font-semibold text-ink-900">Thuế:</span> VAT {drug.vatRate}% · Thuế khác {drug.otherTaxRate}%</p>
-                        <p><span className="font-semibold text-ink-900">Hướng dẫn:</span> {drug.usage || '-'}</p>
-                        <p><span className="font-semibold text-ink-900">Ghi chú:</span> {drug.note || '-'}</p>
+                        <p><span className="font-semibold text-ink-900">Hướng dẫn:</span> {drug.detailLoaded ? (drug.usage || '-') : 'Đang tải chi tiết...'}</p>
+                        <p><span className="font-semibold text-ink-900">Ghi chú:</span> {drug.detailLoaded ? (drug.note || '-') : 'Đang tải chi tiết...'}</p>
                       </div>
-                      <div className="mt-3 space-y-1.5">
-                        {drug.units
-                          .slice()
-                          .sort((a, b) => unitLevelOrder[a.level] - unitLevelOrder[b.level])
-                          .map((unit) => (
-                            <div key={unit.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-fog-50 px-3 py-2">
-                              <span className="font-semibold text-ink-900">{unit.name}</span>
-                              <span>{unitLevelLabel[unit.level]}</span>
-                              <span>{unit.price.toLocaleString('vi-VN')}đ</span>
-                            </div>
-                          ))}
-                      </div>
+                      {!drug.detailLoaded ? (
+                        <p className="mt-3 text-ink-600">Đang tải thông tin đơn vị...</p>
+                      ) : (
+                        <div className="mt-3 space-y-1.5">
+                          {drug.units
+                            .slice()
+                            .sort((a, b) => unitLevelOrder[a.level] - unitLevelOrder[b.level])
+                            .map((unit) => (
+                              <div key={unit.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-fog-50 px-3 py-2">
+                                <span className="font-semibold text-ink-900">{unit.name}</span>
+                                <span>{unitLevelLabel[unit.level]}</span>
+                                <span>{unit.price.toLocaleString('vi-VN')}đ</span>
+                              </div>
+                            ))}
+                        </div>
+                      )}
                     </div>
                   ) : null}
                 </article>
@@ -2396,7 +2771,7 @@ export function DrugCatalog() {
                         <button
                           key={`${item.registration_number}-${item.name}`}
                           type="button"
-                          onClick={() => applyReferenceSuggestion(item)}
+                          onClick={() => void applyReferenceSuggestion(item)}
                           className="w-full border-b border-ink-900/5 px-4 py-2 text-left text-sm text-ink-800 last:border-b-0 hover:bg-fog-50"
                         >
                           <div className="flex items-center justify-between gap-2">
@@ -2482,6 +2857,7 @@ export function DrugCatalog() {
                       <option key={maker.id} value={maker.name} />
                     ))}
                   </datalist>
+                  {makerLoading ? <p className="text-xs text-ink-500">Đang tải gợi ý nhà sản xuất...</p> : null}
                   {form.makerId ? (
                     <p className="text-xs text-ink-500">Đã chọn: {selectedMakerName || makerQuery}</p>
                   ) : makerQuery.trim() ? (
