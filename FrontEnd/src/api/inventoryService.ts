@@ -96,6 +96,24 @@ export type InventoryReceipt = {
   can_edit: boolean
 }
 
+export type InventoryReceiptListItem = {
+  id: string
+  code: string
+  receipt_date: string
+  supplier_id: string
+  supplier_name: string
+  supplier_contact: string
+  shipping_carrier: string | null
+  payment_status: InventoryPaymentStatus
+  payment_method: InventoryPaymentMethod
+  status: 'confirmed' | 'cancelled'
+  total_value: number
+  line_count: number
+  created_at: string
+  updated_at: string
+  can_edit: boolean
+}
+
 export type InventoryBatch = {
   id: string
   batch_code: string
@@ -125,6 +143,25 @@ export type InventoryBatch = {
   status: InventoryBatchStatus
   created_at: string
   updated_at: string
+}
+
+export type PaginatedResponse<T> = {
+  items: T[]
+  total: number
+  page: number
+  size: number
+  pages: number
+}
+
+export type InventoryImportReceiptPagedResponse = PaginatedResponse<InventoryReceiptListItem>
+
+export type InventoryBatchPagedResponse = PaginatedResponse<InventoryBatch> & {
+  summary: {
+    total_drugs: number
+    out_of_stock: number
+    near_date: number
+    expired: number
+  }
 }
 
 export type InventoryMovement = {
@@ -305,6 +342,23 @@ export const inventoryApi = {
     status?: 'confirmed' | 'cancelled'
   }) => requestInventoryJson<InventoryReceipt[]>('/inventory/import-receipts', { method: 'GET' }, undefined, params),
 
+  listImportReceiptsPaged: (params?: {
+    page?: number
+    size?: number
+    date_from?: string
+    date_to?: string
+    supplier_id?: string
+    status?: 'confirmed' | 'cancelled'
+    payment_status?: InventoryPaymentStatus
+    search?: string
+  }) =>
+    requestInventoryJson<InventoryImportReceiptPagedResponse>(
+      '/inventory/import-receipts/paged',
+      { method: 'GET' },
+      undefined,
+      params,
+    ),
+
   getImportReceipt: (receiptId: string) =>
     requestInventoryJson<InventoryReceipt>(`/inventory/import-receipts/${receiptId}`, { method: 'GET' }),
 
@@ -343,6 +397,23 @@ export const inventoryApi = {
     exp_from?: string
     exp_to?: string
   }) => requestInventoryJson<InventoryBatch[]>('/inventory/batches', { method: 'GET' }, undefined, params),
+
+  listBatchesPaged: (params?: {
+    page?: number
+    size?: number
+    search?: string
+    drug?: string
+    supplier_id?: string
+    status?: InventoryBatchStatus
+    exp_from?: string
+    exp_to?: string
+  }) =>
+    requestInventoryJson<InventoryBatchPagedResponse>(
+      '/inventory/batches/paged',
+      { method: 'GET' },
+      undefined,
+      params,
+    ),
 
   getBatchDetail: (batchId: string) =>
     requestInventoryJson<InventoryBatchDetail>(`/inventory/batches/${batchId}`, { method: 'GET' }),

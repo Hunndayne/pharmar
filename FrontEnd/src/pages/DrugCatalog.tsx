@@ -509,6 +509,11 @@ const buildReferenceNote = (reference: DrugReferenceItem) => {
   return parts.length ? `Tham chiếu Bộ Y tế - ${parts.join(' | ')}` : ''
 }
 
+const buildReferenceInstructionUsage = (instructionUrl: string | null | undefined) => {
+  const url = (instructionUrl ?? '').trim()
+  return url ? `HDSD: ${url}` : ''
+}
+
 // ============================================================
 // Barcode Scanning Engine (Quagga2)
 //
@@ -606,11 +611,16 @@ export function DrugCatalog() {
   const [saving, setSaving] = useState(false)
   const [importing, setImporting] = useState(false)
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [barcodeSearch, setBarcodeSearch] = useState('')
+  const [debouncedBarcodeSearch, setDebouncedBarcodeSearch] = useState('')
   const [groupFilter, setGroupFilter] = useState('Tất cả')
   const [makerFilter, setMakerFilter] = useState('Tất cả')
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
   const [page, setPage] = useState(1)
+  const [totalItems, setTotalItems] = useState(0)
+  const [totalPages, setTotalPages] = useState(1)
+  const [activeItems, setActiveItems] = useState(0)
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const [form, setForm] = useState<FormState>(emptyForm())
@@ -646,7 +656,27 @@ export function DrugCatalog() {
     removeLocalDraft(DRUG_FORM_DRAFT_STORAGE_KEY)
   }, [])
 
-  const pageSize = 6
+  const pageSize = useMemo(
+    () =>
+      typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
+        ? 10
+        : 20,
+    [],
+  )
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(search.trim())
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [search])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedBarcodeSearch(barcodeSearch.trim())
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [barcodeSearch])
 
   const getApiErrorMessage = useCallback((error: unknown, fallback: string) => {
     if (error instanceof ApiError) {
@@ -661,45 +691,47 @@ export function DrugCatalog() {
     if (!accessToken) return
     setLoading(true)
     try {
-      const fetchAllProducts = async () => {
-        const allProducts: Array<{ id: string }> = []
-        let currentPage = 1
-        let totalPages = 1
-
-        while (currentPage <= totalPages) {
-          const pageResponse = await catalogApi.listProducts(accessToken, {
-            page: currentPage,
-            size: 200,
-          })
-          allProducts.push(...pageResponse.items.map((item) => ({ id: item.id })))
-          totalPages = Math.max(1, pageResponse.pages)
-          currentPage += 1
-        }
-        return allProducts
-      }
-
       const fetchAllManufacturers = async () => {
         const allMakers: ManufacturerItem[] = []
         let currentPage = 1
-        let totalPages = 1
+        let totalMakersPages = 1
 
-        while (currentPage <= totalPages) {
+        while (currentPage <= totalMakersPages) {
           const pageResponse = await catalogApi.listManufacturers(accessToken, {
             is_active: true,
             page: currentPage,
             size: 200,
           })
           allMakers.push(...pageResponse.items)
-          totalPages = Math.max(1, pageResponse.pages)
+          totalMakersPages = Math.max(1, pageResponse.pages)
           currentPage += 1
         }
         return allMakers
       }
 
-      const [groupPage, allManufacturers, products, stockSummary] = await Promise.all([
+      const keyword = [debouncedSearch, debouncedBarcodeSearch].filter(Boolean).join(' ')
+      const selectedGroupId = groupFilter === 'Tất cả' ? undefined : groupFilter
+      const selectedMakerId = makerFilter === 'Tất cả' ? undefined : makerFilter
+
+      const [groupPage, allManufacturers, productPage, activeProductPage, totalProductPage, stockSummary] = await Promise.all([
         catalogApi.listDrugGroups(accessToken, { is_active: true, page: 1, size: 200 }),
         fetchAllManufacturers(),
-        fetchAllProducts(),
+        catalogApi.listProducts(accessToken, {
+          page,
+          size: pageSize,
+          search: keyword || undefined,
+          group_id: selectedGroupId,
+          manufacturer_id: selectedMakerId,
+        }),
+        catalogApi.listProducts(accessToken, {
+          page: 1,
+          size: 1,
+          is_active: true,
+        }),
+        catalogApi.listProducts(accessToken, {
+          page: 1,
+          size: 1,
+        }),
         inventoryApi.getStockSummary(accessToken).catch(() => []),
       ])
 
@@ -792,7 +824,7 @@ export function DrugCatalog() {
       }
 
       const details = await Promise.all(
-        products.map((item) => catalogApi.getProduct(accessToken, item.id)),
+        productPage.items.map((item) => catalogApi.getProduct(accessToken, item.id)),
       )
 
       const nextGroupCategoryById = resolvedGroups.reduce<Record<string, string>>((acc, group) => {
@@ -858,6 +890,9 @@ export function DrugCatalog() {
           (item) => item.status === 'near_date' || item.status === 'expiring_soon',
         ).length,
       })
+      setTotalItems(totalProductPage.total)
+      setActiveItems(activeProductPage.total)
+      setTotalPages(Math.max(1, productPage.pages))
       setDrugs(
         details.map((item) => {
           const mapped = mapProductDetailToDrug(item)
@@ -877,11 +912,25 @@ export function DrugCatalog() {
     } finally {
       setLoading(false)
     }
-  }, [accessToken, canManage, getApiErrorMessage])
+  }, [
+    accessToken,
+    debouncedBarcodeSearch,
+    debouncedSearch,
+    canManage,
+    getApiErrorMessage,
+    groupFilter,
+    makerFilter,
+    page,
+    pageSize,
+  ])
 
   useEffect(() => {
     void loadCatalogData()
   }, [loadCatalogData])
+
+  useEffect(() => {
+    setPage((current) => Math.min(Math.max(1, current), totalPages))
+  }, [totalPages])
 
   const syncProductUnits = useCallback(
     async (productId: string, existingUnits: ProductUnitItem[], desiredUnits: DesiredUnit[]) => {
@@ -938,37 +987,11 @@ export function DrugCatalog() {
     [accessToken],
   )
 
-  const filtered = useMemo(() => {
-    const keyword = search.trim().toLowerCase()
-    const barcodeKey = barcodeSearch.trim().toLowerCase()
-    return drugs.filter((drug) => {
-      const matchKeyword =
-        !keyword ||
-        [drug.code, drug.name, drug.activeIngredient, drug.regNo, drug.barcode, drug.maker]
-          .join(' ')
-          .toLowerCase()
-          .includes(keyword)
-      const matchBarcode =
-        !barcodeKey ||
-        drug.barcode.toLowerCase().includes(barcodeKey)
-      const matchGroup = groupFilter === 'Tất cả' || drug.groupId === groupFilter
-      const matchMaker = makerFilter === 'Tất cả' || drug.makerId === makerFilter
-      return matchKeyword && matchBarcode && matchGroup && matchMaker
-    })
-  }, [drugs, search, barcodeSearch, groupFilter, makerFilter])
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
-  const paged = filtered.slice((page - 1) * pageSize, page * pageSize)
-
-  useEffect(() => {
-    setPage((current) => Math.min(current, totalPages))
-  }, [totalPages])
-
   const stats = [
-    { label: 'Tổng thuốc', value: drugs.length.toString(), note: `${groupOptions.length} nhóm` },
+    { label: 'Tổng thuốc', value: totalItems.toString(), note: `${groupOptions.length} nhóm` },
     { label: 'Sắp hết hàng', value: inventoryStats.lowStock.toString(), note: 'dưới ngưỡng' },
     { label: 'Cận date', value: inventoryStats.nearDate.toString(), note: 'sắp đến hạn' },
-    { label: 'Đang bán', value: drugs.filter((d) => d.active).length.toString(), note: 'đang hoạt động' },
+    { label: 'Đang bán', value: activeItems.toString(), note: 'đang hoạt động' },
   ]
 
   const conversionHint = useMemo(() => {
@@ -1306,6 +1329,7 @@ export function DrugCatalog() {
       })
       setForm((prev) => {
         const noteSuggestion = buildReferenceNote(reference)
+        const usageSuggestion = buildReferenceInstructionUsage(reference.instruction_url)
         const next: FormState = {
           ...prev,
           name: reference.name?.trim() || prev.name,
@@ -1315,6 +1339,7 @@ export function DrugCatalog() {
           ) || prev.activeIngredient,
           regNo: reference.registration_number?.trim() || prev.regNo,
           makerId: matchedMakerId,
+          usage: prev.usage.trim() ? prev.usage : usageSuggestion || prev.usage,
           note: prev.note.trim() ? prev.note : noteSuggestion || prev.note,
         }
         if (unitSectionTouched) {
@@ -2161,12 +2186,12 @@ export function DrugCatalog() {
                   <td colSpan={9} className="px-6 py-6 text-sm text-ink-600">Đang tải dữ liệu...</td>
                 </tr>
               ) : null}
-              {!loading && paged.length === 0 ? (
+              {!loading && drugs.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="px-6 py-6 text-sm text-ink-600">Không có dữ liệu thuốc.</td>
                 </tr>
               ) : null}
-              {!loading ? paged.map((drug) => (
+              {!loading ? drugs.map((drug) => (
                 <Fragment key={drug.id}>
                   <tr className="hover:bg-white/80">
                     <td className="px-6 py-4 font-semibold text-ink-900">{drug.code}</td>
@@ -2248,13 +2273,13 @@ export function DrugCatalog() {
               Đang tải dữ liệu...
             </div>
           ) : null}
-          {!loading && paged.length === 0 ? (
+          {!loading && drugs.length === 0 ? (
             <div className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-4 text-sm text-ink-600">
               Không có dữ liệu thuốc.
             </div>
           ) : null}
           {!loading
-            ? paged.map((drug) => (
+            ? drugs.map((drug) => (
                 <article key={drug.id} className="rounded-2xl border border-ink-900/10 bg-white/80 p-4 shadow-sm">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -2329,7 +2354,7 @@ export function DrugCatalog() {
 
       <section className="flex flex-col gap-3 text-sm text-ink-600 sm:flex-row sm:items-center sm:justify-between">
         <span>
-          Hiển thị {filtered.length === 0 ? 0 : (page - 1) * pageSize + 1} - {Math.min(page * pageSize, filtered.length)} trong {filtered.length} thuốc
+          Hiển thị {totalItems === 0 ? 0 : (page - 1) * pageSize + 1} - {Math.min(page * pageSize, totalItems)} trong {totalItems} thuốc
         </span>
         <div className="flex items-center gap-2">
           <button onClick={() => setPage((p) => Math.max(1, p - 1))} className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900">Trước</button>

@@ -3,9 +3,9 @@ import { LotLabelPrintPage, type LabelPrintLot } from '../components/labels/LotL
 import {
   inventoryApi,
   type InventoryBatch,
+  type InventoryBatchPagedResponse,
   type InventoryMetaSupplier,
 } from '../api/inventoryService'
-import { catalogApi, type ProductListItem } from '../api/catalogService'
 import { storeApi } from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
@@ -163,22 +163,6 @@ const highestUnitPrice = (batch: InventoryBatch) => {
   return sorted[0]?.price ?? batch.import_price
 }
 
-const loadCatalogProducts = async (accessToken: string) => {
-  const size = 200
-  let page = 1
-  let pages = 1
-  const result: ProductListItem[] = []
-
-  while (page <= pages) {
-    const response = await catalogApi.listProducts(accessToken, { page, size })
-    result.push(...response.items)
-    pages = Math.max(1, response.pages)
-    page += 1
-  }
-
-  return result
-}
-
 export function Inventory() {
   const { token, user } = useAuth()
   const accessToken = token?.access_token ?? ''
@@ -186,7 +170,12 @@ export function Inventory() {
 
   const [batches, setBatches] = useState<InventoryBatch[]>([])
   const [metaSuppliers, setMetaSuppliers] = useState<InventoryMetaSupplier[]>([])
-  const [catalogProducts, setCatalogProducts] = useState<ProductListItem[]>([])
+  const [batchSummary, setBatchSummary] = useState<InventoryBatchPagedResponse['summary']>({
+    total_drugs: 0,
+    out_of_stock: 0,
+    near_date: 0,
+    expired: 0,
+  })
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -194,10 +183,14 @@ export function Inventory() {
   const [nearExpiryDays, setNearExpiryDays] = useState(DEFAULT_NEAR_EXPIRY_DAYS)
 
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all')
   const [expFrom, setExpFrom] = useState('')
   const [expTo, setExpTo] = useState('')
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
+  const [page, setPage] = useState(1)
+  const [totalItems, setTotalItems] = useState(0)
+  const [totalPages, setTotalPages] = useState(1)
 
   const [expandedLotId, setExpandedLotId] = useState<string | null>(null)
   const [adjusting, setAdjusting] = useState<AdjustModalState | null>(null)
@@ -205,15 +198,42 @@ export function Inventory() {
   const [adjustSubmitting, setAdjustSubmitting] = useState(false)
   const [printingLot, setPrintingLot] = useState<LabelPrintLot | null>(null)
 
+  const pageSize = useMemo(
+    () =>
+      typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
+        ? 10
+        : 20,
+    [],
+  )
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(search.trim())
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [search])
+
   const loadInventory = useCallback(async () => {
     setLoading(true)
     setError(null)
 
     try {
-      const [nextBatches, nextSuppliers, nextProducts, inventorySettings] = await Promise.all([
-        inventoryApi.listBatches(),
+      const statusFilter = quickFilter === 'expired'
+        ? 'expired'
+        : quickFilter === 'out'
+          ? 'depleted'
+          : undefined
+
+      const [batchPage, nextSuppliers, inventorySettings] = await Promise.all([
+        inventoryApi.listBatchesPaged({
+          page,
+          size: pageSize,
+          search: debouncedSearch || undefined,
+          exp_from: expFrom || undefined,
+          exp_to: expTo || undefined,
+          status: statusFilter,
+        }),
         inventoryApi.getMetaSuppliers(accessToken || undefined),
-        accessToken ? loadCatalogProducts(accessToken) : Promise.resolve([] as ProductListItem[]),
         storeApi
           .getSettingsByGroup('inventory')
           .catch(() => ({} as Record<string, unknown>)),
@@ -229,9 +249,12 @@ export function Inventory() {
       )
       const nextNearExpiryDays = Math.max(nextExpiryWarningDays, nextNearExpiryDaysRaw)
 
-      setBatches(nextBatches)
+      setBatches(batchPage.items)
+      setBatchSummary(batchPage.summary)
+      setTotalItems(batchPage.total)
+      setTotalPages(Math.max(1, batchPage.pages))
+      setPage(batchPage.page)
       setMetaSuppliers(nextSuppliers)
-      setCatalogProducts(nextProducts)
       setExpiryWarningDays(nextExpiryWarningDays)
       setNearExpiryDays(nextNearExpiryDays)
     } catch (loadError) {
@@ -240,29 +263,24 @@ export function Inventory() {
     } finally {
       setLoading(false)
     }
-  }, [accessToken])
+  }, [accessToken, debouncedSearch, expFrom, expTo, page, pageSize, quickFilter])
 
   useEffect(() => {
     void loadInventory()
   }, [loadInventory])
 
-  const productByCode = useMemo(
-    () => new Map(catalogProducts.map((item) => [item.code.toUpperCase(), item])),
-    [catalogProducts],
-  )
   const supplierById = useMemo(() => new Map(metaSuppliers.map((item) => [item.id, item])), [metaSuppliers])
 
-  const allLotRows = useMemo<LotRow[]>(() => {
+  const lotRows = useMemo<LotRow[]>(() => {
     return batches
       .map((batch) => {
-        const product = productByCode.get(batch.drug_code.toUpperCase())
         const supplier = supplierById.get(batch.supplier_id)
         const units = toUnitConfigFromBatch(batch)
 
         return {
           batch,
-          drugCode: product?.code ?? batch.drug_code,
-          drugName: product?.name ?? batch.drug_name,
+          drugCode: batch.drug_code,
+          drugName: batch.drug_name,
           units,
           supplierContact:
             supplier ? `${supplier.contact_name} - ${supplier.phone}` : batch.supplier_contact,
@@ -271,81 +289,32 @@ export function Inventory() {
           nearDays: daysUntil(batch.exp_date),
         }
       })
+      .filter((row) => {
+        if (quickFilter === 'all') return true
+        if (quickFilter === 'out') return row.batch.qty_remaining <= 0
+        if (quickFilter === 'near') {
+          return row.nearDays >= 0 && row.nearDays <= nearExpiryDays && row.batch.qty_remaining > 0
+        }
+        return row.nearDays < 0 && row.batch.qty_remaining > 0
+      })
       .sort((a, b) => {
         const expCompare = a.batch.exp_date.localeCompare(b.batch.exp_date)
         if (expCompare !== 0) return expCompare
         return a.batch.batch_code.localeCompare(b.batch.batch_code)
       })
-  }, [batches, productByCode, supplierById])
+  }, [batches, nearExpiryDays, quickFilter, supplierById])
 
-  const scopedLotRows = useMemo(() => {
-    const keyword = search.trim().toLowerCase()
-    return allLotRows.filter((row) => {
-      const matchKeyword =
-        !keyword ||
-        row.drugCode.toLowerCase().includes(keyword) ||
-        row.drugName.toLowerCase().includes(keyword) ||
-        row.batch.batch_code.toLowerCase().includes(keyword) ||
-        row.batch.lot_number.toLowerCase().includes(keyword) ||
-        row.batch.supplier_name.toLowerCase().includes(keyword)
-
-      const matchFrom = !expFrom || row.batch.exp_date >= expFrom
-      const matchTo = !expTo || row.batch.exp_date <= expTo
-
-      return matchKeyword && matchFrom && matchTo
-    })
-  }, [allLotRows, expFrom, expTo, search])
-
-  const lotRows = useMemo(() => {
-    return scopedLotRows.filter((row) => {
-      if (quickFilter === 'all') return true
-      if (quickFilter === 'out') return row.batch.qty_remaining <= 0
-      if (quickFilter === 'near') {
-        return row.nearDays >= 0 && row.nearDays <= nearExpiryDays && row.batch.qty_remaining > 0
-      }
-      return row.nearDays < 0 && row.batch.qty_remaining > 0
-    })
-  }, [quickFilter, scopedLotRows, nearExpiryDays])
-
-  const scopedActiveLotRows = useMemo(
-    () => scopedLotRows.filter((row) => row.batch.status !== 'cancelled'),
-    [scopedLotRows],
+  const stats = useMemo(
+    () => ({
+      totalDrugs: batchSummary.total_drugs,
+      outOfStock: batchSummary.out_of_stock,
+      nearDate: batchSummary.near_date,
+      expired: batchSummary.expired,
+    }),
+    [batchSummary],
   )
-
-  const stats = useMemo(() => {
-    const byDrug = new Map<string, { totalQty: number; near: boolean; expired: boolean }>()
-
-    scopedActiveLotRows.forEach((row) => {
-      const key = row.batch.drug_id
-      const current = byDrug.get(key) ?? { totalQty: 0, near: false, expired: false }
-
-      current.totalQty += Math.max(0, row.batch.qty_remaining)
-      if (row.batch.qty_remaining > 0) {
-        if (row.nearDays < 0) current.expired = true
-        else if (row.nearDays <= nearExpiryDays) current.near = true
-      }
-
-      byDrug.set(key, current)
-    })
-
-    const totalDrugs = byDrug.size
-    let outOfStock = 0
-    let nearDate = 0
-    let expired = 0
-
-    byDrug.forEach((item) => {
-      if (item.totalQty <= 0) outOfStock += 1
-      if (item.near) nearDate += 1
-      if (item.expired) expired += 1
-    })
-
-    return {
-      totalDrugs,
-      outOfStock,
-      nearDate,
-      expired,
-    }
-  }, [scopedActiveLotRows, nearExpiryDays])
+  const rangeStart = totalItems === 0 ? 0 : (page - 1) * pageSize + 1
+  const rangeEnd = totalItems === 0 ? 0 : Math.min(page * pageSize, totalItems)
 
   const currentAdjustContext = useMemo(() => {
     if (!adjusting) return null
@@ -465,6 +434,7 @@ export function Inventory() {
     setQuickFilter('all')
     setExpFrom('')
     setExpTo('')
+    setPage(1)
   }
 
   if (printingLot) {
@@ -508,7 +478,10 @@ export function Inventory() {
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <button
           type="button"
-          onClick={() => setQuickFilter('all')}
+          onClick={() => {
+            setQuickFilter('all')
+            setPage(1)
+          }}
           className={`glass-card min-w-0 rounded-2xl p-4 text-left sm:rounded-3xl sm:p-5 ${quickFilter === 'all' ? 'ring-2 ring-ink-900/20' : ''}`}
         >
           <p className="text-[10px] uppercase tracking-[0.2em] text-ink-600 sm:text-xs sm:tracking-[0.24em]">Tổng mặt hàng</p>
@@ -516,7 +489,10 @@ export function Inventory() {
         </button>
         <button
           type="button"
-          onClick={() => setQuickFilter('out')}
+          onClick={() => {
+            setQuickFilter('out')
+            setPage(1)
+          }}
           className={`glass-card min-w-0 rounded-2xl p-4 text-left sm:rounded-3xl sm:p-5 ${quickFilter === 'out' ? 'ring-2 ring-ink-900/20' : ''}`}
         >
           <p className="text-[10px] uppercase tracking-[0.2em] text-ink-600 sm:text-xs sm:tracking-[0.24em]">Hết hàng</p>
@@ -524,7 +500,10 @@ export function Inventory() {
         </button>
         <button
           type="button"
-          onClick={() => setQuickFilter('near')}
+          onClick={() => {
+            setQuickFilter('near')
+            setPage(1)
+          }}
           className={`glass-card min-w-0 rounded-2xl p-4 text-left sm:rounded-3xl sm:p-5 ${quickFilter === 'near' ? 'ring-2 ring-ink-900/20' : ''}`}
         >
           <p className="text-[10px] uppercase tracking-[0.2em] text-ink-600 sm:text-xs sm:tracking-[0.24em]">Cận date</p>
@@ -532,7 +511,10 @@ export function Inventory() {
         </button>
         <button
           type="button"
-          onClick={() => setQuickFilter('expired')}
+          onClick={() => {
+            setQuickFilter('expired')
+            setPage(1)
+          }}
           className={`glass-card min-w-0 rounded-2xl p-4 text-left sm:rounded-3xl sm:p-5 ${quickFilter === 'expired' ? 'ring-2 ring-ink-900/20' : ''}`}
         >
           <p className="text-[10px] uppercase tracking-[0.2em] text-ink-600 sm:text-xs sm:tracking-[0.24em]">Hết hạn</p>
@@ -550,7 +532,10 @@ export function Inventory() {
         <div className="grid gap-3 md:grid-cols-1">
           <input
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => {
+              setSearch(event.target.value)
+              setPage(1)
+            }}
             placeholder="Tìm theo mã thuốc, tên thuốc, số lô, nhà phân phối"
             className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
           />
@@ -577,13 +562,19 @@ export function Inventory() {
           <input
             type="date"
             value={expFrom}
-            onChange={(event) => setExpFrom(event.target.value)}
+            onChange={(event) => {
+              setExpFrom(event.target.value)
+              setPage(1)
+            }}
             className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
           />
           <input
             type="date"
             value={expTo}
-            onChange={(event) => setExpTo(event.target.value)}
+            onChange={(event) => {
+              setExpTo(event.target.value)
+              setPage(1)
+            }}
             className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
           />
           <button
@@ -608,13 +599,19 @@ export function Inventory() {
               <input
                 type="date"
                 value={expFrom}
-                onChange={(event) => setExpFrom(event.target.value)}
+                onChange={(event) => {
+                  setExpFrom(event.target.value)
+                  setPage(1)
+                }}
                 className="w-full rounded-2xl border border-ink-900/10 bg-white px-3 py-2 text-xs"
               />
               <input
                 type="date"
                 value={expTo}
-                onChange={(event) => setExpTo(event.target.value)}
+                onChange={(event) => {
+                  setExpTo(event.target.value)
+                  setPage(1)
+                }}
                 className="w-full rounded-2xl border border-ink-900/10 bg-white px-3 py-2 text-xs"
               />
             </div>
@@ -916,6 +913,31 @@ export function Inventory() {
                 )
               })
             : null}
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-3 text-sm text-ink-600 sm:flex-row sm:items-center sm:justify-between">
+        <span>
+          Hiển thị {rangeStart} - {rangeEnd} trong {totalItems} lô
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setPage((current) => Math.max(1, current - 1))}
+            className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900"
+            disabled={page <= 1}
+          >
+            Trước
+          </button>
+          <span>{page}/{totalPages}</span>
+          <button
+            type="button"
+            onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+            className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900"
+            disabled={page >= totalPages}
+          >
+            Sau
+          </button>
         </div>
       </section>
 

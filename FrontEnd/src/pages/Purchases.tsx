@@ -2,11 +2,6 @@
 import Quagga from '@ericblade/quagga2'
 import QRCode from 'qrcode'
 import {
-  catalogApi,
-  type ProductDetailItem,
-  type SupplierItem as CatalogSupplierItem,
-} from '../api/catalogService'
-import {
   inventoryApi,
   type InventoryCreateReceiptPayload,
   type InventoryMetaDrug,
@@ -494,125 +489,6 @@ const buildDefaultPricesFromMeta = (drugs: InventoryMetaDrug[]) => {
   return result
 }
 
-const mapCatalogProductToUiDrug = (product: ProductDetailItem): Drug => {
-  const activeUnits = product.units
-    .filter((unit) => unit.is_active)
-    .sort((a, b) => b.conversion_rate - a.conversion_rate)
-
-  return {
-    id: product.id,
-    code: product.code,
-    name: product.name,
-    regNo: product.registration_number ?? '',
-    group: product.group?.name ?? '',
-    maker: product.manufacturer?.name ?? '',
-    barcode: product.barcode ?? activeUnits[0]?.barcode ?? '',
-    units: activeUnits.map((unit) => ({
-      id: unit.id,
-      name: unit.unit_name,
-      conversion: Math.max(1, unit.conversion_rate),
-      barcode: unit.barcode ?? '',
-    })),
-  }
-}
-
-const mergeMetaDrugsWithCatalog = (
-  inventoryDrugs: InventoryMetaDrug[],
-  catalogProducts: ProductDetailItem[],
-): Drug[] => {
-  const catalogByCode = new Map(
-    catalogProducts.map((product) => [normalizeLookupKey(product.code), product]),
-  )
-  const matchedCatalogCodes = new Set<string>()
-
-  const mergedInventoryDrugs = inventoryDrugs
-    .map((metaDrug) => {
-      const baseDrug = mapMetaDrugToUiDrug(metaDrug)
-      const matchedCatalog = catalogByCode.get(normalizeLookupKey(metaDrug.code))
-      if (!matchedCatalog) return baseDrug
-      matchedCatalogCodes.add(normalizeLookupKey(matchedCatalog.code))
-
-      const catalogUnits = matchedCatalog.units.filter((unit) => unit.is_active)
-      const catalogUnitByName = new Map(
-        catalogUnits.map((unit) => [normalizeLookupKey(unit.unit_name), unit]),
-      )
-      const catalogUnitByConversion = new Map(
-        catalogUnits.map((unit) => [Math.max(1, unit.conversion_rate), unit]),
-      )
-
-      const mergedUnits = baseDrug.units
-        .map((unit) => {
-          const byConversion = catalogUnitByConversion.get(unit.conversion)
-          const byName = catalogUnitByName.get(normalizeLookupKey(unit.name))
-          const matched = byConversion ?? byName
-          return {
-            ...unit,
-            name: matched?.unit_name ?? unit.name,
-            barcode: matched?.barcode ?? unit.barcode,
-          }
-        })
-        .sort((a, b) => b.conversion - a.conversion)
-
-      return {
-        ...baseDrug,
-        name: matchedCatalog.name,
-        regNo: matchedCatalog.registration_number ?? '',
-        group: matchedCatalog.group?.name ?? baseDrug.group,
-        maker: matchedCatalog.manufacturer?.name ?? '',
-        barcode: matchedCatalog.barcode ?? mergedUnits[0]?.barcode ?? baseDrug.barcode,
-        units: mergedUnits,
-      }
-    })
-
-  const catalogOnlyDrugs = catalogProducts
-    .filter((product) => !matchedCatalogCodes.has(normalizeLookupKey(product.code)))
-    .map(mapCatalogProductToUiDrug)
-
-  return [...mergedInventoryDrugs, ...catalogOnlyDrugs]
-    .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN'))
-}
-
-const buildDefaultPricesFromCatalog = (
-  products: ProductDetailItem[],
-): Record<string, Record<string, string>> => {
-  const result: Record<string, Record<string, string>> = {}
-  products.forEach((product) => {
-    const priceMap: Record<string, string> = {}
-    product.units
-      .filter((unit) => unit.is_active)
-      .forEach((unit) => {
-        const parsedPrice = Number(unit.selling_price ?? 0)
-        priceMap[unit.id] = Number.isFinite(parsedPrice) ? String(parsedPrice) : ''
-      })
-    result[product.id] = priceMap
-  })
-  return result
-}
-
-const mergeMetaSuppliersWithCatalog = (
-  inventorySuppliers: InventoryMetaSupplier[],
-  catalogSuppliers: CatalogSupplierItem[],
-): Supplier[] => {
-  const catalogByName = new Map(
-    catalogSuppliers.map((supplier) => [normalizeLookupKey(supplier.name), supplier]),
-  )
-
-  return inventorySuppliers
-    .map(mapMetaSupplierToUiSupplier)
-    .map((supplier) => {
-      const matchedCatalog = catalogByName.get(normalizeLookupKey(supplier.name))
-      if (!matchedCatalog) return supplier
-      return {
-        ...supplier,
-        name: matchedCatalog.name,
-        contactName: matchedCatalog.contact_person ?? supplier.contactName,
-        phone: matchedCatalog.phone ?? supplier.phone,
-        address: matchedCatalog.address ?? supplier.address,
-      }
-    })
-    .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN'))
-}
-
 function mapMetaSupplierToUiSupplier(supplier: InventoryMetaSupplier): Supplier {
   return {
     id: supplier.id,
@@ -930,12 +806,15 @@ export function Purchases() {
   const [loadingOrders, setLoadingOrders] = useState(false)
   const [savingOrder, setSavingOrder] = useState(false)
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [supplierFilter, setSupplierFilter] = useState('Tất cả')
   const [paymentStatusFilter, setPaymentStatusFilter] = useState('Tất cả')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
   const [page, setPage] = useState(1)
+  const [totalOrders, setTotalOrders] = useState(0)
+  const [orderPages, setOrderPages] = useState(1)
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const [form, setForm] = useState<OrderFormState>(() => createEmptyOrder(initialOrders, todayISO(), suppliers))
@@ -1026,6 +905,21 @@ export function Purchases() {
     firstFocusable?.focus()
   }, [])
 
+  const pageSize = useMemo(
+    () =>
+      typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
+        ? 10
+        : 20,
+    [],
+  )
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(search.trim())
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [search])
+
   const getApiErrorMessage = useCallback((error: unknown, fallback: string) => {
     if (error instanceof ApiError) {
       if (error.status === 401) return 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'
@@ -1041,95 +935,71 @@ export function Purchases() {
     async (extrasOverride?: Record<string, ReceiptExtra>) => {
       setLoadingOrders(true)
       try {
-        const [apiSuppliers, apiDrugs, apiReceipts] = await Promise.all([
+        const [apiSuppliers, apiDrugs, receiptPage] = await Promise.all([
           inventoryApi.getMetaSuppliers(accessToken || undefined),
           inventoryApi.getMetaDrugs(accessToken || undefined),
-          inventoryApi.listImportReceipts(),
+          inventoryApi.listImportReceiptsPaged({
+            page,
+            size: pageSize,
+            search: debouncedSearch || undefined,
+            supplier_id: supplierFilter === 'Tất cả' ? undefined : supplierFilter,
+            payment_status: paymentStatusFilter === 'Tất cả'
+              ? undefined
+              : paymentStatusToApi(paymentStatusFilter as PaymentStatus),
+            date_from: dateFrom || undefined,
+            date_to: dateTo || undefined,
+          }),
         ])
 
-        let catalogProducts: ProductDetailItem[] = []
-        let catalogSuppliers: CatalogSupplierItem[] = []
+        const nextSupplierOptions = apiSuppliers
+          .map(mapMetaSupplierToUiSupplier)
+          .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN'))
 
-        if (accessToken) {
-          try {
-            const fetchAllCatalogProducts = async () => {
-              const allProducts: Array<{ id: string }> = []
-              let currentPage = 1
-              let totalPages = 1
+        const nextDrugOptions = apiDrugs
+          .map(mapMetaDrugToUiDrug)
+          .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN'))
 
-              while (currentPage <= totalPages) {
-                const pageResponse = await catalogApi.listProducts(accessToken, {
-                  page: currentPage,
-                  size: 200,
-                })
-                allProducts.push(...pageResponse.items.map((item) => ({ id: item.id })))
-                totalPages = Math.max(1, pageResponse.pages)
-                currentPage += 1
-              }
-
-              return Promise.all(
-                allProducts.map((item) => catalogApi.getProduct(accessToken, item.id)),
-              )
-            }
-
-            const [productDetails, supplierPage] = await Promise.all([
-              fetchAllCatalogProducts(),
-              catalogApi.listSuppliers(accessToken, { is_active: true, page: 1, size: 200 }),
-            ])
-
-            catalogProducts = productDetails
-            catalogSuppliers = supplierPage.items
-          } catch (catalogError) {
-            console.warn('Cannot merge purchases metadata from catalog service:', catalogError)
-          }
-        }
-
-        const nextSupplierOptions = apiSuppliers.length
-          ? (catalogSuppliers.length
-              ? mergeMetaSuppliersWithCatalog(apiSuppliers, catalogSuppliers)
-              : apiSuppliers
-                  .map(mapMetaSupplierToUiSupplier)
-                  .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN')))
-          : []
-
-        const nextDrugOptions = apiDrugs.length
-          ? (catalogProducts.length
-              ? mergeMetaDrugsWithCatalog(apiDrugs, catalogProducts)
-              : apiDrugs
-                  .map(mapMetaDrugToUiDrug)
-                  .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN')))
-          : catalogProducts
-              .map(mapCatalogProductToUiDrug)
-              .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN'))
-
-        const nextDefaultRetailPrices = apiDrugs.length
-          ? buildDefaultPricesFromMeta(apiDrugs)
-          : catalogProducts.length
-              ? buildDefaultPricesFromCatalog(catalogProducts)
-              : {}
+        const nextDefaultRetailPrices = buildDefaultPricesFromMeta(apiDrugs)
         const extras = extrasOverride ?? receiptExtrasRef.current
 
-        const nextOrders = apiReceipts.map((receipt) =>
+        const receiptDetails = await Promise.all(
+          receiptPage.items.map(async (item) => {
+            try {
+              return await inventoryApi.getImportReceipt(item.id)
+            } catch {
+              return null
+            }
+          }),
+        )
+
+        const nextOrders = receiptDetails
+          .filter((receipt): receipt is InventoryReceipt => receipt !== null)
+          .map((receipt) =>
           mapInventoryReceiptToPurchaseOrder(
             receipt,
             nextDrugOptions,
             nextDefaultRetailPrices,
             extras[receipt.id],
-          ),
-        )
+          ))
 
         setSupplierOptions(nextSupplierOptions)
         setDrugOptions(nextDrugOptions)
         setDefaultRetailPrices(nextDefaultRetailPrices)
         setOrders(nextOrders)
+        setTotalOrders(receiptPage.total)
+        setOrderPages(Math.max(1, receiptPage.pages))
+        setPage(receiptPage.page)
         setAlert(null)
-        const hasStructuredFields = apiReceipts.every((receipt) => {
+        const hasStructuredFields = nextOrders.every((order) => {
+          const matchingReceipt = receiptDetails.find((item) => item?.id === order.id)
+          if (!matchingReceipt) return false
+          const receipt = matchingReceipt as InventoryReceipt
           const rawReceipt = receipt as unknown as Record<string, unknown>
           const hasReceiptFields =
             'payment_status' in rawReceipt &&
             'payment_method' in rawReceipt &&
             'shipping_carrier' in rawReceipt
-          const hasLineFields = receipt.lines.every((line) => {
+          const hasLineFields = receipt.lines.every((line: InventoryReceiptLine) => {
             const rawLine = line as unknown as Record<string, unknown>
             return (
               'barcode' in rawLine &&
@@ -1142,9 +1012,7 @@ export function Purchases() {
 
         setApiMismatchNotice(
           hasStructuredFields
-            ? (!apiDrugs.length && catalogProducts.length
-                ? 'Danh mục thuốc nhập đang đọc từ Catalog. Một số thuốc có thể chưa đồng bộ mã nội bộ của kho.'
-                : null)
+            ? null
             : 'API chưa trả đủ trường mở rộng cho trang nhập hàng. Hệ thống đang fallback bằng dữ liệu cục bộ để không mất dữ liệu thao tác.',
         )
       } catch (error) {
@@ -1153,14 +1021,22 @@ export function Purchases() {
         setLoadingOrders(false)
       }
     },
-    [accessToken, getApiErrorMessage],
+    [
+      accessToken,
+      dateFrom,
+      dateTo,
+      getApiErrorMessage,
+      page,
+      pageSize,
+      paymentStatusFilter,
+      debouncedSearch,
+      supplierFilter,
+    ],
   )
 
   useEffect(() => {
     void loadPurchasesData()
   }, [loadPurchasesData])
-
-  const pageSize = 5
 
   const supplierMap = useMemo(
     () => new Map(supplierOptions.map((supplier) => [supplier.id, supplier])),
@@ -1284,31 +1160,10 @@ export function Purchases() {
     return pills
   }, [drugMap, form.lines])
 
-  const filtered = useMemo(() => {
-    const keyword = search.trim().toLowerCase()
-    return orders.filter((order) => {
-      const supplierName = supplierMap.get(order.supplierId)?.name ?? ''
-      const matchKeyword =
-        !keyword ||
-        order.code.toLowerCase().includes(keyword) ||
-        supplierName.toLowerCase().includes(keyword)
-      const matchSupplier = supplierFilter === 'Tất cả' || order.supplierId === supplierFilter
-      const matchPaymentStatus =
-        paymentStatusFilter === 'Tất cả' || order.paymentStatus === paymentStatusFilter
-      const matchFrom = !dateFrom || order.date >= dateFrom
-      const matchTo = !dateTo || order.date <= dateTo
-      return matchKeyword && matchSupplier && matchPaymentStatus && matchFrom && matchTo
-    })
-  }, [orders, search, supplierFilter, paymentStatusFilter, dateFrom, dateTo, supplierMap])
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
-  const paged = filtered.slice((page - 1) * pageSize, page * pageSize)
-  const rangeStart = filtered.length === 0 ? 0 : (page - 1) * pageSize + 1
-  const rangeEnd = filtered.length === 0 ? 0 : Math.min(page * pageSize, filtered.length)
-
-  useEffect(() => {
-    setPage((prev) => Math.min(prev, totalPages))
-  }, [totalPages])
+  const paged = orders
+  const totalPages = orderPages
+  const rangeStart = totalOrders === 0 ? 0 : (page - 1) * pageSize + 1
+  const rangeEnd = totalOrders === 0 ? 0 : Math.min(page * pageSize, totalOrders)
 
   const resetFilters = () => {
     setSearch('')
@@ -1343,7 +1198,7 @@ export function Purchases() {
       'Thành tiền dòng',
     ]
 
-    const rows = filtered.flatMap((order) => {
+    const rows = paged.flatMap((order) => {
       const supplier = supplierMap.get(order.supplierId)
       const orderTotal = calcOrderTotal(order.lines)
 
@@ -2492,7 +2347,7 @@ export function Purchases() {
           <button
             type="button"
             onClick={exportOrdersExcel}
-            disabled={loadingOrders || filtered.length === 0}
+            disabled={loadingOrders || paged.length === 0}
             className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
           >
             Xuất Excel
@@ -2859,7 +2714,7 @@ export function Purchases() {
       </section>
 
       <section className="flex flex-col gap-3 text-sm text-ink-600 sm:flex-row sm:items-center sm:justify-between">
-        <span>Hiển thị {rangeStart} - {rangeEnd} trong {filtered.length} phiếu</span>
+        <span>Hiển thị {rangeStart} - {rangeEnd} trong {totalOrders} phiếu</span>
         <div className="flex items-center gap-2">
           <button onClick={() => setPage((p) => Math.max(1, p - 1))} className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900">Trước</button>
           <span>{page}/{totalPages}</span>

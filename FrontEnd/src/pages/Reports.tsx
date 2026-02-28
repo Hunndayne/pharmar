@@ -64,8 +64,8 @@ const tabs: Array<{ id: ReportTab; label: string }> = [
   { id: 'customer', label: 'Khách hàng' },
 ]
 
-const MAX_REPORT_PAGES = 30
-const PAGE_SIZE = 200
+const MAX_REPORT_PAGES = 5
+const PAGE_SIZE = 50
 
 const toNumber = (value: string | number | null | undefined) => {
   const parsed = Number(value)

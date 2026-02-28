@@ -26,10 +26,10 @@ type TopProductRow = {
   revenue: number
 }
 
-const MAX_REPORT_PAGES = 25
-const PAGE_SIZE = 200
-const MAX_INVOICES_FOR_TOP = 80
-const DETAIL_CHUNK_SIZE = 10
+const MAX_REPORT_PAGES = 5
+const PAGE_SIZE = 50
+const MAX_INVOICES_FOR_TOP = 30
+const DETAIL_CHUNK_SIZE = 6
 const DASHBOARD_AUTO_REFRESH_GAP_MS = 15000
 
 const toNumber = (value: string | number | null | undefined) => {

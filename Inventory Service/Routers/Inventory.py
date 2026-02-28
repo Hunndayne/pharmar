@@ -1234,6 +1234,149 @@ def receipt_to_view(receipt: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def receipt_list_item_to_view(receipt: dict[str, Any]) -> dict[str, Any]:
+    supplier = runtime_state.suppliers.get(receipt["supplier_id"])
+    supplier_name = supplier["name"] if supplier else receipt.get("supplier_name", "")
+    supplier_contact_name = (
+        supplier["contact_name"] if supplier else receipt.get("supplier_contact_name", "")
+    )
+    supplier_phone = supplier["phone"] if supplier else receipt.get("supplier_phone", "")
+    return {
+        "id": receipt["id"],
+        "code": receipt["code"],
+        "receipt_date": receipt["receipt_date"],
+        "supplier_id": receipt["supplier_id"],
+        "supplier_name": supplier_name,
+        "supplier_contact": build_supplier_contact(supplier_contact_name, supplier_phone),
+        "shipping_carrier": receipt.get("shipping_carrier"),
+        "payment_status": receipt.get("payment_status", PaymentStatus.PAID),
+        "payment_method": receipt.get("payment_method", PaymentMethod.BANK),
+        "status": receipt["status"],
+        "total_value": receipt["total_value"],
+        "line_count": len(receipt.get("lines", [])),
+        "created_at": receipt["created_at"],
+        "updated_at": receipt["updated_at"],
+        "can_edit": receipt_is_editable(receipt, raise_if_not=False),
+    }
+
+
+def filter_import_receipts(
+    receipts: list[dict[str, Any]],
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    supplier_id: str | None = None,
+    status_filter: ReceiptStatus | None = None,
+    payment_status: PaymentStatus | None = None,
+    search: str | None = None,
+) -> list[dict[str, Any]]:
+    filtered = receipts
+    if date_from is not None:
+        filtered = [receipt for receipt in filtered if receipt["receipt_date"] >= date_from]
+    if date_to is not None:
+        filtered = [receipt for receipt in filtered if receipt["receipt_date"] <= date_to]
+    if supplier_id is not None:
+        filtered = [receipt for receipt in filtered if receipt["supplier_id"] == supplier_id]
+    if status_filter is not None:
+        filtered = [receipt for receipt in filtered if receipt["status"] == status_filter]
+    if payment_status is not None:
+        filtered = [
+            receipt
+            for receipt in filtered
+            if receipt.get("payment_status", PaymentStatus.PAID) == payment_status
+        ]
+    if search:
+        keyword = normalize_key(search)
+        filtered = [
+            receipt
+            for receipt in filtered
+            if keyword in normalize_key(str(receipt.get("code", "")))
+            or keyword in normalize_key(str(receipt.get("note", "")))
+            or keyword in normalize_key(str(receipt.get("supplier_name", "")))
+            or keyword
+            in normalize_key(
+                runtime_state.suppliers.get(receipt["supplier_id"], {}).get("name", ""),
+            )
+        ]
+    filtered.sort(key=lambda receipt: (receipt["receipt_date"], receipt["created_at"]), reverse=True)
+    return filtered
+
+
+def filter_batches(
+    records: list[dict[str, Any]],
+    *,
+    day: date,
+    search: str | None = None,
+    drug: str | None = None,
+    supplier_id: str | None = None,
+    status_filter: BatchStatus | None = None,
+    exp_from: date | None = None,
+    exp_to: date | None = None,
+) -> list[dict[str, Any]]:
+    filtered = records
+    if drug:
+        resolved = resolve_drug(drug_id=drug, drug_code_or_sku=drug)
+        filtered = [batch for batch in filtered if batch["drug_id"] == resolved["id"]]
+    if supplier_id:
+        filtered = [batch for batch in filtered if batch["supplier_id"] == supplier_id]
+    if exp_from:
+        filtered = [batch for batch in filtered if batch["exp_date"] >= exp_from]
+    if exp_to:
+        filtered = [batch for batch in filtered if batch["exp_date"] <= exp_to]
+    if search:
+        keyword = normalize_key(search)
+        filtered = [
+            batch
+            for batch in filtered
+            if keyword in normalize_key(batch["batch_code"])
+            or keyword in normalize_key(batch["lot_number"])
+            or keyword in normalize_key(runtime_state.drugs[batch["drug_id"]]["name"])
+            or keyword in normalize_key(runtime_state.drugs[batch["drug_id"]]["code"])
+            or keyword in normalize_key(batch.get("supplier_name", ""))
+        ]
+    if status_filter:
+        filtered = [batch for batch in filtered if batch_status(batch, day) == status_filter]
+
+    filtered.sort(key=lambda batch: (batch["exp_date"], batch["received_date"], batch["batch_code"]))
+    return filtered
+
+
+def summarize_batches_by_drug(
+    records: list[dict[str, Any]],
+    *,
+    day: date,
+    near_date_days: int,
+) -> dict[str, int]:
+    by_drug: dict[str, dict[str, Any]] = {}
+    for batch in records:
+        if batch.get("cancelled"):
+            continue
+        drug_id = str(batch.get("drug_id") or "")
+        if not drug_id:
+            continue
+        current = by_drug.get(drug_id, {"total_qty": 0, "near": False, "expired": False})
+        qty_remaining = max(0, int(batch.get("qty_remaining", 0)))
+        current["total_qty"] += qty_remaining
+        if qty_remaining > 0:
+            days_to_expiry = (batch["exp_date"] - day).days
+            if days_to_expiry < 0:
+                current["expired"] = True
+            elif days_to_expiry <= near_date_days:
+                current["near"] = True
+        by_drug[drug_id] = current
+
+    total_drugs = len(by_drug)
+    out_of_stock = sum(1 for item in by_drug.values() if item["total_qty"] <= 0)
+    near_date = sum(1 for item in by_drug.values() if item["near"])
+    expired = sum(1 for item in by_drug.values() if item["expired"])
+    return {
+        "total_drugs": total_drugs,
+        "out_of_stock": out_of_stock,
+        "near_date": near_date,
+        "expired": expired,
+    }
+
+
 def issue_sort_key(
     batch: dict[str, Any],
     as_of: date,
@@ -1615,17 +1758,50 @@ async def list_import_receipts(
     supplier_id: str | None = Query(default=None),
     status_filter: ReceiptStatus | None = Query(default=None, alias="status"),
 ) -> list[dict[str, Any]]:
-    receipts = list(runtime_state.receipts.values())
-    if date_from is not None:
-        receipts = [receipt for receipt in receipts if receipt["receipt_date"] >= date_from]
-    if date_to is not None:
-        receipts = [receipt for receipt in receipts if receipt["receipt_date"] <= date_to]
-    if supplier_id is not None:
-        receipts = [receipt for receipt in receipts if receipt["supplier_id"] == supplier_id]
-    if status_filter is not None:
-        receipts = [receipt for receipt in receipts if receipt["status"] == status_filter]
-    receipts.sort(key=lambda receipt: (receipt["receipt_date"], receipt["created_at"]), reverse=True)
+    receipts = filter_import_receipts(
+        list(runtime_state.receipts.values()),
+        date_from=date_from,
+        date_to=date_to,
+        supplier_id=supplier_id,
+        status_filter=status_filter,
+    )
     return [receipt_to_view(receipt) for receipt in receipts]
+
+
+@router.get("/import-receipts/paged")
+async def list_import_receipts_paged(
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    supplier_id: str | None = Query(default=None),
+    status_filter: ReceiptStatus | None = Query(default=None, alias="status"),
+    payment_status: PaymentStatus | None = Query(default=None),
+    search: str | None = Query(default=None),
+) -> dict[str, Any]:
+    receipts = filter_import_receipts(
+        list(runtime_state.receipts.values()),
+        date_from=date_from,
+        date_to=date_to,
+        supplier_id=supplier_id,
+        status_filter=status_filter,
+        payment_status=payment_status,
+        search=search,
+    )
+
+    total = len(receipts)
+    pages = max(1, (total + size - 1) // size)
+    current_page = min(page, pages)
+    start = (current_page - 1) * size
+    end = start + size
+    items = receipts[start:end]
+    return {
+        "items": [receipt_list_item_to_view(receipt) for receipt in items],
+        "total": total,
+        "page": current_page,
+        "size": size,
+        "pages": pages,
+    }
 
 
 @router.get("/import-receipts/{receipt_id}")
@@ -2074,32 +2250,60 @@ async def list_batches(
     exp_to: date | None = Query(default=None),
 ) -> list[dict[str, Any]]:
     day = date.today()
-    records = list(runtime_state.batches.values())
-
-    if drug:
-        resolved = resolve_drug(drug_id=drug, drug_code_or_sku=drug)
-        records = [batch for batch in records if batch["drug_id"] == resolved["id"]]
-    if supplier_id:
-        records = [batch for batch in records if batch["supplier_id"] == supplier_id]
-    if exp_from:
-        records = [batch for batch in records if batch["exp_date"] >= exp_from]
-    if exp_to:
-        records = [batch for batch in records if batch["exp_date"] <= exp_to]
-    if search:
-        keyword = normalize_key(search)
-        records = [
-            batch
-            for batch in records
-            if keyword in normalize_key(batch["batch_code"])
-            or keyword in normalize_key(batch["lot_number"])
-            or keyword in normalize_key(runtime_state.drugs[batch["drug_id"]]["name"])
-            or keyword in normalize_key(runtime_state.drugs[batch["drug_id"]]["code"])
-        ]
-    if status_filter:
-        records = [batch for batch in records if batch_status(batch, day) == status_filter]
-
-    records.sort(key=lambda batch: (batch["exp_date"], batch["received_date"], batch["batch_code"]))
+    records = filter_batches(
+        list(runtime_state.batches.values()),
+        day=day,
+        search=search,
+        drug=drug,
+        supplier_id=supplier_id,
+        status_filter=status_filter,
+        exp_from=exp_from,
+        exp_to=exp_to,
+    )
     return [batch_to_view(batch, day) for batch in records]
+
+
+@router.get("/batches/paged")
+async def list_batches_paged(
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None),
+    drug: str | None = Query(default=None),
+    supplier_id: str | None = Query(default=None),
+    status_filter: BatchStatus | None = Query(default=None, alias="status"),
+    exp_from: date | None = Query(default=None),
+    exp_to: date | None = Query(default=None),
+) -> dict[str, Any]:
+    day = date.today()
+    records = filter_batches(
+        list(runtime_state.batches.values()),
+        day=day,
+        search=search,
+        drug=drug,
+        supplier_id=supplier_id,
+        status_filter=status_filter,
+        exp_from=exp_from,
+        exp_to=exp_to,
+    )
+    inventory_settings = await fetch_inventory_settings()
+    near_date_days = _to_non_negative_int(inventory_settings.get("inventory.near_date_days"), 90)
+    summary = summarize_batches_by_drug(records, day=day, near_date_days=near_date_days)
+
+    total = len(records)
+    pages = max(1, (total + size - 1) // size)
+    current_page = min(page, pages)
+    start = (current_page - 1) * size
+    end = start + size
+    items = records[start:end]
+
+    return {
+        "items": [batch_to_view(batch, day) for batch in items],
+        "total": total,
+        "page": current_page,
+        "size": size,
+        "pages": pages,
+        "summary": summary,
+    }
 
 
 @router.get("/batches/qr/{qr_value}")

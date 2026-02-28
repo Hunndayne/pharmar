@@ -1,30 +1,31 @@
-import { useEffect } from 'react'
+import { Suspense, lazy, useEffect } from 'react'
 import { Route, Routes } from 'react-router-dom'
 import { AppShell } from './layout/AppShell'
 import { RequireAuth } from './routes/RequireAuth'
 import { RequireOwnerOrAdmin } from './routes/RequireOwnerOrAdmin'
 import { storeApi } from './api/storeService'
-import { Dashboard } from './pages/Dashboard'
-import { DrugCatalog } from './pages/DrugCatalog'
-import { DrugGroups } from './pages/DrugGroups'
-import { Manufacturers } from './pages/Manufacturers'
-import { Distributors } from './pages/Distributors'
-import { StoreHub } from './pages/StoreHub'
-import { Purchases } from './pages/Purchases'
-import { Inventory } from './pages/Inventory'
-import { Pos } from './pages/Pos'
-import { SalesHistory } from './pages/SalesHistory'
-import { Customers } from './pages/Customers'
-import { Promotions } from './pages/Promotions'
-import { Reports } from './pages/Reports'
-import { UsersManagement } from './pages/UsersManagement'
-import { UserSettings } from './pages/UserSettings'
-import { StoreSettings } from './pages/StoreSettings'
-import { StoreDrugGroups } from './pages/StoreDrugGroups'
-import { SystemHealth } from './pages/SystemHealth'
 import { Login } from './pages/Login'
-import { NotFound } from './pages/NotFound'
 import { setDocumentFavicon } from './utils/assets'
+
+const Dashboard = lazy(() => import('./pages/Dashboard').then((module) => ({ default: module.Dashboard })))
+const DrugCatalog = lazy(() => import('./pages/DrugCatalog').then((module) => ({ default: module.DrugCatalog })))
+const DrugGroups = lazy(() => import('./pages/DrugGroups').then((module) => ({ default: module.DrugGroups })))
+const Manufacturers = lazy(() => import('./pages/Manufacturers').then((module) => ({ default: module.Manufacturers })))
+const Distributors = lazy(() => import('./pages/Distributors').then((module) => ({ default: module.Distributors })))
+const StoreHub = lazy(() => import('./pages/StoreHub').then((module) => ({ default: module.StoreHub })))
+const Purchases = lazy(() => import('./pages/Purchases').then((module) => ({ default: module.Purchases })))
+const Inventory = lazy(() => import('./pages/Inventory').then((module) => ({ default: module.Inventory })))
+const Pos = lazy(() => import('./pages/Pos').then((module) => ({ default: module.Pos })))
+const SalesHistory = lazy(() => import('./pages/SalesHistory').then((module) => ({ default: module.SalesHistory })))
+const Customers = lazy(() => import('./pages/Customers').then((module) => ({ default: module.Customers })))
+const Promotions = lazy(() => import('./pages/Promotions').then((module) => ({ default: module.Promotions })))
+const Reports = lazy(() => import('./pages/Reports').then((module) => ({ default: module.Reports })))
+const UsersManagement = lazy(() => import('./pages/UsersManagement').then((module) => ({ default: module.UsersManagement })))
+const UserSettings = lazy(() => import('./pages/UserSettings').then((module) => ({ default: module.UserSettings })))
+const StoreSettings = lazy(() => import('./pages/StoreSettings').then((module) => ({ default: module.StoreSettings })))
+const StoreDrugGroups = lazy(() => import('./pages/StoreDrugGroups').then((module) => ({ default: module.StoreDrugGroups })))
+const SystemHealth = lazy(() => import('./pages/SystemHealth').then((module) => ({ default: module.SystemHealth })))
+const NotFound = lazy(() => import('./pages/NotFound').then((module) => ({ default: module.NotFound })))
 
 function App() {
   useEffect(() => {
@@ -49,7 +50,13 @@ function App() {
       <Route path="/login" element={<Login />} />
 
       <Route element={<RequireAuth />}>
-        <Route element={<AppShell />}>
+        <Route
+          element={(
+            <Suspense fallback={<div className="p-4 text-sm text-ink-600">Đang tải trang...</div>}>
+              <AppShell />
+            </Suspense>
+          )}
+        >
           <Route index element={<Dashboard />} />
           <Route path="/thuoc" element={<DrugCatalog />} />
           <Route path="/nhom-thuoc" element={<DrugGroups />} />
