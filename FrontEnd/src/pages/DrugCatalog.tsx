@@ -1289,14 +1289,6 @@ export function DrugCatalog() {
     return groupOptions.filter((group) => (groupCategoryById[group.id] ?? '-') === form.groupCategory)
   }, [form.groupCategory, groupIdsByCategory, groupOptions, groupCategoryById])
 
-  const selectedGroupCategory = useMemo(() => {
-    if (form.groupCategory) return form.groupCategory
-    if (!form.groupId) return '-'
-    const fromStore = Object.entries(groupIdsByCategory).find(([, ids]) => ids.includes(form.groupId))
-    if (fromStore?.[0]) return fromStore[0]
-    return groupCategoryById[form.groupId] ?? '-'
-  }, [form.groupCategory, form.groupId, groupIdsByCategory, groupCategoryById])
-
   const selectedGroupTax = useMemo(() => {
     if (!form.groupId) return null
     return groupTaxById[form.groupId] ?? null
@@ -2890,9 +2882,6 @@ export function DrugCatalog() {
                   {!form.groupCategory ? (
                     <span className="text-xs text-ink-500">Hãy chọn loại thuốc trước.</span>
                   ) : null}
-                  <div className="rounded-2xl border border-ink-900/10 bg-fog-50 px-4 py-2 text-sm text-ink-700">
-                    {'Lo\u1ea1i thu\u1ed1c hi\u1ec7n t\u1ea1i:'} <span className="font-semibold text-ink-900">{selectedGroupCategory}</span>
-                  </div>
                   {selectedGroupTax ? (
                     <div className="rounded-2xl border border-ink-900/10 bg-fog-50 px-4 py-2 text-sm text-ink-700">
                       {'Thu\u1ebf nh\u00f3m \u00e1p d\u1ee5ng:'} VAT {selectedGroupTax.vatRate}% {'\u00b7'} {'Thu\u1ebf kh\u00e1c'} {selectedGroupTax.otherTaxRate}%
