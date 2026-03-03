@@ -73,6 +73,14 @@ type FormState = {
   retailUnit: FormUnit
 }
 
+type StoreGroupMeta = {
+  storeGroupId: string
+  categoryName: string
+  groupName: string
+  vatRate: number
+  otherTaxRate: number
+}
+
 type ScanTarget = 'search' | 'form'
 
 const unitNames = [
@@ -401,6 +409,12 @@ const buildDesiredUnits = (form: FormState): DesiredUnit[] => {
 }
 
 const normalizeGroupKey = (value: string) => value.trim().toLocaleLowerCase('vi-VN')
+const STORE_GROUP_CODE_PREFIX = 'SG'
+const buildCatalogGroupCodeFromStoreGroupId = (storeGroupId: string) => {
+  const compact = storeGroupId.trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+  return `${STORE_GROUP_CODE_PREFIX}${compact}`.slice(0, 20)
+}
+const normalizeCodeKey = (value: string | null | undefined) => (value ?? '').trim().toUpperCase()
 const loadDrugFormDraft = (): Partial<FormState> | null =>
   readLocalDraft<Partial<FormState>>(DRUG_FORM_DRAFT_STORAGE_KEY)
 
@@ -639,7 +653,11 @@ export function DrugCatalog() {
   const [groupOptions, setGroupOptions] = useState<DrugGroupItem[]>([])
   const [groupCategoryById, setGroupCategoryById] = useState<Record<string, string>>({})
   const [groupIdsByCategory, setGroupIdsByCategory] = useState<Record<string, string[]>>({})
+  const [groupUniqueCategoryByName, setGroupUniqueCategoryByName] = useState<Record<string, string>>({})
   const [groupTaxById, setGroupTaxById] = useState<
+    Record<string, { vatRate: number; otherTaxRate: number }>
+  >({})
+  const [groupUniqueTaxByName, setGroupUniqueTaxByName] = useState<
     Record<string, { vatRate: number; otherTaxRate: number }>
   >({})
   const [makerOptions, setMakerOptions] = useState<ManufacturerItem[]>([])
@@ -787,71 +805,84 @@ export function DrugCatalog() {
       if (loadCatalogRequestRef.current !== requestId) return
 
       let resolvedGroups = groupPage.items
-      const groupCategoryByName: Record<string, string> = {}
-      const groupTaxByName: Record<string, { vatRate: number; otherTaxRate: number }> = {}
-      let storeCategories: Array<{
-        name: string
-        groups: Array<{
-          name: string
-          is_active: boolean
-          vat_rate: number | string
-          other_tax_rate: number | string
-        }>
-      }> = []
+      let storeGroupMetas: StoreGroupMeta[] = []
+      let uniqueCategoryByName: Record<string, string> = {}
+      let uniqueTaxByName: Record<string, { vatRate: number; otherTaxRate: number }> = {}
 
       try {
         const storeCategoryPage = await storeApi.listDrugCategories({ include_inactive: false })
         if (loadCatalogRequestRef.current !== requestId) return
-        storeCategories = storeCategoryPage.items.map((category) => ({
-          name: category.name.trim(),
-          groups: category.groups.map((group) => ({
-            name: group.name.trim(),
-            is_active: group.is_active,
-            vat_rate: group.vat_rate,
-            other_tax_rate: group.other_tax_rate,
-          })),
-        }))
+        const categorySetByName = new Map<string, Set<string>>()
+        const taxSetByName = new Map<string, Set<string>>()
+        const taxValueByName = new Map<string, { vatRate: number; otherTaxRate: number }>()
 
-        const catalogGroupByKey = new Map(
-          resolvedGroups.map((group) => [normalizeGroupKey(group.name), group]),
+        storeGroupMetas = storeCategoryPage.items.flatMap((category) => {
+          const categoryName = category.name.trim() || '-'
+          return category.groups
+            .filter((group) => group.is_active)
+            .map((group) => {
+              const groupName = group.name.trim()
+              if (!group.id || !groupName) return null
+
+              const vatRate = toPriceNumber(group.vat_rate)
+              const otherTaxRate = toPriceNumber(group.other_tax_rate)
+              const groupKey = normalizeGroupKey(groupName)
+              if (groupKey) {
+                const categories = categorySetByName.get(groupKey) ?? new Set<string>()
+                categories.add(categoryName)
+                categorySetByName.set(groupKey, categories)
+
+                const taxKey = `${vatRate}|${otherTaxRate}`
+                const taxes = taxSetByName.get(groupKey) ?? new Set<string>()
+                taxes.add(taxKey)
+                taxSetByName.set(groupKey, taxes)
+                if (!taxValueByName.has(groupKey)) {
+                  taxValueByName.set(groupKey, { vatRate, otherTaxRate })
+                }
+              }
+
+              return {
+                storeGroupId: group.id,
+                categoryName,
+                groupName,
+                vatRate,
+                otherTaxRate,
+              } satisfies StoreGroupMeta
+            })
+            .filter((item): item is StoreGroupMeta => item !== null)
+        })
+
+        for (const [groupKey, categories] of categorySetByName.entries()) {
+          if (categories.size === 1) {
+            const [singleCategory] = Array.from(categories)
+            uniqueCategoryByName[groupKey] = singleCategory
+          }
+        }
+        for (const [groupKey, taxes] of taxSetByName.entries()) {
+          if (taxes.size === 1) {
+            const tax = taxValueByName.get(groupKey)
+            if (tax) uniqueTaxByName[groupKey] = tax
+          }
+        }
+
+        const catalogGroupByCode = new Map(
+          resolvedGroups.map((group) => [normalizeCodeKey(group.code), group]),
         )
 
-        const uniqueStoreGroupNames = Array.from(
-          new Set(
-            storeCategoryPage.items.flatMap((category) => {
-              const categoryName = category.name.trim()
-              return category.groups
-                .filter((group) => group.is_active)
-                .map((group) => {
-                  const normalizedGroupName = normalizeGroupKey(group.name)
-                  if (normalizedGroupName && !groupCategoryByName[normalizedGroupName]) {
-                    groupCategoryByName[normalizedGroupName] = categoryName || '-'
-                  }
-                  if (normalizedGroupName && !groupTaxByName[normalizedGroupName]) {
-                    groupTaxByName[normalizedGroupName] = {
-                      vatRate: toPriceNumber(group.vat_rate),
-                      otherTaxRate: toPriceNumber(group.other_tax_rate),
-                    }
-                  }
-                  return group.name.trim()
-                })
-                .filter(Boolean)
-            }),
-          ),
-        )
-
-        if (canManage && uniqueStoreGroupNames.length > 0) {
+        if (canManage && storeGroupMetas.length > 0) {
           let hasSyncedNewGroup = false
-          for (const groupName of uniqueStoreGroupNames) {
-            const groupKey = normalizeGroupKey(groupName)
-            if (catalogGroupByKey.has(groupKey)) continue
+          for (const meta of storeGroupMetas) {
+            const targetCode = buildCatalogGroupCodeFromStoreGroupId(meta.storeGroupId)
+            if (!targetCode) continue
+            if (catalogGroupByCode.has(normalizeCodeKey(targetCode))) continue
             try {
               const createdGroup = await catalogApi.createDrugGroup(accessToken, {
-                name: groupName,
+                code: targetCode,
+                name: meta.groupName,
                 description: null,
                 is_active: true,
               })
-              catalogGroupByKey.set(groupKey, createdGroup)
+              catalogGroupByCode.set(normalizeCodeKey(createdGroup.code), createdGroup)
               hasSyncedNewGroup = true
             } catch (syncError) {
               if (!(syncError instanceof ApiError) || syncError.status >= 500) {
@@ -874,55 +905,50 @@ export function DrugCatalog() {
         console.warn('Skip syncing drug groups from store service:', syncError)
       }
 
-      const nextGroupCategoryById = resolvedGroups.reduce<Record<string, string>>((acc, group) => {
-        acc[group.id] = groupCategoryByName[normalizeGroupKey(group.name)] ?? '-'
-        return acc
-      }, {})
-      const nextGroupTaxById = resolvedGroups.reduce<
-        Record<string, { vatRate: number; otherTaxRate: number }>
-      >((acc, group) => {
-        const byName = groupTaxByName[normalizeGroupKey(group.name)]
-        acc[group.id] = byName ?? { vatRate: 0, otherTaxRate: 0 }
-        return acc
-      }, {})
-      const catalogGroupByKey = new Map(
-        resolvedGroups.map((group) => [normalizeGroupKey(group.name), group]),
+      const catalogGroupByCode = new Map(
+        resolvedGroups.map((group) => [normalizeCodeKey(group.code), group]),
       )
-      const nextGroupIdsByCategory: Record<string, string[]> = {}
-      for (const category of storeCategories) {
-        if (!category.name) continue
-        const uniqueIds = new Set<string>()
-        for (const group of category.groups) {
-          if (!group.is_active) continue
-          const normalizedGroupName = normalizeGroupKey(group.name)
-          const catalogGroup = catalogGroupByKey.get(normalizedGroupName)
-          if (!catalogGroup) continue
-          uniqueIds.add(catalogGroup.id)
-          if (!nextGroupCategoryById[catalogGroup.id]) {
-            nextGroupCategoryById[catalogGroup.id] = category.name
-          }
-          if (!nextGroupTaxById[catalogGroup.id]) {
-            nextGroupTaxById[catalogGroup.id] = {
-              vatRate: toPriceNumber(group.vat_rate),
-              otherTaxRate: toPriceNumber(group.other_tax_rate),
-            }
-          }
+      const nextGroupCategoryById: Record<string, string> = {}
+      const nextGroupTaxById: Record<string, { vatRate: number; otherTaxRate: number }> = {}
+      const nextGroupIdsByCategorySet = new Map<string, Set<string>>()
+
+      for (const meta of storeGroupMetas) {
+        const code = buildCatalogGroupCodeFromStoreGroupId(meta.storeGroupId)
+        const catalogGroup = catalogGroupByCode.get(normalizeCodeKey(code))
+        if (!catalogGroup) continue
+
+        nextGroupCategoryById[catalogGroup.id] = meta.categoryName
+        nextGroupTaxById[catalogGroup.id] = {
+          vatRate: meta.vatRate,
+          otherTaxRate: meta.otherTaxRate,
         }
-        if (uniqueIds.size) {
-          nextGroupIdsByCategory[category.name] = Array.from(uniqueIds)
-        }
+
+        const categorySet = nextGroupIdsByCategorySet.get(meta.categoryName) ?? new Set<string>()
+        categorySet.add(catalogGroup.id)
+        nextGroupIdsByCategorySet.set(meta.categoryName, categorySet)
       }
+      const nextGroupIdsByCategory: Record<string, string[]> = Object.fromEntries(
+        Array.from(nextGroupIdsByCategorySet.entries()).map(([category, ids]) => [category, Array.from(ids)]),
+      )
 
       if (loadCatalogRequestRef.current !== requestId) return
 
       setGroupOptions(
         resolvedGroups
           .slice()
-          .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN')),
+          .sort((a, b) => {
+            const byName = a.name.localeCompare(b.name, 'vi-VN')
+            if (byName !== 0) return byName
+            const categoryA = nextGroupCategoryById[a.id] ?? ''
+            const categoryB = nextGroupCategoryById[b.id] ?? ''
+            return categoryA.localeCompare(categoryB, 'vi-VN')
+          }),
       )
       setGroupCategoryById(nextGroupCategoryById)
       setGroupIdsByCategory(nextGroupIdsByCategory)
       setGroupTaxById(nextGroupTaxById)
+      setGroupUniqueCategoryByName(uniqueCategoryByName)
+      setGroupUniqueTaxByName(uniqueTaxByName)
       setInventoryStats({
         lowStock: stockSummary.filter(
           (item) => item.status === 'low_stock' || item.status === 'out_of_stock',
@@ -940,15 +966,18 @@ export function DrugCatalog() {
           const cachedDetail = productDetailCacheRef.current.get(item.id)
           const base = cachedDetail ? mapProductDetailToDrug(cachedDetail) : listDrug
           const groupTax = base.groupId ? nextGroupTaxById[base.groupId] : undefined
+          const fallbackGroupKey = normalizeGroupKey(base.group)
+          const fallbackCategory = uniqueCategoryByName[fallbackGroupKey] ?? '-'
+          const fallbackTax = uniqueTaxByName[fallbackGroupKey]
           const category =
             base.groupId
-              ? (nextGroupCategoryById[base.groupId] ?? '-')
-              : (groupCategoryByName[normalizeGroupKey(base.group)] ?? '-')
+              ? (nextGroupCategoryById[base.groupId] ?? fallbackCategory)
+              : fallbackCategory
           return {
             ...base,
             category,
-            vatRate: groupTax?.vatRate ?? base.vatRate,
-            otherTaxRate: groupTax?.otherTaxRate ?? base.otherTaxRate,
+            vatRate: groupTax?.vatRate ?? fallbackTax?.vatRate ?? base.vatRate,
+            otherTaxRate: groupTax?.otherTaxRate ?? fallbackTax?.otherTaxRate ?? base.otherTaxRate,
             detailLoaded: Boolean(cachedDetail) || base.detailLoaded,
           }
         }),
@@ -1121,20 +1150,20 @@ export function DrugCatalog() {
   const decorateDrugWithCurrentGroupMeta = useCallback(
     (drug: Drug): Drug => {
       const groupTax = drug.groupId ? groupTaxById[drug.groupId] : undefined
-      const groupFromName = groupOptions.find(
-        (item) => normalizeGroupKey(item.name) === normalizeGroupKey(drug.group),
-      )
+      const groupKey = normalizeGroupKey(drug.group)
+      const fallbackCategory = groupUniqueCategoryByName[groupKey] ?? drug.category
+      const fallbackTax = groupUniqueTaxByName[groupKey]
       const category = drug.groupId
-        ? (groupCategoryById[drug.groupId] ?? '-')
-        : (groupFromName ? (groupCategoryById[groupFromName.id] ?? '-') : '-')
+        ? (groupCategoryById[drug.groupId] ?? fallbackCategory)
+        : fallbackCategory
       return {
         ...drug,
-        category,
-        vatRate: groupTax?.vatRate ?? drug.vatRate,
-        otherTaxRate: groupTax?.otherTaxRate ?? drug.otherTaxRate,
+        category: category || '-',
+        vatRate: groupTax?.vatRate ?? fallbackTax?.vatRate ?? drug.vatRate,
+        otherTaxRate: groupTax?.otherTaxRate ?? fallbackTax?.otherTaxRate ?? drug.otherTaxRate,
       }
     },
-    [groupCategoryById, groupOptions, groupTaxById],
+    [groupCategoryById, groupTaxById, groupUniqueCategoryByName, groupUniqueTaxByName],
   )
 
   const ensureDrugDetail = useCallback(
@@ -1355,11 +1384,26 @@ export function DrugCatalog() {
   }
 
   const handleGroupChange = (groupId: string) => {
-    setForm((prev) => ({
-      ...prev,
-      groupId,
-      groupCategory: groupId ? (groupCategoryById[groupId] ?? prev.groupCategory) : prev.groupCategory,
-    }))
+    setForm((prev) => {
+      if (!groupId) {
+        return {
+          ...prev,
+          groupId,
+        }
+      }
+
+      const categoryFromSelection = groupCategoryById[groupId] ?? prev.groupCategory
+      const allowedGroupIds = prev.groupCategory ? (groupIdsByCategory[prev.groupCategory] ?? []) : []
+      const keepCurrentCategory =
+        Boolean(prev.groupCategory) &&
+        (allowedGroupIds.includes(groupId) || categoryFromSelection === prev.groupCategory)
+
+      return {
+        ...prev,
+        groupId,
+        groupCategory: keepCurrentCategory ? prev.groupCategory : categoryFromSelection,
+      }
+    })
   }
 
   const openCreate = () => {
@@ -1958,7 +2002,20 @@ export function DrugCatalog() {
       }
 
       const allManufacturers = await fetchAllManufacturersForImport()
-      const groupByName = new Map(groupOptions.map((item) => [normalizeGroupKey(item.name), item.id]))
+      const groupNameToIds = new Map<string, string[]>()
+      for (const item of groupOptions) {
+        const key = normalizeGroupKey(item.name)
+        if (!key) continue
+        const ids = groupNameToIds.get(key) ?? []
+        ids.push(item.id)
+        groupNameToIds.set(key, ids)
+      }
+      const groupByName = new Map<string, string>()
+      for (const [key, ids] of groupNameToIds.entries()) {
+        if (ids.length === 1) {
+          groupByName.set(key, ids[0])
+        }
+      }
       const makerByName = new Map(allManufacturers.map((item) => [normalizeGroupKey(item.name), item.id]))
       const existingByCode = new Map<string, { id: string }>(
         drugs
