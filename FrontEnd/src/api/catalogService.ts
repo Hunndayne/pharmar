@@ -92,6 +92,11 @@ export type ProductDetailItem = {
   updated_at: string
 }
 
+export type BarcodeLookupResponse = {
+  product: ProductListItem
+  unit: ProductUnitItem
+}
+
 export type DrugReferenceUnitHint = {
   single_unit: boolean
   has_intermediate: boolean
@@ -588,6 +593,20 @@ export const catalogApi = {
   getProduct: (token: string, productId: string) =>
     requestCatalogJson<ProductDetailItem>(
       `/catalog/products/${productId}`,
+      token,
+      { method: 'GET' },
+    ),
+
+  getProductByBarcode: (token: string, barcode: string) =>
+    requestCatalogJson<BarcodeLookupResponse>(
+      `/catalog/products/barcode/${encodeURIComponent(barcode)}`,
+      token,
+      { method: 'GET' },
+    ),
+
+  getUnitByBarcode: (token: string, barcode: string) =>
+    requestCatalogJson<BarcodeLookupResponse>(
+      `/catalog/units/barcode/${encodeURIComponent(barcode)}`,
       token,
       { method: 'GET' },
     ),

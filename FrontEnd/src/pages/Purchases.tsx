@@ -12,6 +12,7 @@ import {
   type InventoryReceiptLine,
   type InventoryReceiptLineUnitPrice,
 } from '../api/inventoryService'
+import { catalogApi } from '../api/catalogService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
@@ -1046,6 +1047,10 @@ export function Purchases() {
   const drugMap = useMemo(() => new Map(drugOptions.map((drug) => [drug.id, drug])), [drugOptions])
 
   const normalizeDrugName = useCallback((value: string) => value.trim().toLocaleLowerCase('vi-VN'), [])
+  const normalizeBarcodeLookupKey = useCallback(
+    (value: string) => normalizeBarcodeText(value).toLocaleUpperCase('vi-VN'),
+    [],
+  )
 
   const buildLineDrugSearch = useCallback(
     (lines: LineItemForm[]) => {
@@ -1080,18 +1085,83 @@ export function Purchases() {
   const barcodeIndex = useMemo(() => {
     const index = new Map<string, string>()
     drugOptions.forEach((drug) => {
-      if (drug.barcode) index.set(drug.barcode, drug.id)
+      const drugBarcodeKey = normalizeBarcodeLookupKey(drug.barcode)
+      if (drugBarcodeKey) index.set(drugBarcodeKey, drug.id)
       drug.units.forEach((unit) => {
-        if (unit.barcode) index.set(unit.barcode, drug.id)
+        const unitBarcodeKey = normalizeBarcodeLookupKey(unit.barcode)
+        if (unitBarcodeKey) index.set(unitBarcodeKey, drug.id)
       })
     })
     return index
-  }, [drugOptions])
+  }, [drugOptions, normalizeBarcodeLookupKey])
 
   const buildRetailPrices = useCallback(
     (drugId: string, existing?: LineRetailPrice[]) =>
       buildLineRetailPrices(drugId, existing, drugOptions, defaultRetailPrices),
     [drugOptions, defaultRetailPrices],
+  )
+  const resolveDrugIdByBarcode = useCallback(
+    async (rawBarcode: string) => {
+      const barcodeKey = normalizeBarcodeLookupKey(rawBarcode)
+      if (!barcodeKey) return ''
+
+      const localMatch = barcodeIndex.get(barcodeKey)
+      if (localMatch) return localMatch
+      if (!accessToken) return ''
+
+      try {
+        const lookup = await catalogApi.getProductByBarcode(accessToken, barcodeKey)
+        const byId = drugOptions.find((item) => item.id === lookup.product.id)
+        if (byId) return byId.id
+        const byCode = drugOptions.find(
+          (item) => normalizeLookupKey(item.code) === normalizeLookupKey(lookup.product.code),
+        )
+        return byCode?.id ?? ''
+      } catch (productError) {
+        try {
+          const lookup = await catalogApi.getUnitByBarcode(accessToken, barcodeKey)
+          const byId = drugOptions.find((item) => item.id === lookup.product.id)
+          if (byId) return byId.id
+          const byCode = drugOptions.find(
+            (item) => normalizeLookupKey(item.code) === normalizeLookupKey(lookup.product.code),
+          )
+          return byCode?.id ?? ''
+        } catch {
+          if (productError instanceof ApiError && productError.status === 404) return ''
+          return ''
+        }
+      }
+    },
+    [accessToken, barcodeIndex, drugOptions, normalizeBarcodeLookupKey],
+  )
+  const applyBarcodeToLine = useCallback(
+    async (lineId: string, rawBarcode: string) => {
+      const barcodeKey = normalizeBarcodeLookupKey(rawBarcode)
+      const matchedDrugId = barcodeKey ? await resolveDrugIdByBarcode(barcodeKey) : ''
+      if (matchedDrugId) {
+        const matchedDrugName = drugMap.get(matchedDrugId)?.name
+        if (matchedDrugName) {
+          setLineDrugSearch((prev) => ({
+            ...prev,
+            [lineId]: matchedDrugName,
+          }))
+        }
+      }
+      setForm((prev) => ({
+        ...prev,
+        lines: prev.lines.map((line) => {
+          if (line.id !== lineId) return line
+          const nextLine = { ...line, barcode: barcodeKey || rawBarcode.trim() }
+          if (matchedDrugId) {
+            nextLine.drugId = matchedDrugId
+            nextLine.unitRetailPrices = buildRetailPrices(matchedDrugId, line.unitRetailPrices)
+          }
+          return nextLine
+        }),
+      }))
+      return matchedDrugId
+    },
+    [buildRetailPrices, drugMap, normalizeBarcodeLookupKey, resolveDrugIdByBarcode],
   )
 
   const stats = useMemo(() => {
@@ -1354,6 +1424,12 @@ export function Purchases() {
       lines: prev.lines.map((line) => (line.id === id ? { ...line, [field]: value } : line)),
     }))
   }
+  const handleLineBarcodeBlur = useCallback(
+    (lineId: string, rawBarcode: string) => {
+      void applyBarcodeToLine(lineId, rawBarcode)
+    },
+    [applyBarcodeToLine],
+  )
 
   const handleLineDrugSearchChange = (lineId: string, value: string) => {
     setLineDrugSearch((prev) => ({
@@ -1838,28 +1914,16 @@ export function Purchases() {
 
   // applyScanResult — dùng useCallback + ref để tránh stale closure
   const applyScanResult = useCallback(
-    (text: string) => {
+    async (text: string) => {
       const target = scanTargetRef.current
       if (!target) return
       if (target.type === 'line') {
-        const match = barcodeIndex.get(text)
-        setForm((prev) => ({
-          ...prev,
-          lines: prev.lines.map((line) => {
-            if (line.id !== target.id) return line
-            const nextLine = { ...line, barcode: text }
-            if (match) {
-              nextLine.drugId = match
-              nextLine.unitRetailPrices = buildRetailPrices(match, line.unitRetailPrices)
-            }
-            return nextLine
-          }),
-        }))
+        await applyBarcodeToLine(target.id, text)
       }
       setScanOpen(false)
       setScanMessage('Đã quét thành công.')
     },
-    [barcodeIndex, buildRetailPrices]
+    [applyBarcodeToLine]
   )
 
   const handleScanCandidate = useCallback(
@@ -1892,7 +1956,7 @@ export function Purchases() {
 
       const count = scanStabilityRef.current?.count ?? 1
       if (count >= requiredCount) {
-        applyScanResult(normalized)
+        void applyScanResult(normalized)
         return true
       }
 
@@ -2922,6 +2986,7 @@ export function Purchases() {
                               ref={setFormFieldRef(`line-barcode-${line.id}`)}
                               value={line.barcode}
                               onChange={(event) => updateLine(line.id, 'barcode', event.target.value)}
+                              onBlur={(event) => handleLineBarcodeBlur(line.id, event.target.value)}
                               className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
                               placeholder="Quét hoặc nhập barcode"
                             />
