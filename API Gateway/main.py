@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     CUSTOMER_SERVICE_URL: str = "http://customer-service:8007"
     PAYMENT_QR_SERVICE_URL: str = "http://payment-qr-service:8008"
     FILE_SERVICE_URL: str = "http://file-service:8009"
+    NOTIFICATION_SERVICE_URL: str = "http://notification-service:8010"
 
     CORS_ALLOWED_ORIGINS: list[str] = [
         "http://localhost:3000",
@@ -67,6 +68,7 @@ SERVICE_URLS: dict[str, str] = {
     "customer": settings.CUSTOMER_SERVICE_URL,
     "payment-qr": settings.PAYMENT_QR_SERVICE_URL,
     "file": settings.FILE_SERVICE_URL,
+    "notification": settings.NOTIFICATION_SERVICE_URL,
 }
 
 HEALTH_TARGETS: dict[str, str] = {
@@ -79,6 +81,7 @@ HEALTH_TARGETS: dict[str, str] = {
     "customer": settings.CUSTOMER_SERVICE_URL,
     "payment-qr": settings.PAYMENT_QR_SERVICE_URL,
     "file": settings.FILE_SERVICE_URL,
+    "notification": settings.NOTIFICATION_SERVICE_URL,
 }
 
 # ---------------------------------------------------------------------------

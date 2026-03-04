@@ -25,6 +25,8 @@ const UserSettings = lazy(() => import('./pages/UserSettings').then((module) => 
 const StoreSettings = lazy(() => import('./pages/StoreSettings').then((module) => ({ default: module.StoreSettings })))
 const StoreDrugGroups = lazy(() => import('./pages/StoreDrugGroups').then((module) => ({ default: module.StoreDrugGroups })))
 const SystemHealth = lazy(() => import('./pages/SystemHealth').then((module) => ({ default: module.SystemHealth })))
+const Notifications = lazy(() => import('./pages/Notifications').then((module) => ({ default: module.Notifications })))
+const NotificationSettings = lazy(() => import('./pages/NotificationSettings').then((module) => ({ default: module.NotificationSettings })))
 const NotFound = lazy(() => import('./pages/NotFound').then((module) => ({ default: module.NotFound })))
 
 function App() {
@@ -72,6 +74,8 @@ function App() {
           <Route path="/khach-hang" element={<Customers />} />
           <Route path="/khuyen-mai" element={<Promotions />} />
           <Route path="/bao-cao" element={<Reports />} />
+          <Route path="/thong-bao" element={<Notifications />} />
+          <Route path="/cai-dat-thong-bao" element={<NotificationSettings />} />
           <Route path="/cai-dat" element={<UserSettings />} />
           <Route path="/he-thong/suc-khoe-dich-vu" element={<SystemHealth />} />
 

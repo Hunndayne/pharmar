@@ -270,6 +270,35 @@
         condition: service_completed_successfully
     restart: unless-stopped
 
+  notification-service:
+    build:
+      context: ./Notification Service
+      dockerfile: dockerfile
+    container_name: pharmar-notification-service
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      APP_PORT: 8010
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_notification
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      INTERNAL_API_KEY: ${NOTIFICATION_INTERNAL_API_KEY:-change-this-internal-key}
+      RABBITMQ_ENABLED: ${RABBITMQ_ENABLED:-true}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-pharmar.events}
+      RABBITMQ_QUEUE: ${NOTIFICATION_RABBITMQ_QUEUE:-notification.events}
+      RABBITMQ_ROUTING_KEYS: ${NOTIFICATION_RABBITMQ_ROUTING_KEYS:-sale.invoice.created,sale.invoice.cancelled,sale.return.approved,inventory.low_stock}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
+    ports:
+      - "8010:8010"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_started
+    restart: unless-stopped
+
   payment-qr-service:
     build:
       context: ./Payment QR Service
@@ -318,6 +347,7 @@
       RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-1200}
       AUTH_RATE_LIMIT_RPM: ${AUTH_RATE_LIMIT_RPM:-120}
       FILE_SERVICE_URL: http://file-service:8009
+      NOTIFICATION_SERVICE_URL: http://notification-service:8010
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
     ports:
       - "8000:8000"
@@ -339,6 +369,8 @@
       payment-qr-service:
         condition: service_started
       file-service:
+        condition: service_started
+      notification-service:
         condition: service_started
     restart: unless-stopped
 

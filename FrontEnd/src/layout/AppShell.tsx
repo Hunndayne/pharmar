@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { MobileHeader } from '../components/layout/MobileHeader'
 import { MobileNav } from '../components/layout/MobileNav'
+import { NotificationBell } from '../components/layout/NotificationBell'
 import { Sidebar } from '../components/layout/Sidebar'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
@@ -26,6 +27,8 @@ const titleByPath: Record<string, string> = {
   '/he-thong/suc-khoe-dich-vu': 'Sức khỏe dịch vụ',
   '/quan-ly-tai-khoan': 'Quản lý tài khoản',
   '/cai-dat': 'Cài đặt người dùng',
+  '/thong-bao': 'Thông báo',
+  '/cai-dat-thong-bao': 'Cài đặt thông báo',
 }
 
 export function AppShell() {
@@ -85,6 +88,9 @@ export function AppShell() {
 
       <div className="flex min-h-screen flex-1 flex-col lg:ml-72">
         <MobileHeader title={title} onMenu={() => setMobileNavOpen(true)} />
+        <div className="hidden items-center justify-end gap-2 px-6 pt-4 lg:flex">
+          <NotificationBell />
+        </div>
         <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
           <Outlet />
         </main>
