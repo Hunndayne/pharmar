@@ -35,6 +35,7 @@ type PosDrug = {
   name: string
   group: string
   units: PosDrugUnit[]
+  totalQty: number
 }
 
 type PosOrderItem = {
@@ -232,6 +233,7 @@ const mapMetaDrugToPosDrug = (drug: InventoryMetaDrug): PosDrug => {
     code: drug.code,
     name: drug.name,
     group: drug.group ?? '',
+    totalQty: 0,
     units: sortedUnits.map((unit, index) => ({
       id: unit.id,
       name: unit.name,
@@ -678,24 +680,28 @@ export function Pos() {
   )
 
   const drugsById = useMemo(() => new Map(drugs.map((drug) => [drug.id, drug])), [drugs])
+  const availableDrugs = useMemo(
+    () => drugs.filter((drug) => Number.isFinite(drug.totalQty) && drug.totalQty > 0),
+    [drugs],
+  )
   const filteredDrugs = useMemo(() => {
     const keyword = drugSearch.trim().toLowerCase()
-    if (!keyword) return drugs
+    if (!keyword) return availableDrugs
 
     const normalizedKeyword = keyword.replace(/\s*-\s*/g, ' ').replace(/\s+/g, ' ').trim()
-    return drugs.filter((drug) =>
+    return availableDrugs.filter((drug) =>
       [drug.code, drug.name, drug.group]
         .join(' ')
         .toLowerCase()
         .includes(normalizedKeyword),
     )
-  }, [drugs, drugSearch])
+  }, [availableDrugs, drugSearch])
 
   const selectedDrug = selectedDrugId ? drugsById.get(selectedDrugId) ?? null : null
   const selectedUnit = selectedDrug?.units.find((unit) => unit.id === selectedUnitId) ?? null
   const barcodeIndex = useMemo(() => {
     const map = new Map<string, { drug: PosDrug; unit: PosDrugUnit }>()
-    for (const drug of drugs) {
+    for (const drug of availableDrugs) {
       for (const unit of drug.units) {
         const key = normalizeBarcodeText(unit.barcode)
         if (!key || map.has(key)) continue
@@ -703,7 +709,7 @@ export function Pos() {
       }
     }
     return map
-  }, [drugs])
+  }, [availableDrugs])
 
   const resolveDrugFromSearch = useCallback(
     (raw: string) => {
@@ -712,7 +718,7 @@ export function Pos() {
 
       const normalized = keyword.replace(/\s*-\s*/g, ' ').replace(/\s+/g, ' ').trim()
       return (
-        drugs.find((drug) => {
+        availableDrugs.find((drug) => {
           const code = drug.code.toLowerCase()
           const name = drug.name.toLowerCase()
           const codeName = `${code} ${name}`
@@ -725,7 +731,7 @@ export function Pos() {
         null
       )
     },
-    [drugs, filteredDrugs],
+    [availableDrugs, filteredDrugs],
   )
 
   useEffect(() => {
@@ -765,15 +771,22 @@ export function Pos() {
     setLoadError(null)
 
     try {
-      const [metaDrugs, inventorySettings, saleSettings, store] = await Promise.all([
+      const [metaDrugs, stockSummary, inventorySettings, saleSettings, store] = await Promise.all([
         inventoryApi.getMetaDrugs(token?.access_token),
+        inventoryApi.getStockSummary(token?.access_token),
         storeApi.getSettingsByGroup('inventory'),
         storeApi.getSettingsByGroup('sale'),
         storeApi.getInfo().catch(() => null),
       ])
 
+      const totalQtyByDrugId = new Map(
+        stockSummary.map((item) => [item.drug_id, Number(item.total_qty || 0)]),
+      )
       const mappedDrugs = metaDrugs
-        .map(mapMetaDrugToPosDrug)
+        .map((drug) => ({
+          ...mapMetaDrugToPosDrug(drug),
+          totalQty: totalQtyByDrugId.get(drug.id) ?? 0,
+        }))
         .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN'))
 
       setDrugs(mappedDrugs)
@@ -2625,6 +2638,16 @@ export function Pos() {
 
           {loading ? <p className="mt-3 text-sm text-ink-600">Đang tải danh mục thuốc...</p> : null}
           {loadError ? <p className="mt-3 text-sm text-coral-500">{loadError}</p> : null}
+          {!loading && !loadError && !availableDrugs.length ? (
+            <p className="mt-3 text-sm text-amber-700">
+              Chưa có thuốc còn tồn kho để bán. Vui lòng nhập hàng trước khi tạo đơn.
+            </p>
+          ) : null}
+          {!loading && !loadError && selectedDrug ? (
+            <p className="mt-2 text-xs text-ink-600">
+              Tồn khả dụng: {Math.max(0, selectedDrug.totalQty).toLocaleString('vi-VN')} đơn vị gốc.
+            </p>
+          ) : null}
 
           <div className="mt-4 space-y-3">
             {!activeOrder?.items.length ? (

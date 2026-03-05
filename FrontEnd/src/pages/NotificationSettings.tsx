@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   notificationApi,
   type AlertRuleRecord,
-  type SmtpConfigRecord,
   type SmtpConfigPayload,
 } from '../api/notificationService'
 import { useAuth } from '../auth/AuthContext'
