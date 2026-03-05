@@ -271,6 +271,31 @@ const createEmptyOrder = (): PosOrder => ({
 })
 
 const normalizePhone = (value: string) => value.replace(/[^\d+]/g, '').trim()
+const normalizeSearchText = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+
+const extractDrugSearchNeedles = (raw: string) => {
+  const normalized = normalizeSearchText(raw.replace(/\s*-\s*/g, ' '))
+  if (!normalized) return [] as string[]
+
+  const needles = new Set<string>([normalized])
+  const codeMatches = normalized.match(/\b[a-z]{1,4}\d{3,}\b/g)
+  codeMatches?.forEach((code) => needles.add(code))
+
+  normalized
+    .split(' ')
+    .filter((word) => word.length >= 3)
+    .slice(0, 4)
+    .forEach((word) => needles.add(word))
+
+  return Array.from(needles)
+}
+
 const normalizeQrText = (value: string) => value.replace(/[\u0000-\u001F\u007F]/g, '').trim()
 const normalizeBarcodeText = (value: string) => value.replace(/\s+/g, '').trim().toUpperCase()
 
@@ -684,24 +709,40 @@ export function Pos() {
     () => drugs.filter((drug) => Number.isFinite(drug.totalQty) && drug.totalQty > 0),
     [drugs],
   )
+  const searchableDrugs = useMemo(
+    () =>
+      drugs
+        .slice()
+        .sort((a, b) => {
+          const aAvailable = a.totalQty > 0 ? 1 : 0
+          const bAvailable = b.totalQty > 0 ? 1 : 0
+          if (aAvailable !== bAvailable) return bAvailable - aAvailable
+          return a.name.localeCompare(b.name, 'vi-VN')
+        }),
+    [drugs],
+  )
   const filteredDrugs = useMemo(() => {
-    const keyword = drugSearch.trim().toLowerCase()
-    if (!keyword) return availableDrugs
+    const needles = extractDrugSearchNeedles(drugSearch)
+    if (!needles.length) return searchableDrugs
 
-    const normalizedKeyword = keyword.replace(/\s*-\s*/g, ' ').replace(/\s+/g, ' ').trim()
-    return availableDrugs.filter((drug) =>
-      [drug.code, drug.name, drug.group]
-        .join(' ')
-        .toLowerCase()
-        .includes(normalizedKeyword),
-    )
-  }, [availableDrugs, drugSearch])
+    return searchableDrugs.filter((drug) => {
+      const haystack = normalizeSearchText([drug.code, drug.name, drug.group].join(' '))
+      const code = normalizeSearchText(drug.code)
+      const name = normalizeSearchText(drug.name)
+      return needles.some((needle) => {
+        if (haystack.includes(needle)) return true
+        if (needle.includes(code) || needle.includes(name)) return true
+        return false
+      })
+    })
+  }, [searchableDrugs, drugSearch])
 
   const selectedDrug = selectedDrugId ? drugsById.get(selectedDrugId) ?? null : null
   const selectedUnit = selectedDrug?.units.find((unit) => unit.id === selectedUnitId) ?? null
+  const selectedDrugOutOfStock = Boolean(selectedDrug && selectedDrug.totalQty <= 0)
   const barcodeIndex = useMemo(() => {
     const map = new Map<string, { drug: PosDrug; unit: PosDrugUnit }>()
-    for (const drug of availableDrugs) {
+    for (const drug of drugs) {
       for (const unit of drug.units) {
         const key = normalizeBarcodeText(unit.barcode)
         if (!key || map.has(key)) continue
@@ -709,29 +750,30 @@ export function Pos() {
       }
     }
     return map
-  }, [availableDrugs])
+  }, [drugs])
 
   const resolveDrugFromSearch = useCallback(
     (raw: string) => {
-      const keyword = raw.trim().toLowerCase()
-      if (!keyword) return null
-
-      const normalized = keyword.replace(/\s*-\s*/g, ' ').replace(/\s+/g, ' ').trim()
+      const needles = extractDrugSearchNeedles(raw)
+      if (!needles.length) return null
+      const primary = needles[0]
       return (
-        availableDrugs.find((drug) => {
-          const code = drug.code.toLowerCase()
-          const name = drug.name.toLowerCase()
+        searchableDrugs.find((drug) => {
+          const code = normalizeSearchText(drug.code)
+          const name = normalizeSearchText(drug.name)
           const codeName = `${code} ${name}`
-          return code === keyword || name === keyword || codeName === normalized
+          return code === primary || name === primary || codeName === primary
         }) ??
-        filteredDrugs.find((drug) => {
-          const haystack = [drug.code, drug.name, drug.group].join(' ').toLowerCase()
-          return haystack.includes(normalized)
+        searchableDrugs.find((drug) => {
+          const haystack = normalizeSearchText([drug.code, drug.name, drug.group].join(' '))
+          const code = normalizeSearchText(drug.code)
+          const name = normalizeSearchText(drug.name)
+          return needles.some((needle) => haystack.includes(needle) || needle.includes(code) || needle.includes(name))
         }) ??
         null
       )
     },
-    [availableDrugs, filteredDrugs],
+    [searchableDrugs],
   )
 
   useEffect(() => {
@@ -2629,7 +2671,7 @@ export function Pos() {
               onClick={() => {
                 void handleAddByDrug()
               }}
-              disabled={addingByDrug || !activeOrder || !selectedDrug || !selectedUnit}
+              disabled={addingByDrug || !activeOrder || !selectedDrug || !selectedUnit || selectedDrugOutOfStock}
               className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
             >
               {addingByDrug ? 'Đang thêm...' : 'Thêm theo gợi ý'}
@@ -2646,6 +2688,11 @@ export function Pos() {
           {!loading && !loadError && selectedDrug ? (
             <p className="mt-2 text-xs text-ink-600">
               Tồn khả dụng: {Math.max(0, selectedDrug.totalQty).toLocaleString('vi-VN')} đơn vị gốc.
+            </p>
+          ) : null}
+          {!loading && !loadError && selectedDrugOutOfStock ? (
+            <p className="mt-1 text-xs text-coral-500">
+              Thuốc này hiện hết tồn kho, không thể thêm vào đơn.
             </p>
           ) : null}
 
