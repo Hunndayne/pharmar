@@ -281,7 +281,7 @@
       DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_notification
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      INTERNAL_API_KEY: ${NOTIFICATION_INTERNAL_API_KEY:-change-this-internal-key}
+      INTERNAL_API_KEY: ${NOTIFICATION_INTERNAL_API_KEY:-${CUSTOMER_INTERNAL_API_KEY:-change-this-internal-key}}
       RABBITMQ_ENABLED: ${RABBITMQ_ENABLED:-true}
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-pharmar.events}
