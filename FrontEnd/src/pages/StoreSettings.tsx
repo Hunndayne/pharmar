@@ -13,6 +13,7 @@ import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
 import { BANK_OPTIONS } from '../constants/bankList'
 import { resolveAssetUrl, setDocumentFavicon } from '../utils/assets'
+import { NotificationSettings as NotificationSettingsSection } from './NotificationSettings'
 
 type StoreInfoForm = {
   name: string
@@ -1623,6 +1624,9 @@ export function StoreSettings() {
           </div>
         </form>
       </section>
+
+      {/* --- Notification Settings --- */}
+      <NotificationSettingsSection />
 
       {/* --- Backup & Sync --- */}
       {canManageStore ? (

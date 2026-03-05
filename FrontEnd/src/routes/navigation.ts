@@ -32,12 +32,5 @@ export const navItems: NavItem[] = [
     ],
   },
   { type: 'item', label: 'Báo cáo', path: '/bao-cao' },
-  {
-    type: 'group',
-    label: 'Thông báo',
-    children: [
-      { type: 'item', label: 'Danh sách thông báo', path: '/thong-bao' },
-      { type: 'item', label: 'Cài đặt thông báo', path: '/cai-dat-thong-bao' },
-    ],
-  },
+  { type: 'item', label: 'Thông báo', path: '/thong-bao' },
 ]
