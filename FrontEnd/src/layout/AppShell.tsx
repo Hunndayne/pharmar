@@ -29,6 +29,8 @@ const titleByPath: Record<string, string> = {
   '/cai-dat': 'Cài đặt người dùng',
   '/thong-bao': 'Thông báo',
   '/cai-dat-thong-bao': 'Cài đặt thông báo',
+  '/kiem-ke-kho': 'Kiểm kê kho',
+  '/han-su-dung': 'Quản lý hạn sử dụng',
 }
 
 export function AppShell() {

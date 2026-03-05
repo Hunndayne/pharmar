@@ -7,6 +7,7 @@ import { saleApi, type SaleInvoiceListItem } from '../api/saleService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { downloadCsv } from '../utils/csv'
+import { exportToExcel, exportToPdf } from '../utils/exportFile'
 
 type ReportTab = 'revenue' | 'inventory' | 'debt' | 'customer'
 
@@ -578,76 +579,102 @@ export function Reports() {
     void loadReport(tab)
   }, [tab, loadReport])
 
-  const exportCurrentTab = useCallback(() => {
+  const getExportData = useCallback(() => {
     const dateKey = new Date().toISOString().slice(0, 10)
 
     if (tab === 'revenue' && revenueData) {
-      const headers = ['Ngày', 'Số hóa đơn', 'Doanh thu', 'Thu thực tế', 'Còn nợ']
-      const rows = revenueData.dailyRows.map((item) => [
-        item.date,
-        item.invoiceCount,
-        Math.round(item.totalAmount),
-        Math.round(item.paidAmount),
-        Math.round(item.debtAmount),
-      ])
-      downloadCsv(`bao-cao-doanh-thu-${dateKey}.csv`, headers, rows)
-      return
+      return {
+        filename: `bao-cao-doanh-thu-${dateKey}`,
+        sheetName: 'Doanh thu',
+        title: 'Báo cáo doanh thu',
+        headers: ['Ngày', 'Số hóa đơn', 'Doanh thu', 'Thu thực tế', 'Còn nợ'],
+        rows: revenueData.dailyRows.map((item) => [
+          item.date,
+          item.invoiceCount,
+          Math.round(item.totalAmount),
+          Math.round(item.paidAmount),
+          Math.round(item.debtAmount),
+        ]),
+      }
     }
 
     if (tab === 'inventory' && inventoryData) {
-      const headers = ['Mã thuốc', 'Tên thuốc', 'Nhóm', 'Tồn', 'Đơn vị', 'HSD gần nhất', 'Trạng thái']
-      const rows = inventoryData.rows.map((item) => [
-        item.drug_code,
-        item.drug_name,
-        item.drug_group,
-        item.total_qty,
-        item.base_unit,
-        item.nearest_expiry || '-',
-        stockStatusLabel(item.status),
-      ])
-      downloadCsv(`bao-cao-ton-kho-${dateKey}.csv`, headers, rows)
-      return
+      return {
+        filename: `bao-cao-ton-kho-${dateKey}`,
+        sheetName: 'Tồn kho',
+        title: 'Báo cáo tồn kho',
+        headers: ['Mã thuốc', 'Tên thuốc', 'Nhóm', 'Tồn', 'Đơn vị', 'HSD gần nhất', 'Trạng thái'],
+        rows: inventoryData.rows.map((item) => [
+          item.drug_code,
+          item.drug_name,
+          item.drug_group,
+          item.total_qty,
+          item.base_unit,
+          item.nearest_expiry || '-',
+          stockStatusLabel(item.status),
+        ]),
+      }
     }
 
     if (tab === 'debt' && debtData) {
-      const headers = ['Loại công nợ', 'Mã/Đối tượng', 'Ngày', 'Giá trị']
-      const rows = [
-        ...debtData.debtInvoiceRows.map((item) => [
-          'Khách hàng',
-          `${item.code} - ${item.customerName}`,
-          formatDate(item.createdAt),
-          Math.round(item.debtAmount),
-        ]),
-        ...debtData.supplierRows.map((item) => [
-          'Nhà phân phối',
-          `${item.name} (${item.phone})`,
-          '-',
-          Math.round(item.debtAmount),
-        ]),
-      ]
-      downloadCsv(`bao-cao-cong-no-${dateKey}.csv`, headers, rows)
-      return
+      return {
+        filename: `bao-cao-cong-no-${dateKey}`,
+        sheetName: 'Công nợ',
+        title: 'Báo cáo công nợ',
+        headers: ['Loại công nợ', 'Mã/Đối tượng', 'Ngày', 'Giá trị'],
+        rows: [
+          ...debtData.debtInvoiceRows.map((item) => [
+            'Khách hàng',
+            `${item.code} - ${item.customerName}`,
+            formatDate(item.createdAt),
+            Math.round(item.debtAmount),
+          ]),
+          ...debtData.supplierRows.map((item) => [
+            'Nhà phân phối',
+            `${item.name} (${item.phone})`,
+            '-',
+            Math.round(item.debtAmount),
+          ]),
+        ],
+      }
     }
 
     if (tab === 'customer' && customerData) {
-      const headers = ['Mã KH', 'Tên khách hàng', 'Số điện thoại', 'Hạng', 'Tổng đơn', 'Tổng chi', 'Điểm hiện tại', 'Ngày tạo']
-      const rows = customerData.rows.map((item) => [
-        item.code,
-        item.name,
-        item.phone,
-        item.tier,
-        item.total_orders,
-        Math.round(toNumber(item.total_spent)),
-        item.current_points,
-        formatDate(item.created_at),
-      ])
-      downloadCsv(`bao-cao-khach-hang-${dateKey}.csv`, headers, rows)
+      return {
+        filename: `bao-cao-khach-hang-${dateKey}`,
+        sheetName: 'Khách hàng',
+        title: 'Báo cáo khách hàng',
+        headers: ['Mã KH', 'Tên khách hàng', 'Số điện thoại', 'Hạng', 'Tổng đơn', 'Tổng chi', 'Điểm hiện tại', 'Ngày tạo'],
+        rows: customerData.rows.map((item) => [
+          item.code,
+          item.name,
+          item.phone,
+          item.tier,
+          item.total_orders,
+          Math.round(toNumber(item.total_spent)),
+          item.current_points,
+          formatDate(item.created_at),
+        ]),
+      }
     }
+
+    return null
   }, [customerData, debtData, inventoryData, revenueData, tab])
 
-  const printCurrentTab = useCallback(() => {
-    window.print()
-  }, [])
+  const exportCurrentTabExcel = useCallback(() => {
+    const data = getExportData()
+    if (data) exportToExcel(data.filename, data.sheetName, data.headers, data.rows)
+  }, [getExportData])
+
+  const exportCurrentTabPdf = useCallback(() => {
+    const data = getExportData()
+    if (data) exportToPdf(data.filename, data.title, data.headers, data.rows, { subtitle: `Ngày xuất: ${new Date().toLocaleDateString('vi-VN')}` })
+  }, [getExportData])
+
+  const exportCurrentTabCsv = useCallback(() => {
+    const data = getExportData()
+    if (data) downloadCsv(`${data.filename}.csv`, data.headers, data.rows)
+  }, [getExportData])
 
   const summaryCards = useMemo(() => {
     if (tab === 'revenue' && revenueData) {
@@ -699,17 +726,24 @@ export function Reports() {
         <div className="flex gap-2">
           <button
             type="button"
-            onClick={exportCurrentTab}
+            onClick={exportCurrentTabCsv}
             className="rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900"
           >
-            Export Excel
+            Xuất CSV
           </button>
           <button
             type="button"
-            onClick={printCurrentTab}
+            onClick={exportCurrentTabExcel}
+            className="rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900"
+          >
+            Xuất Excel
+          </button>
+          <button
+            type="button"
+            onClick={exportCurrentTabPdf}
             className="rounded-full bg-ink-900 px-4 py-2 text-sm font-semibold text-white"
           >
-            Export PDF
+            Xuất PDF
           </button>
         </div>
       </header>

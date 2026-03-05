@@ -10,6 +10,7 @@ import { storeApi } from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { downloadCsv } from '../utils/csv'
+import { exportToExcel } from '../utils/exportFile'
 
 type UnitConfig = {
   importUnit: { name: string; ratio: number } | null
@@ -426,7 +427,7 @@ export function Inventory() {
     })
 
     const dateKey = new Date().toISOString().slice(0, 10)
-    downloadCsv(`ton-kho-theo-lo-${dateKey}.csv`, headers, rows)
+    exportToExcel(`ton-kho-theo-lo-${dateKey}`, 'Tồn kho', headers, rows)
   }
 
   const resetFilters = () => {

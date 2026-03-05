@@ -287,6 +287,9 @@
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-pharmar.events}
       RABBITMQ_QUEUE: ${NOTIFICATION_RABBITMQ_QUEUE:-notification.events}
       RABBITMQ_ROUTING_KEYS: ${NOTIFICATION_RABBITMQ_ROUTING_KEYS:-sale.invoice.created,sale.invoice.cancelled,sale.return.approved,inventory.low_stock}
+      INVENTORY_SERVICE_URL: http://inventory-service:8002
+      ENABLE_EXPIRY_CHECK_JOB: ${ENABLE_EXPIRY_CHECK_JOB:-true}
+      EXPIRY_CHECK_INTERVAL_HOURS: ${EXPIRY_CHECK_INTERVAL_HOURS:-24}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
     ports:
       - "8010:8010"
@@ -296,6 +299,8 @@
       db-bootstrap:
         condition: service_completed_successfully
       rabbitmq:
+        condition: service_started
+      inventory-service:
         condition: service_started
     restart: unless-stopped
 

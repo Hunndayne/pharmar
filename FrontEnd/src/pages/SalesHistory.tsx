@@ -8,6 +8,7 @@ import {
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { downloadCsv } from '../utils/csv'
+import { exportToExcel, exportInvoicePdf } from '../utils/exportFile'
 
 type InvoiceStatusFilter = 'all' | 'completed' | 'cancelled' | 'returned' | 'pending'
 type ReturnCondition = 'good' | 'damaged' | 'expired'
@@ -421,6 +422,43 @@ export function SalesHistory() {
     }
   }
 
+  const handleExportInvoicePdf = async (item: SaleInvoiceListItem) => {
+    if (!accessToken) return
+
+    try {
+      const printData = await saleApi.getInvoicePrintData(accessToken, item.id)
+      const toNum = (v: number | string | null | undefined) => Number(v ?? 0)
+
+      exportInvoicePdf({
+        storeName: printData.store.name ?? 'Nhà thuốc',
+        storeAddress: printData.store.address ?? undefined,
+        storePhone: printData.store.phone ?? undefined,
+        invoiceCode: printData.invoice.code ?? item.code,
+        createdAt: printData.invoice.date ?? formatDateTime(item.created_at),
+        cashierName: printData.invoice.cashier ?? undefined,
+        customerName: printData.customer.name ?? undefined,
+        customerPhone: printData.customer.phone ?? undefined,
+        items: printData.items.map((line) => ({
+          name: line.name ?? '',
+          unit: line.unit ?? '',
+          quantity: toNum(line.qty),
+          unitPrice: toNum(line.price),
+          discount: 0,
+          lineTotal: toNum(line.amount),
+        })),
+        subtotal: toNum(printData.summary.subtotal),
+        discountTotal: toNum(printData.summary.tier_discount) + toNum(printData.summary.points_discount) + toNum(printData.summary.promotion?.amount),
+        total: toNum(printData.summary.total),
+        amountPaid: toNum(printData.payment.amount_paid),
+        changeAmount: toNum(printData.payment.change),
+        paymentMethod: printData.payment.method ?? '',
+      })
+    } catch (pdfError) {
+      if (pdfError instanceof ApiError) setError(pdfError.message)
+      else setError('Không thể xuất PDF hóa đơn.')
+    }
+  }
+
   const handleReturnByItem = async (item: SaleInvoiceListItem) => {
     if (!accessToken) return
 
@@ -568,7 +606,7 @@ export function SalesHistory() {
       ]
     })
 
-    downloadCsv(`lich-su-ban-hang-trang-${page}.csv`, headers, exportRows)
+    exportToExcel(`lich-su-ban-hang-trang-${page}`, 'Lịch sử bán hàng', headers, exportRows)
   }
 
   const showingFrom = rows.length === 0 ? 0 : (page - 1) * pageSize + 1
@@ -738,6 +776,14 @@ export function SalesHistory() {
                         {printingId === item.id ? 'Đang in...' : 'In hóa đơn'}
                       </button>
 
+                      <button
+                        type="button"
+                        onClick={() => void handleExportInvoicePdf(item)}
+                        className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900"
+                      >
+                        Xuất PDF
+                      </button>
+
                       {(item.status === 'completed' || item.status === 'returned') ? (
                         <button
                           type="button"
@@ -864,6 +910,14 @@ export function SalesHistory() {
                                 className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-60"
                               >
                                 {printingId === item.id ? 'Đang in...' : 'In hóa đơn'}
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => void handleExportInvoicePdf(item)}
+                                className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900"
+                              >
+                                Xuất PDF
                               </button>
 
                               {(item.status === 'completed' || item.status === 'returned') ? (

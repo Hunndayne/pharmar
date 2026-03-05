@@ -29,6 +29,8 @@ export const navItems: NavItem[] = [
       { type: 'item', label: 'Lịch sử bán hàng', path: '/lich-su-ban-hang' },
       { type: 'item', label: 'Khách hàng', path: '/khach-hang' },
       { type: 'item', label: 'Khuyến mãi', path: '/khuyen-mai' },
+      { type: 'item', label: 'Kiểm kê kho', path: '/kiem-ke-kho' },
+      { type: 'item', label: 'Hạn sử dụng', path: '/han-su-dung' },
     ],
   },
   { type: 'item', label: 'Báo cáo', path: '/bao-cao' },

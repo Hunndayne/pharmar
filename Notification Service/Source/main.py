@@ -15,6 +15,7 @@ from .db import models  # noqa: F401
 from .db.base import Base
 from .db.models import SCHEMA_NAME, AlertRule
 from .db.session import SessionLocal, engine
+from .expiry_checker import start_expiry_checker
 from .rabbitmq_consumer import start_consumer
 
 
@@ -55,8 +56,19 @@ async def lifespan(_: FastAPI):
     if settings.RABBITMQ_ENABLED:
         consumer_task = asyncio.create_task(start_consumer(stop_event))
 
+    # Start expiry checker in background
+    expiry_stop_event = asyncio.Event()
+    expiry_task: asyncio.Task | None = None
+    if settings.ENABLE_EXPIRY_CHECK_JOB:
+        expiry_task = asyncio.create_task(start_expiry_checker(expiry_stop_event))
+
     yield
 
+    if expiry_task is not None:
+        expiry_stop_event.set()
+        expiry_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await expiry_task
     if consumer_task is not None:
         stop_event.set()
         consumer_task.cancel()

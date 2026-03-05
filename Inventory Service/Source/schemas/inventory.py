@@ -94,3 +94,17 @@ class StockAdjustmentRequest(BaseModel):
         if self.quantity_delta == 0:
             raise ValueError("quantity_delta cannot be 0")
         return self
+
+
+class StockAuditCreateRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=500)
+
+
+class StockAuditUpdateItemRequest(BaseModel):
+    batch_id: str = Field(min_length=1, max_length=64)
+    actual_qty: int = Field(ge=0)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class StockAuditUpdateRequest(BaseModel):
+    items: list[StockAuditUpdateItemRequest] = Field(min_length=1)

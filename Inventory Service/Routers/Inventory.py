@@ -30,6 +30,8 @@ from Source.schemas.inventory import (
     ImportReceiptUpdateRequest,
     ReserveRequest,
     StockAdjustmentRequest,
+    StockAuditCreateRequest,
+    StockAuditUpdateRequest,
 )
 
 router = APIRouter(prefix="/api/v1/inventory", tags=["inventory"])
@@ -740,6 +742,7 @@ async def save_runtime_state_safe() -> None:
                 "movements": runtime_state.movements,
                 "reservations": runtime_state.reservations,
                 "sale_events": runtime_state.sale_events,
+                "audits": runtime_state.audits,
                 "catalog_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
                 "catalog_drugs_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
                 "catalog_suppliers_last_sync_at": runtime_state.catalog_suppliers_last_sync_at,
@@ -825,7 +828,7 @@ def load_runtime_state_from_payload(payload: dict[str, Any]) -> bool:
             return False
 
         runtime_state.counters = dict(payload.get("counters") or {})
-        for key in ("receipt", "receipt_line", "batch", "movement", "reservation"):
+        for key in ("receipt", "receipt_line", "batch", "movement", "reservation", "audit"):
             runtime_state.counters.setdefault(key, 0)
         runtime_state.suppliers = dict(payload.get("suppliers") or {})
         runtime_state.drugs = dict(payload.get("drugs") or {})
@@ -834,6 +837,7 @@ def load_runtime_state_from_payload(payload: dict[str, Any]) -> bool:
         runtime_state.movements = list(payload.get("movements") or [])
         runtime_state.reservations = list(payload.get("reservations") or [])
         runtime_state.sale_events = list(payload.get("sale_events") or [])
+        runtime_state.audits = dict(payload.get("audits") or {})
         legacy_catalog_sync = payload.get("catalog_last_sync_at")
         runtime_state.catalog_drugs_last_sync_at = _parse_iso_datetime(
             payload.get("catalog_drugs_last_sync_at")
@@ -1552,7 +1556,7 @@ def extract_qr_candidates(raw_value: str) -> list[str]:
 
 
 def seed_demo_data() -> None:
-    runtime_state.counters = {"receipt": 0, "receipt_line": 0, "batch": 0, "movement": 0, "reservation": 0}
+    runtime_state.counters = {"receipt": 0, "receipt_line": 0, "batch": 0, "movement": 0, "reservation": 0, "audit": 0}
     runtime_state.suppliers = {}
     runtime_state.drugs = {}
     runtime_state.receipts = {}
@@ -1560,6 +1564,7 @@ def seed_demo_data() -> None:
     runtime_state.movements = []
     runtime_state.reservations = []
     runtime_state.sale_events = []
+    runtime_state.audits = {}
     runtime_state.catalog_drugs_last_sync_at = datetime.fromtimestamp(0, tz=timezone.utc)
     runtime_state.catalog_suppliers_last_sync_at = datetime.fromtimestamp(0, tz=timezone.utc)
 
@@ -2681,4 +2686,176 @@ async def reserve(payload: ReserveRequest, token: str = Depends(oauth2_scheme)) 
         await save_runtime_state_safe()
 
     return {"message": "Stock reserved", "reservation": reservation_record}
+
+
+# ── Stock Audit (Kiểm kê kho) ────────────────────────────────────────────────
+
+
+@router.post("/stock-audits")
+async def create_stock_audit(payload: StockAuditCreateRequest, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+    actor_id, role, _ = get_current_actor(token)
+    if role not in ("owner", "manager", "admin"):
+        raise HTTPException(status_code=403, detail="Only owner/manager can create stock audits")
+
+    async with runtime_state.lock:
+        audit_id = next_id("audit", "au")
+        now = utc_now()
+        counter_val = runtime_state.counters["audit"]
+        code = f"KK{now.strftime('%Y%m%d')}{counter_val:03d}"
+
+        items = []
+        for batch_id, batch in runtime_state.batches.items():
+            if batch.get("cancelled"):
+                continue
+            if batch.get("qty_remaining", 0) <= 0:
+                continue
+            drug = runtime_state.drugs.get(batch.get("drug_id", ""), {})
+            items.append({
+                "batch_id": batch_id,
+                "batch_code": batch.get("batch_code", ""),
+                "drug_id": batch.get("drug_id", ""),
+                "drug_code": drug.get("drug_code", ""),
+                "drug_name": drug.get("name", ""),
+                "system_qty": batch.get("qty_remaining", 0),
+                "actual_qty": None,
+                "diff_qty": None,
+                "note": "",
+            })
+
+        audit = {
+            "id": audit_id,
+            "code": code,
+            "status": "draft",
+            "note": payload.note or "",
+            "created_by": actor_id,
+            "created_at": now,
+            "completed_at": None,
+            "items": items,
+        }
+        runtime_state.audits[audit_id] = audit
+        await save_runtime_state_safe()
+
+    return {"message": "Stock audit created", "audit": audit}
+
+
+@router.get("/stock-audits")
+async def list_stock_audits(
+    status: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    token: str = Depends(oauth2_scheme),
+) -> dict[str, Any]:
+    get_current_subject(token)
+    audits = list(runtime_state.audits.values())
+
+    if status:
+        audits = [a for a in audits if a.get("status") == status]
+
+    audits.sort(key=lambda a: a.get("created_at", ""), reverse=True)
+    total = len(audits)
+    start = (page - 1) * size
+    page_items = audits[start : start + size]
+
+    return {"items": page_items, "total": total, "page": page, "size": size, "total_pages": max(1, (total + size - 1) // size)}
+
+
+@router.get("/stock-audits/{audit_id}")
+async def get_stock_audit(audit_id: str, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+    get_current_subject(token)
+    audit = runtime_state.audits.get(audit_id)
+    if audit is None:
+        raise HTTPException(status_code=404, detail="Stock audit not found")
+    return audit
+
+
+@router.put("/stock-audits/{audit_id}")
+async def update_stock_audit_items(audit_id: str, payload: StockAuditUpdateRequest, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+    actor_id, role, _ = get_current_actor(token)
+    if role not in ("owner", "manager", "admin"):
+        raise HTTPException(status_code=403, detail="Only owner/manager can update stock audits")
+
+    async with runtime_state.lock:
+        audit = runtime_state.audits.get(audit_id)
+        if audit is None:
+            raise HTTPException(status_code=404, detail="Stock audit not found")
+        if audit["status"] != "draft":
+            raise HTTPException(status_code=409, detail="Can only update draft audits")
+
+        update_map = {item.batch_id: item for item in payload.items}
+        for audit_item in audit["items"]:
+            update = update_map.get(audit_item["batch_id"])
+            if update:
+                audit_item["actual_qty"] = update.actual_qty
+                audit_item["diff_qty"] = update.actual_qty - audit_item["system_qty"]
+                if update.note is not None:
+                    audit_item["note"] = update.note
+
+        await save_runtime_state_safe()
+
+    return {"message": "Stock audit updated", "audit": audit}
+
+
+@router.post("/stock-audits/{audit_id}/complete")
+async def complete_stock_audit(audit_id: str, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+    actor_id, role, _ = get_current_actor(token)
+    if role not in ("owner", "manager", "admin"):
+        raise HTTPException(status_code=403, detail="Only owner/manager can complete stock audits")
+
+    async with runtime_state.lock:
+        audit = runtime_state.audits.get(audit_id)
+        if audit is None:
+            raise HTTPException(status_code=404, detail="Stock audit not found")
+        if audit["status"] != "draft":
+            raise HTTPException(status_code=409, detail="Can only complete draft audits")
+
+        adjustments = []
+        for audit_item in audit["items"]:
+            if audit_item["actual_qty"] is None:
+                continue
+            diff = audit_item["actual_qty"] - audit_item["system_qty"]
+            if diff == 0:
+                continue
+
+            batch = runtime_state.batches.get(audit_item["batch_id"])
+            if batch is None or batch.get("cancelled"):
+                continue
+
+            batch["qty_remaining"] = audit_item["actual_qty"]
+            batch["updated_at"] = utc_now()
+            movement = add_movement(
+                MovementType.STOCK_ADJUSTMENT,
+                batch["drug_id"],
+                batch["id"],
+                diff,
+                "stock_audit",
+                audit["id"],
+                actor_id,
+                f"Kiểm kê {audit['code']}: chênh lệch {diff:+d}",
+            )
+            adjustments.append(movement_to_view(movement))
+
+        audit["status"] = "completed"
+        audit["completed_at"] = utc_now()
+        await save_runtime_state_safe()
+
+    return {"message": "Stock audit completed", "audit": audit, "adjustments": adjustments}
+
+
+@router.post("/stock-audits/{audit_id}/cancel")
+async def cancel_stock_audit(audit_id: str, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+    actor_id, role, _ = get_current_actor(token)
+    if role not in ("owner", "manager", "admin"):
+        raise HTTPException(status_code=403, detail="Only owner/manager can cancel stock audits")
+
+    async with runtime_state.lock:
+        audit = runtime_state.audits.get(audit_id)
+        if audit is None:
+            raise HTTPException(status_code=404, detail="Stock audit not found")
+        if audit["status"] != "draft":
+            raise HTTPException(status_code=409, detail="Can only cancel draft audits")
+
+        audit["status"] = "cancelled"
+        await save_runtime_state_safe()
+
+    return {"message": "Stock audit cancelled", "audit": audit}
 

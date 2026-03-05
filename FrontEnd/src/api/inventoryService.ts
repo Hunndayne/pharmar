@@ -280,6 +280,70 @@ export type InventoryCreateReceiptPayload = {
 
 export type InventoryUpdateReceiptPayload = InventoryCreateReceiptPayload
 
+// Stock Audit types
+export type StockAuditItem = {
+  batch_id: string
+  batch_code: string
+  drug_id: string
+  drug_code: string
+  drug_name: string
+  system_qty: number
+  actual_qty: number | null
+  diff_qty: number | null
+  note: string
+}
+
+export type StockAudit = {
+  id: string
+  code: string
+  status: 'draft' | 'completed' | 'cancelled'
+  note: string
+  created_by: string
+  created_at: string
+  completed_at: string | null
+  items: StockAuditItem[]
+}
+
+export type StockAuditPagedResponse = {
+  items: StockAudit[]
+  total: number
+  page: number
+  size: number
+  total_pages: number
+}
+
+export type StockAuditUpdateItem = {
+  batch_id: string
+  actual_qty: number
+  note?: string
+}
+
+// Inventory Alerts types
+export type InventoryAlertEntry = {
+  batch: InventoryBatch
+  days_to_expiry: number
+}
+
+export type InventoryAlerts = {
+  as_of: string
+  totals: {
+    low_stock: number
+    expiring_soon: number
+    near_date: number
+    expired: number
+  }
+  low_stock: Array<{
+    drug_id: string
+    drug_code: string
+    drug_name: string
+    current_qty: number
+    threshold: number
+  }>
+  expiring_soon: InventoryAlertEntry[]
+  near_date: InventoryAlertEntry[]
+  expired: InventoryAlertEntry[]
+}
+
 const requestInventoryJson = async <T>(
   path: string,
   init: RequestInit = {},
@@ -463,4 +527,53 @@ export const inventoryApi = {
       },
       token,
     ),
+
+  // Stock Audit
+  createStockAudit: (token: string, note?: string) =>
+    requestInventoryJson<{ message: string; audit: StockAudit }>(
+      '/inventory/stock-audits',
+      {
+        method: 'POST',
+        body: JSON.stringify({ note: note ?? null }),
+      },
+      token,
+    ),
+
+  listStockAudits: (token: string, params?: { status?: string; page?: number; size?: number }) =>
+    requestInventoryJson<StockAuditPagedResponse>(
+      '/inventory/stock-audits',
+      { method: 'GET' },
+      token,
+      params as Record<string, string | number | undefined>,
+    ),
+
+  getStockAudit: (token: string, auditId: string) =>
+    requestInventoryJson<StockAudit>(`/inventory/stock-audits/${auditId}`, { method: 'GET' }, token),
+
+  updateStockAuditItems: (token: string, auditId: string, items: StockAuditUpdateItem[]) =>
+    requestInventoryJson<{ message: string; audit: StockAudit }>(
+      `/inventory/stock-audits/${auditId}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ items }),
+      },
+      token,
+    ),
+
+  completeStockAudit: (token: string, auditId: string) =>
+    requestInventoryJson<{ message: string; audit: StockAudit }>(
+      `/inventory/stock-audits/${auditId}/complete`,
+      { method: 'POST' },
+      token,
+    ),
+
+  cancelStockAudit: (token: string, auditId: string) =>
+    requestInventoryJson<{ message: string; audit: StockAudit }>(
+      `/inventory/stock-audits/${auditId}/cancel`,
+      { method: 'POST' },
+      token,
+    ),
+
+  getInventoryAlerts: (token?: string) =>
+    requestInventoryJson<InventoryAlerts>('/inventory/inventory-alerts', { method: 'GET' }, token),
 }
