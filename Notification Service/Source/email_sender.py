@@ -35,14 +35,21 @@ async def send_email(
     msg.attach(MIMEText(body_html, "html", "utf-8"))
 
     try:
+        # SMTP mode:
+        # - Port 465: implicit SSL/TLS (use_tls=True, start_tls=False)
+        # - Port 587/25: plain connect then STARTTLS (use_tls=False, start_tls=True)
+        # Checkbox `use_tls` means "use encrypted transport when possible".
+        implicit_tls = bool(config.use_tls and config.port == 465)
+        start_tls = bool(config.use_tls and config.port != 465)
+
         await aiosmtplib.send(
             msg,
             hostname=config.host,
             port=config.port,
             username=config.username,
             password=config.password,
-            use_tls=config.use_tls,
-            start_tls=not config.use_tls,
+            use_tls=implicit_tls,
+            start_tls=start_tls,
             timeout=15,
         )
         logger.info("Email sent to %s (subject=%s)", to_email, subject)
