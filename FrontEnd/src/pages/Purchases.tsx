@@ -2670,7 +2670,7 @@ export function Purchases() {
                                     <span>Lô {line.lotNumber || '-'}</span>
                                     <span>SL sau KM {pricing.quantityAfterPromo.toLocaleString('vi-VN')}</span>
                                     <span>Giá sau KM {formatCurrency(pricing.unitPriceAfterPromo)}</span>
-                                    <span className="text-xs text-ink-700">Giá bẻ: {formatRetailPrices(line) || '-'}</span>
+                                    <span className="text-xs text-ink-700">Giá bán: {formatRetailPrices(line) || '-'}</span>
                                     <span>{describePromo(line)}</span>
                                     <span>HSD {formatDate(line.expDate)}</span>
                                     <span>{formatCurrency(calcLineTotal(line))}</span>
@@ -2762,7 +2762,7 @@ export function Purchases() {
                             <p className="font-semibold text-ink-900">{drug?.name ?? '-'}</p>
                             <p className="mt-1">Lô {line.lotNumber || '-'} · HSD {formatDate(line.expDate)}</p>
                             <p>SL sau KM {pricing.quantityAfterPromo.toLocaleString('vi-VN')} · Giá sau KM {formatCurrency(pricing.unitPriceAfterPromo)}</p>
-                            <p className="text-ink-600">Giá bẻ: {formatRetailPrices(line) || '-'}</p>
+                            <p className="text-ink-600">Giá bán: {formatRetailPrices(line) || '-'}</p>
                             <p>{describePromo(line)} · {formatCurrency(calcLineTotal(line))}</p>
                             <p className="text-ink-600">QR: {line.batchCode}</p>
                           </div>

@@ -206,10 +206,35 @@ def import_unit_conversion(unit_prices: list[dict[str, Any]]) -> int:
     return max(1, max(int(item.get("conversion", 1)) for item in unit_prices))
 
 
-def to_stock_quantity(import_quantity: int, unit_prices: list[dict[str, Any]]) -> int:
+def to_effective_import_quantity(
+    import_quantity: int,
+    promo_type: PromoType = PromoType.NONE,
+    promo_buy_qty: int | None = None,
+    promo_get_qty: int | None = None,
+) -> int:
+    base_quantity = max(1, int(import_quantity))
+    if promo_type == PromoType.BUY_X_GET_Y and promo_buy_qty and promo_get_qty and promo_buy_qty > 0:
+        bonus_quantity = (base_quantity // int(promo_buy_qty)) * int(promo_get_qty)
+        return base_quantity + max(0, bonus_quantity)
+    return base_quantity
+
+
+def to_stock_quantity(
+    import_quantity: int,
+    unit_prices: list[dict[str, Any]],
+    promo_type: PromoType = PromoType.NONE,
+    promo_buy_qty: int | None = None,
+    promo_get_qty: int | None = None,
+) -> int:
     # quantity sent from receipt line is nhập theo đơn vị nhập (đơn vị lớn nhất).
     # tồn kho luôn lưu theo đơn vị bán lẻ (conversion nhỏ nhất).
-    return max(1, int(import_quantity)) * import_unit_conversion(unit_prices)
+    effective_import_quantity = to_effective_import_quantity(
+        import_quantity,
+        promo_type=promo_type,
+        promo_buy_qty=promo_buy_qty,
+        promo_get_qty=promo_get_qty,
+    )
+    return effective_import_quantity * import_unit_conversion(unit_prices)
 
 
 def resolve_line_promo_note(line: Any) -> str | None:
@@ -1841,7 +1866,13 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
             promo_note = resolve_line_promo_note(line)
             barcode = resolve_line_barcode(line, drug)
             unit_prices = resolve_line_unit_prices(line, drug)
-            stock_quantity = to_stock_quantity(line.quantity, unit_prices)
+            stock_quantity = to_stock_quantity(
+                line.quantity,
+                unit_prices,
+                promo_type=line.promo_type,
+                promo_buy_qty=line.promo_buy_qty,
+                promo_get_qty=line.promo_get_qty,
+            )
 
             batch = {
                 "id": batch_id,
@@ -2111,7 +2142,13 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
             promo_note = resolve_line_promo_note(line)
             barcode = resolve_line_barcode(line, drug)
             unit_prices = resolve_line_unit_prices(line, drug)
-            stock_quantity = to_stock_quantity(line.quantity, unit_prices)
+            stock_quantity = to_stock_quantity(
+                line.quantity,
+                unit_prices,
+                promo_type=line.promo_type,
+                promo_buy_qty=line.promo_buy_qty,
+                promo_get_qty=line.promo_get_qty,
+            )
 
             batch = {
                 "id": batch_id,
