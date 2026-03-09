@@ -2593,9 +2593,10 @@ export function Pos() {
               onClick={() => {
                 void loadPosData()
               }}
-              className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900"
+              className="justify-self-start rounded-2xl border border-ink-900/10 bg-white px-3 py-2 text-sm font-semibold text-ink-900 sm:px-4"
             >
-              Tải lại dữ liệu
+              <span className="sm:hidden">Tải lại</span>
+              <span className="hidden sm:inline">Tải lại dữ liệu</span>
             </button>
           </div>
 
