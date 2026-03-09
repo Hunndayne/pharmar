@@ -2371,7 +2371,7 @@ export function Pos() {
       </header>
 
       <section className="glass-card rounded-3xl p-4 sm:p-6">
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
           {orders.map((order, index) => (
             <div key={order.id} className="flex items-center gap-1">
               <button
@@ -2542,7 +2542,7 @@ export function Pos() {
 
       <section className="grid gap-4 xl:grid-cols-[1.7fr,1fr]">
         <article className="glass-card rounded-3xl p-4 sm:p-6">
-          <div className="grid gap-3 lg:grid-cols-[1.2fr,auto]">
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr),auto]">
             <div className="flex flex-wrap items-center gap-2">
               <input
                 value={lotScanInput}
@@ -2559,7 +2559,7 @@ export function Pos() {
                     setScanOpen(true)
                   }
                 }}
-                className="min-w-[240px] flex-1 rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+                className="min-w-[220px] flex-1 rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
                 placeholder={
                   sellByLot
                     ? 'Quét QR số lô hoặc nhập mã lô'
@@ -2599,8 +2599,8 @@ export function Pos() {
             </button>
           </div>
 
-          <div className="mt-3 grid gap-3 md:grid-cols-[1.6fr,1fr,120px,160px,auto]">
-            <div className="space-y-1">
+          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-[minmax(0,1.7fr),minmax(0,1fr),120px,160px,auto]">
+            <div className="space-y-1 min-w-0 md:col-span-2 2xl:col-span-1">
               <input
                 value={drugSearch}
                 onChange={(event) => {
@@ -2629,7 +2629,7 @@ export function Pos() {
                   setDrugSearch(`${pickedDrug.code} - ${pickedDrug.name}`)
                 }}
                 list="pos-drug-suggestions"
-                className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+                className="w-full min-w-0 rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
                 placeholder="Tìm và chọn thuốc (mã/tên)"
               />
               <datalist id="pos-drug-suggestions">
@@ -2642,7 +2642,7 @@ export function Pos() {
             <select
               value={selectedUnitId}
               onChange={(event) => setSelectedUnitId(event.target.value)}
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+              className="w-full min-w-0 rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
               disabled={!selectedDrug}
             >
               {(selectedDrug?.units ?? []).map((unit) => (
@@ -2673,7 +2673,7 @@ export function Pos() {
                 void handleAddByDrug()
               }}
               disabled={addingByDrug || !activeOrder || !selectedDrug || !selectedUnit || selectedDrugOutOfStock}
-              className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
+              className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60 md:col-span-2 2xl:col-span-1"
             >
               {addingByDrug ? 'Đang thêm...' : 'Thêm theo gợi ý'}
             </button>
