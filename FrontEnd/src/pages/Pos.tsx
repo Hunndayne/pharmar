@@ -2542,8 +2542,8 @@ export function Pos() {
 
       <section className="grid gap-4 xl:grid-cols-[1.7fr,1fr]">
         <article className="glass-card rounded-3xl p-4 sm:p-6">
-          <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr),auto]">
-            <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:flex-nowrap">
               <input
                 value={lotScanInput}
                 onChange={(event) => setLotScanInput(event.target.value)}
@@ -2559,7 +2559,7 @@ export function Pos() {
                     setScanOpen(true)
                   }
                 }}
-                className="min-w-[220px] flex-1 rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+                className="min-w-[180px] flex-1 rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
                 placeholder={
                   sellByLot
                     ? 'Quét QR số lô hoặc nhập mã lô'
@@ -2578,7 +2578,7 @@ export function Pos() {
                   setScanOpen(true)
                 }}
                 disabled={addingByQr || !activeOrder}
-                className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
+                className="shrink-0 rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
               >
                 {addingByQr
                   ? 'Đang xử lý...'
@@ -2593,7 +2593,7 @@ export function Pos() {
               onClick={() => {
                 void loadPosData()
               }}
-              className="justify-self-start rounded-2xl border border-ink-900/10 bg-white px-3 py-2 text-sm font-semibold text-ink-900 sm:px-4"
+              className="shrink-0 rounded-2xl border border-ink-900/10 bg-white px-3 py-2 text-sm font-semibold text-ink-900 sm:px-4"
             >
               <span className="sm:hidden">Tải lại</span>
               <span className="hidden sm:inline">Tải lại dữ liệu</span>
