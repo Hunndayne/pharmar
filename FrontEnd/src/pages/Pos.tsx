@@ -34,6 +34,7 @@ type PosDrug = {
   code: string
   name: string
   group: string
+  instructions: string
   units: PosDrugUnit[]
   totalQty: number
 }
@@ -233,6 +234,7 @@ const mapMetaDrugToPosDrug = (drug: InventoryMetaDrug): PosDrug => {
     code: drug.code,
     name: drug.name,
     group: drug.group ?? '',
+    instructions: String(drug.instructions ?? '').trim(),
     totalQty: 0,
     units: sortedUnits.map((unit, index) => ({
       id: unit.id,
@@ -442,7 +444,6 @@ const allocateServiceFee = (lineTotals: number[], serviceFee: number, mode: Serv
   if (!lineTotals.length || normalizedFee <= 0) return output
 
   if (mode === 'separate') {
-    output[0] = normalizedFee
     return output
   }
 
@@ -2122,10 +2123,8 @@ export function Pos() {
 
       const serviceFeeValue = parseNonNegativeNumber(activeOrder.serviceFee)
       const noteParts = [activeOrder.note.trim()].filter(Boolean)
-      if (serviceFeeValue > 0) {
-        noteParts.push(
-          `Phí dịch vụ: ${formatCurrency(serviceFeeValue)} (${activeOrder.serviceFeeMode === 'split' ? 'chia đều vào các dòng thuốc' : 'mục riêng'})`,
-        )
+      if (serviceFeeValue > 0 && activeOrder.serviceFeeMode === 'separate') {
+        noteParts.push(`Phí dịch vụ: ${formatCurrency(serviceFeeValue)} (mục riêng)`)
       }
       const debtAmount = Math.max(0, grandTotal - amountPaid)
       const paymentChangeRaw = Math.max(0, amountPaid - grandTotal)
@@ -2154,6 +2153,8 @@ export function Pos() {
             ? activeOrder.customerId
             : null,
         payment_method: checkoutPaymentMethod,
+        service_fee_amount: serviceFeeValue,
+        service_fee_mode: activeOrder.serviceFeeMode,
         amount_paid: amountPaid,
         note: noteParts.join(' | ') || null,
         items: lines.map((line) => ({
@@ -2686,9 +2687,16 @@ export function Pos() {
             </p>
           ) : null}
           {!loading && !loadError && selectedDrug ? (
-            <p className="mt-2 text-xs text-ink-600">
-              Tồn khả dụng: {Math.max(0, selectedDrug.totalQty).toLocaleString('vi-VN')} đơn vị gốc.
-            </p>
+            <div className="mt-2 space-y-1">
+              <p className="text-xs text-ink-600">
+                Tồn khả dụng: {Math.max(0, selectedDrug.totalQty).toLocaleString('vi-VN')} đơn vị gốc.
+              </p>
+              {selectedDrug.instructions ? (
+                <p className="text-xs text-ink-600">
+                  <span className="font-semibold text-ink-800">HDSD:</span> {selectedDrug.instructions}
+                </p>
+              ) : null}
+            </div>
           ) : null}
           {!loading && !loadError && selectedDrugOutOfStock ? (
             <p className="mt-1 text-xs text-coral-500">
@@ -2720,6 +2728,11 @@ export function Pos() {
                       <p className="text-xs text-ink-600">
                         {item.drugCode} · Lô {item.batchCode} · HSD {item.expDate || '-'}
                       </p>
+                      {drug?.instructions ? (
+                        <p className="mt-1 text-xs text-ink-600">
+                          <span className="font-semibold text-ink-800">HDSD:</span> {drug.instructions}
+                        </p>
+                      ) : null}
                     </div>
                     <button
                       type="button"

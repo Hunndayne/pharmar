@@ -26,6 +26,7 @@ const StoreSettings = lazy(() => import('./pages/StoreSettings').then((module) =
 const StoreDrugGroups = lazy(() => import('./pages/StoreDrugGroups').then((module) => ({ default: module.StoreDrugGroups })))
 const SystemHealth = lazy(() => import('./pages/SystemHealth').then((module) => ({ default: module.SystemHealth })))
 const Notifications = lazy(() => import('./pages/Notifications').then((module) => ({ default: module.Notifications })))
+const PublicInvoiceLookup = lazy(() => import('./pages/PublicInvoiceLookup').then((module) => ({ default: module.PublicInvoiceLookup })))
 const NotFound = lazy(() => import('./pages/NotFound').then((module) => ({ default: module.NotFound })))
 
 function App() {
@@ -49,6 +50,14 @@ function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route
+        path="/tra-cuu-hoa-don"
+        element={(
+          <Suspense fallback={<div className="p-4 text-sm text-ink-600">Đang tải trang...</div>}>
+            <PublicInvoiceLookup />
+          </Suspense>
+        )}
+      />
 
       <Route element={<RequireAuth />}>
         <Route

@@ -2,13 +2,22 @@
 import { catalogApi, type SupplierItem } from '../api/catalogService'
 import { customerApi, type CustomerRecord } from '../api/customerService'
 import { inventoryApi, type InventoryStockSummary } from '../api/inventoryService'
-import { reportApi, type ReportEvent } from '../api/reportService'
+import {
+  reportApi,
+  type ProfitBreakdownGroup,
+  type ProfitInvoiceBreakdownRow,
+  type ProfitPeriodBreakdownRow,
+  type ProfitProductBreakdownRow,
+  type ProfitSummaryResponse,
+  type ReportPageResponse,
+  type ReportEvent,
+} from '../api/reportService'
 import { saleApi, type SaleInvoiceListItem } from '../api/saleService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { downloadCsv } from '../utils/csv'
 
-type ReportTab = 'revenue' | 'inventory' | 'debt' | 'customer'
+type ReportTab = 'revenue' | 'profit' | 'inventory' | 'debt' | 'customer'
 
 type RevenueDailyRow = {
   date: string
@@ -57,8 +66,17 @@ type CustomerReportData = {
   rows: CustomerRecord[]
 }
 
+type ProfitReportData = {
+  summary: ProfitSummaryResponse
+  breakdown: ReportPageResponse<
+    ProfitInvoiceBreakdownRow | ProfitPeriodBreakdownRow | ProfitProductBreakdownRow
+  >
+  topProducts: ProfitProductBreakdownRow[]
+}
+
 const tabs: Array<{ id: ReportTab; label: string }> = [
   { id: 'revenue', label: 'Doanh thu' },
+  { id: 'profit', label: 'Lợi nhuận' },
   { id: 'inventory', label: 'Tồn kho' },
   { id: 'debt', label: 'Công nợ' },
   { id: 'customer', label: 'Khách hàng' },
@@ -66,6 +84,7 @@ const tabs: Array<{ id: ReportTab; label: string }> = [
 
 const MAX_REPORT_PAGES = 5
 const PAGE_SIZE = 50
+const PROFIT_PAGE_SIZE = 20
 
 const toNumber = (value: string | number | null | undefined) => {
   const parsed = Number(value)
@@ -78,7 +97,7 @@ const toNumberLoose = (value: unknown) => {
   return 0
 }
 
-const formatCurrency = (value: number) => `${Math.round(Math.max(0, value)).toLocaleString('vi-VN')}đ`
+const formatCurrency = (value: number) => `${Math.round(value || 0).toLocaleString('vi-VN')}đ`
 
 const formatDate = (value: string) => {
   if (!value) return '-'
@@ -256,6 +275,8 @@ export function Reports() {
   const [error, setError] = useState<string | null>(null)
 
   const [revenueData, setRevenueData] = useState<RevenueReportData | null>(null)
+  const [profitGroupBy, setProfitGroupBy] = useState<ProfitBreakdownGroup>('invoice')
+  const [profitData, setProfitData] = useState<ProfitReportData | null>(null)
   const [inventoryData, setInventoryData] = useState<InventoryReportData | null>(null)
   const [debtData, setDebtData] = useState<DebtReportData | null>(null)
   const [customerData, setCustomerData] = useState<CustomerReportData | null>(null)
@@ -455,6 +476,38 @@ export function Reports() {
     [dateFrom, dateTo, fetchInvoices],
   )
 
+  const loadProfitReport = useCallback(
+    async (accessToken: string) => {
+      const [summary, breakdown, topProducts] = await Promise.all([
+        reportApi.getProfitSummary(accessToken, {
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+        }),
+        reportApi.getProfitBreakdown<
+          ProfitInvoiceBreakdownRow | ProfitPeriodBreakdownRow | ProfitProductBreakdownRow
+        >(accessToken, {
+          group_by: profitGroupBy,
+          page: 1,
+          size: PROFIT_PAGE_SIZE,
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+        }),
+        reportApi.getProfitTopProducts(accessToken, {
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+          limit: 10,
+        }),
+      ])
+
+      setProfitData({
+        summary,
+        breakdown,
+        topProducts,
+      })
+    },
+    [dateFrom, dateTo, profitGroupBy],
+  )
+
   const loadInventoryReport = useCallback(
     async (accessToken: string) => {
       const rows = await inventoryApi.getStockSummary(accessToken)
@@ -558,6 +611,8 @@ export function Reports() {
       try {
         if (targetTab === 'revenue') {
           await loadRevenueReport(accessToken)
+        } else if (targetTab === 'profit') {
+          await loadProfitReport(accessToken)
         } else if (targetTab === 'inventory') {
           await loadInventoryReport(accessToken)
         } else if (targetTab === 'debt') {
@@ -571,7 +626,14 @@ export function Reports() {
         setLoading(false)
       }
     },
-    [loadCustomerReport, loadDebtReport, loadInventoryReport, loadRevenueReport, token?.access_token],
+    [
+      loadCustomerReport,
+      loadDebtReport,
+      loadInventoryReport,
+      loadProfitReport,
+      loadRevenueReport,
+      token?.access_token,
+    ],
   )
 
   useEffect(() => {
@@ -591,6 +653,60 @@ export function Reports() {
         Math.round(item.debtAmount),
       ])
       downloadCsv(`bao-cao-doanh-thu-${dateKey}.csv`, headers, rows)
+      return
+    }
+
+    if (tab === 'profit' && profitData) {
+      if (profitGroupBy === 'invoice') {
+        const rows = (profitData.breakdown.items as ProfitInvoiceBreakdownRow[]).map((item) => [
+          item.invoice_code,
+          item.customer_name,
+          formatDate(item.created_at),
+          Math.round(item.net_revenue),
+          Math.round(item.cogs),
+          Math.round(item.gross_profit),
+          Math.round(item.collected_profit),
+          Math.round(item.debt_amount),
+        ])
+        downloadCsv(
+          `bao-cao-loi-theo-don-${dateKey}.csv`,
+          ['Mã hóa đơn', 'Khách hàng', 'Ngày', 'Doanh thu thuần', 'Giá vốn', 'Lợi nhuận', 'Lời thực thu', 'Còn nợ'],
+          rows,
+        )
+        return
+      }
+
+      if (profitGroupBy === 'product') {
+        const rows = (profitData.breakdown.items as ProfitProductBreakdownRow[]).map((item) => [
+          item.product_code,
+          item.product_name,
+          item.sold_base_qty,
+          Math.round(item.net_revenue),
+          Math.round(item.cogs),
+          Math.round(item.gross_profit),
+          item.margin_percent,
+        ])
+        downloadCsv(
+          `bao-cao-loi-theo-san-pham-${dateKey}.csv`,
+          ['Mã thuốc', 'Tên thuốc', 'SL bán (đơn vị gốc)', 'Doanh thu thuần', 'Giá vốn', 'Lợi nhuận', 'Biên lợi nhuận %'],
+          rows,
+        )
+        return
+      }
+
+      const rows = (profitData.breakdown.items as ProfitPeriodBreakdownRow[]).map((item) => [
+        item.period_key,
+        item.invoice_count,
+        Math.round(item.net_revenue),
+        Math.round(item.cogs),
+        Math.round(item.gross_profit),
+        Math.round(item.collected_profit),
+      ])
+      downloadCsv(
+        `bao-cao-loi-theo-${profitGroupBy}-${dateKey}.csv`,
+        ['Kỳ', 'Số hóa đơn', 'Doanh thu thuần', 'Giá vốn', 'Lợi nhuận', 'Lời thực thu'],
+        rows,
+      )
       return
     }
 
@@ -643,7 +759,7 @@ export function Reports() {
       ])
       downloadCsv(`bao-cao-khach-hang-${dateKey}.csv`, headers, rows)
     }
-  }, [customerData, debtData, inventoryData, revenueData, tab])
+  }, [customerData, debtData, inventoryData, profitData, profitGroupBy, revenueData, tab])
 
   const printCurrentTab = useCallback(() => {
     window.print()
@@ -656,6 +772,15 @@ export function Reports() {
         { label: 'Doanh thu', value: formatCurrency(revenueData.totalAmount) },
         { label: 'Thực thu', value: formatCurrency(revenueData.paidAmount) },
         { label: 'Còn nợ', value: formatCurrency(revenueData.debtAmount) },
+      ]
+    }
+
+    if (tab === 'profit' && profitData) {
+      return [
+        { label: 'Doanh thu thuần', value: formatCurrency(profitData.summary.net_revenue) },
+        { label: 'Giá vốn', value: formatCurrency(profitData.summary.cogs) },
+        { label: 'Lời theo hóa đơn', value: formatCurrency(profitData.summary.gross_profit) },
+        { label: 'Lời theo thực thu', value: formatCurrency(profitData.summary.collected_profit) },
       ]
     }
 
@@ -687,7 +812,7 @@ export function Reports() {
     }
 
     return []
-  }, [customerData, debtData, inventoryData, revenueData, tab])
+  }, [customerData, debtData, inventoryData, profitData, revenueData, tab])
 
   return (
     <div className="space-y-6">
@@ -731,6 +856,31 @@ export function Reports() {
             </button>
           ))}
         </div>
+
+        {tab === 'profit' ? (
+          <div className="flex flex-wrap gap-2">
+            {([
+              ['invoice', 'Theo đơn'],
+              ['day', 'Theo ngày'],
+              ['week', 'Theo tuần'],
+              ['month', 'Theo tháng'],
+              ['product', 'Theo sản phẩm'],
+            ] as Array<[ProfitBreakdownGroup, string]>).map(([groupId, label]) => (
+              <button
+                key={groupId}
+                type="button"
+                onClick={() => setProfitGroupBy(groupId)}
+                className={`rounded-full px-4 py-2 text-sm font-semibold ${
+                  profitGroupBy === groupId
+                    ? 'bg-sky-100 text-sky-700'
+                    : 'border border-ink-900/10 bg-white text-ink-700'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         <div className="grid gap-3 md:grid-cols-[1fr,1fr,auto,auto]">
           <input
@@ -834,6 +984,137 @@ export function Reports() {
                       <p className="text-xs text-ink-600">{row.invoiceCount} hóa đơn</p>
                     </div>
                     <p className="font-semibold text-ink-900">{formatCurrency(row.amount)}</p>
+                  </div>
+                ))
+              )}
+            </div>
+          </article>
+        </section>
+      ) : null}
+
+      {tab === 'profit' && profitData ? (
+        <section className="grid gap-4 xl:grid-cols-[1.15fr,0.85fr]">
+          <article className="glass-card rounded-3xl p-6">
+            <h3 className="text-lg font-semibold text-ink-900">Phân tích lợi nhuận</h3>
+            <p className="mt-1 text-xs text-ink-500">
+              Biên lợi nhuận gộp: {toNumber(profitData.summary.gross_margin_percent).toLocaleString('vi-VN', { maximumFractionDigits: 2 })}% ·
+              Phí dịch vụ ghi nhận: {formatCurrency(profitData.summary.service_fee_total)}
+            </p>
+
+            <div className="mt-4 overflow-x-auto">
+              {profitGroupBy === 'invoice' ? (
+                <table className="min-w-[900px] w-full text-left text-sm">
+                  <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
+                    <tr>
+                      <th className="py-2">Mã HĐ</th>
+                      <th className="py-2">Ngày</th>
+                      <th className="py-2">Khách hàng</th>
+                      <th className="py-2">Doanh thu thuần</th>
+                      <th className="py-2">Giá vốn</th>
+                      <th className="py-2">Lợi nhuận</th>
+                      <th className="py-2">Lời thực thu</th>
+                      <th className="py-2">Còn nợ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(profitData.breakdown.items as ProfitInvoiceBreakdownRow[]).map((row) => (
+                      <tr key={row.invoice_id} className="border-t border-ink-900/5">
+                        <td className="py-2 font-semibold text-ink-900">{row.invoice_code}</td>
+                        <td className="py-2">{formatDate(row.created_at)}</td>
+                        <td className="py-2">{row.customer_name || 'Khách vãng lai'}</td>
+                        <td className="py-2">{formatCurrency(row.net_revenue)}</td>
+                        <td className="py-2">{formatCurrency(row.cogs)}</td>
+                        <td className="py-2 font-semibold text-emerald-600">{formatCurrency(row.gross_profit)}</td>
+                        <td className="py-2">{formatCurrency(row.collected_profit)}</td>
+                        <td className="py-2 text-coral-500">{formatCurrency(row.debt_amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : profitGroupBy === 'product' ? (
+                <table className="min-w-[820px] w-full text-left text-sm">
+                  <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
+                    <tr>
+                      <th className="py-2">Mã thuốc</th>
+                      <th className="py-2">Tên thuốc</th>
+                      <th className="py-2">SL bán</th>
+                      <th className="py-2">Doanh thu thuần</th>
+                      <th className="py-2">Giá vốn</th>
+                      <th className="py-2">Lợi nhuận</th>
+                      <th className="py-2">Biên LN</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(profitData.breakdown.items as ProfitProductBreakdownRow[]).map((row) => (
+                      <tr key={row.product_id || row.product_code} className="border-t border-ink-900/5">
+                        <td className="py-2 font-semibold text-ink-900">{row.product_code || '-'}</td>
+                        <td className="py-2">{row.product_name}</td>
+                        <td className="py-2">{toNumber(row.sold_base_qty).toLocaleString('vi-VN')}</td>
+                        <td className="py-2">{formatCurrency(row.net_revenue)}</td>
+                        <td className="py-2">{formatCurrency(row.cogs)}</td>
+                        <td className="py-2 font-semibold text-emerald-600">{formatCurrency(row.gross_profit)}</td>
+                        <td className="py-2">{toNumber(row.margin_percent).toLocaleString('vi-VN', { maximumFractionDigits: 2 })}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <table className="min-w-[720px] w-full text-left text-sm">
+                  <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
+                    <tr>
+                      <th className="py-2">Kỳ</th>
+                      <th className="py-2">Số HĐ</th>
+                      <th className="py-2">Doanh thu thuần</th>
+                      <th className="py-2">Giá vốn</th>
+                      <th className="py-2">Lợi nhuận</th>
+                      <th className="py-2">Lời thực thu</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(profitData.breakdown.items as ProfitPeriodBreakdownRow[]).map((row) => (
+                      <tr key={row.period_key} className="border-t border-ink-900/5">
+                        <td className="py-2 font-semibold text-ink-900">{row.period_key}</td>
+                        <td className="py-2">{row.invoice_count}</td>
+                        <td className="py-2">{formatCurrency(row.net_revenue)}</td>
+                        <td className="py-2">{formatCurrency(row.cogs)}</td>
+                        <td className="py-2 font-semibold text-emerald-600">{formatCurrency(row.gross_profit)}</td>
+                        <td className="py-2">{formatCurrency(row.collected_profit)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </article>
+
+          <article className="glass-card rounded-3xl p-6">
+            <h3 className="text-lg font-semibold text-ink-900">Top sản phẩm lời cao</h3>
+            <div className="mt-4 space-y-3">
+              {profitData.topProducts.length === 0 ? (
+                <p className="text-sm text-ink-600">Không có dữ liệu sản phẩm.</p>
+              ) : (
+                profitData.topProducts.map((item, index) => (
+                  <div
+                    key={`${item.product_id}-${index}`}
+                    className="rounded-2xl border border-ink-900/10 bg-white px-4 py-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-ink-900">
+                          {index + 1}. {item.product_name}
+                        </p>
+                        <p className="text-xs text-ink-500">
+                          {item.product_code || '-'} · {toNumber(item.sold_base_qty).toLocaleString('vi-VN')} đơn vị gốc
+                        </p>
+                      </div>
+                      <p className="text-sm font-semibold text-emerald-600">
+                        {formatCurrency(item.gross_profit)}
+                      </p>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between text-xs text-ink-500">
+                      <span>Doanh thu thuần {formatCurrency(item.net_revenue)}</span>
+                      <span>Biên LN {toNumber(item.margin_percent).toLocaleString('vi-VN', { maximumFractionDigits: 2 })}%</span>
+                    </div>
                   </div>
                 ))
               )}

@@ -94,3 +94,7 @@ class StockAdjustmentRequest(BaseModel):
         if self.quantity_delta == 0:
             raise ValueError("quantity_delta cannot be 0")
         return self
+
+
+class BatchCostLookupRequest(BaseModel):
+    batch_ids: list[str] = Field(min_length=1, max_length=1000)

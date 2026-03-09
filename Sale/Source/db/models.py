@@ -63,6 +63,8 @@ class Invoice(Base):
     promotion_code: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     payment_method: Mapped[str] = mapped_column(String(20), nullable=False)
+    service_fee_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False, default=Decimal("0.00"))
+    service_fee_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="split")
     amount_paid: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     change_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False, default=Decimal("0.00"))
 

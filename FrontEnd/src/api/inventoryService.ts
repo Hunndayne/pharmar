@@ -38,6 +38,7 @@ export type InventoryMetaDrug = {
   code: string
   name: string
   group: string
+  instructions?: string | null
   base_unit: string
   reorder_level: number
   units: InventoryMetaUnit[]

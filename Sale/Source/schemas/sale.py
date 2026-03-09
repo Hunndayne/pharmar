@@ -13,6 +13,7 @@ InvoiceStatus = Literal["pending", "completed", "cancelled", "returned"]
 ReturnStatus = Literal["pending", "completed", "rejected"]
 HeldOrderStatus = Literal["active", "resumed", "expired", "cancelled"]
 ShiftStatus = Literal["open", "closed"]
+ServiceFeeMode = Literal["split", "separate"]
 
 
 class PageResponse(BaseModel, Generic[T]):
@@ -90,6 +91,8 @@ class InvoiceCreateRequest(BaseModel):
     promotion_code: str | None = Field(default=None, max_length=30)
     points_used: int = Field(default=0, ge=0)
     payment_method: str | None = Field(default="cash", max_length=20)
+    service_fee_amount: Decimal = Field(default=Decimal("0.00"), ge=0)
+    service_fee_mode: ServiceFeeMode = "split"
     amount_paid: Decimal | None = Field(default=None, ge=0)
     payments: list[InvoiceCheckoutPaymentRequest] | None = None
     note: str | None = None
@@ -109,6 +112,14 @@ class InvoiceCreateRequest(BaseModel):
             return None
         cleaned = value.strip().lower()
         return cleaned or None
+
+    @field_validator("service_fee_mode")
+    @classmethod
+    def normalize_service_fee_mode(cls, value: ServiceFeeMode) -> ServiceFeeMode:
+        cleaned = str(value).strip().lower()
+        if cleaned not in {"split", "separate"}:
+            raise ValueError("service_fee_mode must be split or separate")
+        return cleaned  # type: ignore[return-value]
 
     @model_validator(mode="after")
     def validate_payment_input(self):
@@ -184,6 +195,8 @@ class InvoiceResponse(BaseModel):
     promotion_usage_id: UUID | None
     promotion_code: str | None
     payment_method: str
+    service_fee_amount: Decimal
+    service_fee_mode: str
     amount_paid: Decimal
     change_amount: Decimal
     status: str
@@ -211,9 +224,83 @@ class InvoiceListItemResponse(BaseModel):
     total_amount: Decimal
     amount_paid: Decimal
     payment_method: str
+    service_fee_amount: Decimal
+    service_fee_mode: str
     status: str
     cashier_name: str | None
     created_at: datetime
+
+
+class PublicInvoiceListItemResponse(BaseModel):
+    id: UUID
+    code: str
+    customer_name: str | None
+    customer_phone: str | None
+    total_amount: Decimal
+    amount_paid: Decimal
+    payment_method: str
+    service_fee_amount: Decimal
+    service_fee_mode: str
+    status: str
+    created_at: datetime
+
+
+class PublicInvoiceItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    product_code: str
+    product_name: str
+    unit_name: str
+    lot_number: str | None
+    expiry_date: date | None
+    unit_price: Decimal
+    quantity: int
+    discount_amount: Decimal
+    line_total: Decimal
+    returned_quantity: int
+    created_at: datetime
+
+
+class PublicInvoicePaymentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    payment_method: str
+    amount: Decimal
+    note: str | None
+    created_at: datetime
+
+
+class PublicInvoiceResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    code: str
+    customer_name: str | None
+    customer_phone: str | None
+    customer_tier: str | None
+    subtotal: Decimal
+    discount_amount: Decimal
+    tier_discount: Decimal
+    promotion_discount: Decimal
+    points_discount: Decimal
+    total_amount: Decimal
+    points_used: int
+    points_earned: int
+    promotion_code: str | None
+    payment_method: str
+    service_fee_amount: Decimal
+    service_fee_mode: str
+    amount_paid: Decimal
+    change_amount: Decimal
+    status: str
+    cancel_reason: str | None
+    note: str | None
+    created_at: datetime
+    updated_at: datetime
+    items: list[PublicInvoiceItemResponse] = []
+    payments: list[PublicInvoicePaymentResponse] = []
 
 
 class InvoiceCancelRequest(BaseModel):
@@ -306,6 +393,46 @@ class ReturnCreateRequest(BaseModel):
 
 class ReturnRejectRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
+
+
+class ProfitSourceInvoiceItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    product_id: str
+    product_code: str
+    product_name: str
+    unit_name: str
+    conversion_rate: int
+    batch_id: str
+    quantity: int
+    returned_quantity: int
+    unit_price: Decimal
+    line_total: Decimal
+
+
+class ProfitSourceInvoiceResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    code: str
+    customer_name: str | None
+    customer_phone: str | None
+    payment_method: str
+    status: str
+    subtotal: Decimal
+    total_amount: Decimal
+    amount_paid: Decimal
+    change_amount: Decimal
+    tier_discount: Decimal
+    promotion_discount: Decimal
+    points_discount: Decimal
+    service_fee_amount: Decimal
+    service_fee_mode: str
+    note: str | None
+    created_at: datetime
+    updated_at: datetime
+    items: list[ProfitSourceInvoiceItemResponse] = []
 
 
 class ReturnItemResponse(BaseModel):

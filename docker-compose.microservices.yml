@@ -146,6 +146,9 @@
     container_name: pharmar-report-service
     environment:
       REDIS_URL: redis://redis:6379/0
+      SALE_SERVICE_URL: http://sale-service:8003
+      INVENTORY_SERVICE_URL: http://inventory-service:8002
+      REPORT_CACHE_TTL_SECONDS: ${REPORT_CACHE_TTL_SECONDS:-120}
       RABBITMQ_ENABLED: ${RABBITMQ_ENABLED:-true}
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-pharmar.events}

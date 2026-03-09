@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+import re
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
@@ -49,6 +50,9 @@ from Source.schemas.sale import (
     InvoiceCreateRequest,
     InvoiceListItemResponse,
     InvoicePrintResponse,
+    ProfitSourceInvoiceResponse,
+    PublicInvoiceListItemResponse,
+    PublicInvoiceResponse,
     InvoiceResponse,
     PageResponse,
 )
@@ -83,6 +87,8 @@ def _invoice_event_payload(invoice: Invoice) -> dict[str, Any]:
         "total_amount": _decimal_to_float(invoice.total_amount),
         "amount_paid": _decimal_to_float(invoice.amount_paid),
         "change_amount": _decimal_to_float(invoice.change_amount),
+        "service_fee_amount": _decimal_to_float(invoice.service_fee_amount),
+        "service_fee_mode": invoice.service_fee_mode,
         "payment_method": invoice.payment_method,
         "status": invoice.status,
         "created_by": invoice.created_by,
@@ -102,6 +108,13 @@ async def _get_invoice_with_details(invoice_id: UUID, db: AsyncSession) -> Invoi
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
     return item
+
+
+def _normalize_phone_lookup(phone: str) -> str:
+    normalized = re.sub(r"\D+", "", phone or "")
+    if len(normalized) < 8:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone number is invalid")
+    return normalized
 
 
 async def _prepare_invoice_creation(
@@ -229,6 +242,11 @@ async def _prepare_invoice_creation(
     if total_amount < Decimal("0.00"):
         total_amount = Decimal("0.00")
 
+    service_fee_amount = _normalize_decimal(payload.service_fee_amount or Decimal("0.00"))
+    service_fee_mode = payload.service_fee_mode or "split"
+    if service_fee_mode == "separate" and service_fee_amount > Decimal("0.00"):
+        total_amount = _normalize_decimal(total_amount + service_fee_amount)
+
     payment_methods = await list_active_payment_methods_map(db)
 
     invoice_payments: list[InvoicePayment] = []
@@ -309,6 +327,8 @@ async def _prepare_invoice_creation(
         points_earned=points_earned,
         promotion_code=payload.promotion_code,
         payment_method=payment_method,
+        service_fee_amount=service_fee_amount,
+        service_fee_mode=service_fee_mode,
         amount_paid=_normalize_decimal(amount_paid),
         change_amount=_normalize_decimal(change_amount),
         status="completed",
@@ -432,6 +452,53 @@ async def process_checkout(
     return await _get_invoice_with_details(invoice.id, db)
 
 
+@router.get("/public/invoices/code/{code}", response_model=PublicInvoiceResponse)
+async def public_get_invoice_by_code(code: str, db: DbSession) -> PublicInvoiceResponse:
+    invoice = await get_invoice_by_code_or_404(code, db)
+    invoice = await _get_invoice_with_details(invoice.id, db)
+    return PublicInvoiceResponse.model_validate(invoice)
+
+
+@router.get("/public/invoices/phone/{phone}", response_model=PageResponse[PublicInvoiceListItemResponse])
+async def public_list_invoices_by_phone(
+    phone: str,
+    db: DbSession,
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=10, ge=1, le=50),
+) -> PageResponse[PublicInvoiceListItemResponse]:
+    normalized_phone = _normalize_phone_lookup(phone)
+    stmt = (
+        select(Invoice)
+        .where(
+            func.regexp_replace(func.coalesce(Invoice.customer_phone, ""), r"\D", "", "g") == normalized_phone
+        )
+        .order_by(Invoice.created_at.desc())
+    )
+    rows, meta = await paginate_scalars(db, stmt, page, size)
+    return PageResponse(
+        items=[
+            PublicInvoiceListItemResponse(
+                id=item.id,
+                code=item.code,
+                customer_name=item.customer_name,
+                customer_phone=item.customer_phone,
+                total_amount=item.total_amount,
+                amount_paid=item.amount_paid,
+                payment_method=item.payment_method,
+                service_fee_amount=item.service_fee_amount,
+                service_fee_mode=item.service_fee_mode,
+                status=item.status,
+                created_at=item.created_at,
+            )
+            for item in rows
+        ],
+        total=meta.total,
+        page=meta.page,
+        size=meta.size,
+        pages=meta.pages,
+    )
+
+
 @router.get("/invoices", response_model=PageResponse[InvoiceListItemResponse])
 async def list_invoices(
     current_user: AnyUser,
@@ -470,6 +537,8 @@ async def list_invoices(
                 total_amount=item.total_amount,
                 amount_paid=item.amount_paid,
                 payment_method=item.payment_method,
+                service_fee_amount=item.service_fee_amount,
+                service_fee_mode=item.service_fee_mode,
                 status=item.status,
                 cashier_name=item.created_by_name,
                 created_at=item.created_at,
@@ -510,6 +579,36 @@ async def create_invoice(
         payload=_invoice_event_payload(invoice),
     )
     return InvoiceResponse.model_validate(invoice)
+
+
+@router.get("/reports/profit-source", response_model=PageResponse[ProfitSourceInvoiceResponse])
+async def list_profit_source_invoices(
+    _: AnyUser,
+    db: DbSession,
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=100, ge=1, le=200),
+) -> PageResponse[ProfitSourceInvoiceResponse]:
+    stmt = (
+        select(Invoice)
+        .options(selectinload(Invoice.items))
+        .where(Invoice.status.in_(["completed", "returned"]))
+        .order_by(Invoice.created_at.desc())
+    )
+    if date_from is not None:
+        stmt = stmt.where(func.date(Invoice.created_at) >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(func.date(Invoice.created_at) <= date_to)
+
+    rows, meta = await paginate_scalars(db, stmt, page, size)
+    return PageResponse[ProfitSourceInvoiceResponse](
+        items=[ProfitSourceInvoiceResponse.model_validate(item) for item in rows],
+        total=meta.total,
+        page=meta.page,
+        size=meta.size,
+        pages=meta.pages,
+    )
 
 
 @router.post("/invoices/{invoice_id}/cancel")
@@ -684,6 +783,8 @@ async def print_invoice_data(invoice_id: UUID, _: AnyUser, token: AccessToken, d
                 "amount": invoice.promotion_discount,
             },
             "points_discount": invoice.points_discount,
+            "service_fee_amount": invoice.service_fee_amount,
+            "service_fee_mode": invoice.service_fee_mode,
             "total": invoice.total_amount,
         },
         payment={

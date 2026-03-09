@@ -63,6 +63,22 @@ async def lifespan(_: FastAPI):
     async with engine.begin() as connection:
         await connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_NAME}"))
         await connection.run_sync(Base.metadata.create_all)
+        await connection.execute(
+            text(
+                f"""
+                ALTER TABLE {SCHEMA_NAME}.invoices
+                ADD COLUMN IF NOT EXISTS service_fee_amount NUMERIC(15, 2) NOT NULL DEFAULT 0
+                """
+            )
+        )
+        await connection.execute(
+            text(
+                f"""
+                ALTER TABLE {SCHEMA_NAME}.invoices
+                ADD COLUMN IF NOT EXISTS service_fee_mode VARCHAR(20) NOT NULL DEFAULT 'split'
+                """
+            )
+        )
 
     await _seed_default_payment_methods()
     await init_event_publisher(

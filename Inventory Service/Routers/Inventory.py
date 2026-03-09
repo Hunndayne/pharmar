@@ -25,6 +25,7 @@ from Source.domain import (
     ReceiptStatus,
 )
 from Source.schemas.inventory import (
+    BatchCostLookupRequest,
     BatchStatusUpdateRequest,
     ImportReceiptCreateRequest,
     ImportReceiptUpdateRequest,
@@ -235,6 +236,51 @@ def to_stock_quantity(
         promo_get_qty=promo_get_qty,
     )
     return effective_import_quantity * import_unit_conversion(unit_prices)
+
+
+def paid_import_quantity_for_batch(batch: dict[str, Any]) -> int:
+    stock_quantity = max(0, int(batch.get("qty_in", 0) or 0))
+    if stock_quantity <= 0:
+        return 0
+
+    conversion = import_unit_conversion(batch.get("unit_prices", []))
+    effective_import_quantity = max(1, stock_quantity // max(1, conversion))
+    promo_type = batch.get("promo_type", PromoType.NONE)
+    promo_buy_qty = batch.get("promo_buy_qty")
+    promo_get_qty = batch.get("promo_get_qty")
+
+    if promo_type == PromoType.BUY_X_GET_Y and promo_buy_qty and promo_get_qty and promo_buy_qty > 0:
+        for paid_quantity in range(1, effective_import_quantity + 1):
+            if to_effective_import_quantity(
+                paid_quantity,
+                promo_type=promo_type,
+                promo_buy_qty=promo_buy_qty,
+                promo_get_qty=promo_get_qty,
+            ) == effective_import_quantity:
+                return paid_quantity
+
+    return effective_import_quantity
+
+
+def batch_cost_snapshot(batch: dict[str, Any]) -> dict[str, Any]:
+    qty_in = max(0, int(batch.get("qty_in", 0) or 0))
+    import_price = round(float(batch.get("import_price", 0) or 0), 2)
+    paid_import_quantity = paid_import_quantity_for_batch(batch)
+    total_cost_amount = round(paid_import_quantity * import_price, 2)
+    cost_per_base_unit = round(total_cost_amount / qty_in, 6) if qty_in > 0 else 0.0
+
+    return {
+        "batch_id": batch["id"],
+        "qty_in": qty_in,
+        "import_price": import_price,
+        "promo_type": batch.get("promo_type", PromoType.NONE),
+        "promo_buy_qty": batch.get("promo_buy_qty"),
+        "promo_get_qty": batch.get("promo_get_qty"),
+        "import_unit_conversion": import_unit_conversion(batch.get("unit_prices", [])),
+        "paid_import_quantity": paid_import_quantity,
+        "total_cost_amount": total_cost_amount,
+        "cost_per_base_unit": cost_per_base_unit,
+    }
 
 
 def resolve_line_promo_note(line: Any) -> str | None:
@@ -454,6 +500,7 @@ def upsert_drug_from_catalog_product(
         "code": product_code,
         "name": product_name,
         "group": group_name,
+        "instructions": str(product.get("instructions") or "").strip(),
         "base_unit": highest_unit["name"],
         "reorder_level": _to_positive_int((existing or {}).get("reorder_level"), default=0),
         "units": units,
@@ -1775,6 +1822,31 @@ async def get_stock_detail(drug_id: str, token: str | None = Depends(optional_oa
         },
         "batches": [batch_to_view(batch, day) for batch in batches],
     }
+
+
+@router.post("/reports/batch-costs")
+async def get_batch_costs(
+    payload: BatchCostLookupRequest,
+    token: str | None = Depends(optional_oauth2_scheme),
+) -> dict[str, Any]:
+    if token:
+        get_current_subject(token)
+
+    unique_batch_ids: list[str] = []
+    seen: set[str] = set()
+    for batch_id in payload.batch_ids:
+        normalized = str(batch_id).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_batch_ids.append(normalized)
+
+    items = [
+        batch_cost_snapshot(batch)
+        for batch_id in unique_batch_ids
+        if (batch := runtime_state.batches.get(batch_id)) is not None
+    ]
+    return {"items": items}
 
 @router.get("/import-receipts")
 async def list_import_receipts(

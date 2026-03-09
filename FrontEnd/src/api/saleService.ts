@@ -23,6 +23,8 @@ export type SaleInvoiceCreatePayload = {
   promotion_code?: string | null
   points_used?: number
   payment_method?: string
+  service_fee_amount?: number
+  service_fee_mode?: 'split' | 'separate'
   amount_paid?: number
   note?: string | null
 }
@@ -85,6 +87,8 @@ export type SaleInvoiceResponse = {
   points_earned: number
   promotion_code: string | null
   payment_method: string
+  service_fee_amount: string | number
+  service_fee_mode: string
   amount_paid: string | number
   change_amount: string | number
   status: string
@@ -109,9 +113,77 @@ export type SaleInvoiceListItem = {
   total_amount: string | number
   amount_paid: string | number
   payment_method: string
+  service_fee_amount: string | number
+  service_fee_mode: string
   status: string
   cashier_name: string | null
   created_at: string
+}
+
+export type PublicSaleInvoiceListItem = {
+  id: string
+  code: string
+  customer_name: string | null
+  customer_phone: string | null
+  total_amount: string | number
+  amount_paid: string | number
+  payment_method: string
+  service_fee_amount: string | number
+  service_fee_mode: string
+  status: string
+  created_at: string
+}
+
+export type PublicSaleInvoiceItem = {
+  id: string
+  product_code: string
+  product_name: string
+  unit_name: string
+  lot_number: string | null
+  expiry_date: string | null
+  unit_price: string | number
+  quantity: number
+  discount_amount: string | number
+  line_total: string | number
+  returned_quantity: number
+  created_at: string
+}
+
+export type PublicSaleInvoicePayment = {
+  id: string
+  payment_method: string
+  amount: string | number
+  note: string | null
+  created_at: string
+}
+
+export type PublicSaleInvoiceResponse = {
+  id: string
+  code: string
+  customer_name: string | null
+  customer_phone: string | null
+  customer_tier: string | null
+  subtotal: string | number
+  discount_amount: string | number
+  tier_discount: string | number
+  promotion_discount: string | number
+  points_discount: string | number
+  total_amount: string | number
+  points_used: number
+  points_earned: number
+  promotion_code: string | null
+  payment_method: string
+  service_fee_amount: string | number
+  service_fee_mode: string
+  amount_paid: string | number
+  change_amount: string | number
+  status: string
+  cancel_reason: string | null
+  note: string | null
+  created_at: string
+  updated_at: string
+  items: PublicSaleInvoiceItem[]
+  payments: PublicSaleInvoicePayment[]
 }
 
 export type SaleInvoiceListParams = {
@@ -185,6 +257,8 @@ export type SaleInvoicePrintData = {
       amount?: number | string | null
     } | null
     points_discount?: number | string | null
+    service_fee_amount?: number | string | null
+    service_fee_mode?: string | null
     total?: number | string | null
   }
   payment: {
@@ -287,6 +361,51 @@ const requestSaleJson = async <T>(
   return payload as T
 }
 
+const requestPublicSaleJson = async <T>(
+  path: string,
+  init: RequestInit = {},
+  params?: Record<string, string | number | boolean | undefined>,
+  fetchOptions?: {
+    dedupe?: boolean
+    dedupeKey?: string
+    getCacheMs?: number
+    retryOn429?: boolean
+    max429Retries?: number
+  },
+): Promise<T> => {
+  const headers = new Headers(init.headers)
+  if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json')
+
+  const response = await controlledFetch(buildUsersApiUrl(path, params), {
+    ...init,
+    headers,
+  }, fetchOptions)
+
+  const contentType = response.headers.get('content-type') ?? ''
+  const isJson = contentType.includes('application/json')
+  const payload = isJson ? await response.json() : null
+
+  if (!response.ok) {
+    const detailMessage = Array.isArray(payload?.detail)
+      ? payload.detail
+          .map((item: { msg?: string; loc?: (string | number)[] }) => {
+            const loc = Array.isArray(item?.loc) ? item.loc.join('.') : ''
+            return loc ? `${loc}: ${item?.msg ?? 'Du lieu khong hop le'}` : (item?.msg ?? 'Du lieu khong hop le')
+          })
+          .join('; ')
+      : undefined
+
+    const detail =
+      detailMessage ??
+      (typeof payload?.detail === 'string' ? payload.detail : undefined) ??
+      payload?.message ??
+      `Yeu cau that bai (${response.status})`
+    throw new ApiError(detail, response.status)
+  }
+
+  return payload as T
+}
+
 export const saleApi = {
   listInvoices: (token: string, params?: SaleInvoiceListParams) =>
     requestSaleJson<PageResponse<SaleInvoiceListItem>>('/sale/invoices', token, { method: 'GET' }, params),
@@ -358,5 +477,21 @@ export const saleApi = {
       { method: 'GET' },
       undefined,
       { getCacheMs: 5000, max429Retries: 2 },
+    ),
+
+  publicGetInvoiceByCode: (code: string) =>
+    requestPublicSaleJson<PublicSaleInvoiceResponse>(
+      `/sale/public/invoices/code/${encodeURIComponent(code.trim())}`,
+      { method: 'GET' },
+      undefined,
+      { retryOn429: true, max429Retries: 1 },
+    ),
+
+  publicListInvoicesByPhone: (phone: string, params?: { page?: number; size?: number }) =>
+    requestPublicSaleJson<PageResponse<PublicSaleInvoiceListItem>>(
+      `/sale/public/invoices/phone/${encodeURIComponent(phone.trim())}`,
+      { method: 'GET' },
+      params,
+      { retryOn429: true, max429Retries: 1 },
     ),
 }
