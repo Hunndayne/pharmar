@@ -948,6 +948,9 @@ export function Purchases() {
     if (detail.includes('cannot add/remove lines')) {
       return 'Phiếu đã phát sinh giao dịch nên không thể thêm hoặc xóa dòng thuốc.'
     }
+    if (detail.includes('cannot remove existing lines')) {
+      return 'Phiếu đã phát sinh giao dịch nên không thể xóa các dòng thuốc cũ.'
+    }
     if (detail.includes('cannot change drug of existing line')) {
       return 'Phiếu đã phát sinh giao dịch nên không thể đổi thuốc của dòng đã có.'
     }
@@ -1125,6 +1128,18 @@ export function Purchases() {
     [editingId, orders],
   )
   const isLockedReceiptEdit = Boolean(editingId && editingOrder?.canEdit === false)
+  const isLockedExistingLine = useCallback(
+    (lineId: string) =>
+      Boolean(
+        isLockedReceiptEdit &&
+        form.lines.some(
+          (line) =>
+            line.id === lineId &&
+            Boolean(line.batchId.trim() || line.originalBatchCode.trim()),
+        ),
+      ),
+    [form.lines, isLockedReceiptEdit],
+  )
 
   const buildRetailPrices = useCallback(
     (drugId: string, existing?: LineRetailPrice[]) =>
@@ -1169,7 +1184,7 @@ export function Purchases() {
     async (lineId: string, rawBarcode: string) => {
       const barcodeKey = normalizeBarcodeLookupKey(rawBarcode)
       const matchedDrugId = barcodeKey ? await resolveDrugIdByBarcode(barcodeKey) : ''
-      if (matchedDrugId && !isLockedReceiptEdit) {
+      if (matchedDrugId && !isLockedExistingLine(lineId)) {
         const matchedDrugName = drugMap.get(matchedDrugId)?.name
         if (matchedDrugName) {
           setLineDrugSearch((prev) => ({
@@ -1183,7 +1198,7 @@ export function Purchases() {
         lines: prev.lines.map((line) => {
           if (line.id !== lineId) return line
           const nextLine = { ...line, barcode: barcodeKey || rawBarcode.trim() }
-          if (matchedDrugId && !isLockedReceiptEdit) {
+          if (matchedDrugId && !isLockedExistingLine(lineId)) {
             nextLine.drugId = matchedDrugId
             nextLine.unitRetailPrices = buildRetailPrices(matchedDrugId, line.unitRetailPrices)
           }
@@ -1192,7 +1207,7 @@ export function Purchases() {
       }))
       return matchedDrugId
     },
-    [buildRetailPrices, drugMap, isLockedReceiptEdit, normalizeBarcodeLookupKey, resolveDrugIdByBarcode],
+    [buildRetailPrices, drugMap, isLockedExistingLine, normalizeBarcodeLookupKey, resolveDrugIdByBarcode],
   )
 
   const stats = useMemo(() => {
@@ -1453,7 +1468,7 @@ export function Purchases() {
   }
 
   const updateLine = (id: string, field: keyof LineItemForm, value: string) => {
-    if (isLockedReceiptEdit && field === 'quantity') return
+    if (field === 'quantity' && isLockedExistingLine(id)) return
     setForm((prev) => ({
       ...prev,
       lines: prev.lines.map((line) => (line.id === id ? { ...line, [field]: value } : line)),
@@ -1467,7 +1482,7 @@ export function Purchases() {
   )
 
   const handleLineDrugSearchChange = (lineId: string, value: string) => {
-    if (isLockedReceiptEdit) return
+    if (isLockedExistingLine(lineId)) return
     setLineDrugSearch((prev) => ({
       ...prev,
       [lineId]: value,
@@ -1497,7 +1512,7 @@ export function Purchases() {
   }
 
   const handleDrugChange = (id: string, drugId: string) => {
-    if (isLockedReceiptEdit) return
+    if (isLockedExistingLine(id)) return
     const drug = drugMap.get(drugId)
     setLineDrugSearch((prev) => ({
       ...prev,
@@ -1582,7 +1597,6 @@ export function Purchases() {
   )
 
   const addLine = () => {
-    if (isLockedReceiptEdit) return
     const newLineId = `line-${Date.now()}-${Math.max(1, form.lines.length + 1)}`
     pendingNewLineIdRef.current = newLineId
     setForm((prev) => ({
@@ -1598,7 +1612,7 @@ export function Purchases() {
   }
 
   const removeLine = (id: string) => {
-    if (isLockedReceiptEdit) return
+    if (isLockedExistingLine(id)) return
     setLineDrugSearch((prev) => {
       if (!(id in prev)) return prev
       const next = { ...prev }
@@ -1703,7 +1717,10 @@ export function Purchases() {
       )
 
       const missingBatchCode = nextLines.some(
-        (line) => !normalizeBatchCode(line.batchCode) && !normalizeBatchCode(line.originalBatchCode),
+        (line) =>
+          Boolean(line.batchId.trim() || line.originalBatchCode.trim()) &&
+          !normalizeBatchCode(line.batchCode) &&
+          !normalizeBatchCode(line.originalBatchCode),
       )
       if (missingBatchCode) {
         setAlert('Không thể cập nhật vì một số lô cũ thiếu mã batch để đối chiếu.')
@@ -3015,7 +3032,7 @@ export function Purchases() {
                 </div>
                 {isLockedReceiptEdit ? (
                   <div className="rounded-2xl border border-amber-500/30 bg-amber-50 px-4 py-3 text-xs text-amber-800">
-                    Phiếu này đã phát sinh giao dịch. Bạn chỉ có thể sửa thông tin lô; không thể đổi thuốc, số lượng hoặc thêm/xóa dòng.
+                    Phiếu này đã phát sinh giao dịch. Bạn có thể thêm dòng thuốc mới, nhưng không thể đổi thuốc, số lượng hoặc xóa các dòng cũ.
                   </div>
                 ) : null}
                 {errors.lines ? <p className="text-xs text-coral-500">{errors.lines}</p> : null}
@@ -3045,7 +3062,7 @@ export function Purchases() {
                             <button
                               type="button"
                               onClick={() => removeLine(line.id)}
-                              disabled={isLockedReceiptEdit}
+                              disabled={isLockedExistingLine(line.id)}
                               className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500"
                             >
                               Xóa dòng
@@ -3061,7 +3078,7 @@ export function Purchases() {
                               list={`line-drug-options-${line.id}`}
                               value={lineDrugSearch[line.id] ?? ''}
                               onChange={(event) => handleLineDrugSearchChange(line.id, event.target.value)}
-                              disabled={isLockedReceiptEdit}
+                              disabled={isLockedExistingLine(line.id)}
                               className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
                               placeholder="Tìm tên thuốc"
                             />
@@ -3119,7 +3136,7 @@ export function Purchases() {
                               ref={setFormFieldRef(`line-qty-${line.id}`)}
                               value={line.quantity}
                               onChange={(event) => updateLine(line.id, 'quantity', event.target.value)}
-                              disabled={isLockedReceiptEdit}
+                              disabled={isLockedExistingLine(line.id)}
                               className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
                               placeholder="0"
                             />
@@ -3316,7 +3333,6 @@ export function Purchases() {
                   type="button"
                   ref={setFormFieldRef('action-add-line')}
                   onClick={addLine}
-                  disabled={isLockedReceiptEdit}
                   className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900"
                 >
                   Thêm dòng thuốc
