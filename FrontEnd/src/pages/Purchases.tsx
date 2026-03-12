@@ -387,6 +387,87 @@ const formatRetailPrices = (line: LineItemForm) =>
     .map((item) => `${item.unitName}: ${formatCurrency(parseNumber(item.price))}`)
     .join(' · ')
 
+const ReceiptMetaItem = ({
+  label,
+  value,
+}: {
+  label: string
+  value: string
+}) => (
+  <div className="rounded-2xl border border-ink-900/10 bg-fog-50/80 px-3 py-3">
+    <p className="text-[11px] uppercase tracking-[0.22em] text-ink-500">{label}</p>
+    <p className="mt-1 text-sm font-medium text-ink-900 break-words">{value || '-'}</p>
+  </div>
+)
+
+const ReceiptStatCard = ({
+  label,
+  value,
+  helper,
+  tone = 'default',
+}: {
+  label: string
+  value: string
+  helper?: string
+  tone?: 'default' | 'primary'
+}) => (
+  <div
+    className={`rounded-2xl border px-4 py-4 ${
+      tone === 'primary'
+        ? 'border-brand-500/20 bg-brand-500/10'
+        : 'border-ink-900/10 bg-white'
+    }`}
+  >
+    <p className="text-[11px] uppercase tracking-[0.22em] text-ink-500">{label}</p>
+    <p className="mt-2 text-lg font-semibold text-ink-900">{value}</p>
+    {helper ? <p className="mt-1 text-xs text-ink-600">{helper}</p> : null}
+  </div>
+)
+
+const ReceiptLineCard = ({
+  line,
+  drug,
+  index,
+}: {
+  line: LineItemForm
+  drug: Drug | undefined
+  index: number
+}) => {
+  const pricing = calcLinePricing(line)
+
+  return (
+    <div className="rounded-2xl border border-ink-900/10 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-ink-500">Dòng {index}</p>
+          <p className="mt-1 text-sm font-semibold text-ink-900">{drug?.name ?? '-'}</p>
+          <p className="mt-1 text-xs text-ink-600">
+            {[drug?.code, drug?.maker].filter(Boolean).join(' · ') || 'Chưa có thông tin thuốc'}
+          </p>
+        </div>
+        <div className="min-w-[128px] rounded-2xl bg-fog-50 px-3 py-2 text-right">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-ink-500">Giá trị dòng</p>
+          <p className="mt-1 text-base font-semibold text-ink-900">{formatCurrency(calcLineTotal(line))}</p>
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        <ReceiptMetaItem label="Số lô" value={line.lotNumber || '-'} />
+        <ReceiptMetaItem label="QR lô" value={line.batchCode || '-'} />
+        <ReceiptMetaItem label="HSD" value={formatDate(line.expDate)} />
+        <ReceiptMetaItem label="SL sau KM" value={pricing.quantityAfterPromo.toLocaleString('vi-VN')} />
+        <ReceiptMetaItem label="Giá sau KM" value={formatCurrency(pricing.unitPriceAfterPromo)} />
+        <ReceiptMetaItem label="Khuyến mãi" value={describePromo(line)} />
+      </div>
+
+      <div className="mt-3 rounded-2xl bg-fog-50/80 px-3 py-3">
+        <p className="text-[11px] uppercase tracking-[0.22em] text-ink-500">Giá bán theo đơn vị</p>
+        <p className="mt-1 text-xs leading-6 text-ink-700 break-words">{formatRetailPrices(line) || '-'}</p>
+      </div>
+    </div>
+  )
+}
+
 const getLotLabelPrice = (line: LineItemForm) => {
   const highestUnit = line.unitRetailPrices
     .slice()
@@ -2759,42 +2840,73 @@ export function Purchases() {
                     {expandedId === order.id ? (
                       <tr className="bg-white/50">
                         <td colSpan={9} className="px-6 pb-6">
-                          <div className="rounded-2xl bg-white/80 p-4 space-y-4">
-                            <div className="grid gap-4 md:grid-cols-[1.1fr,1fr]">
-                              <div className="space-y-2 text-sm text-ink-700">
-                                <p><span className="font-semibold text-ink-900">Nhà phân phối:</span> {supplierMap.get(order.supplierId)?.name}</p>
-                                <p><span className="font-semibold text-ink-900">Liên hệ nhà phân phối:</span> {supplierMap.get(order.supplierId)?.contactName}</p>
-                                <p><span className="font-semibold text-ink-900">Liên hệ:</span> {supplierMap.get(order.supplierId)?.phone}</p>
-                                <p><span className="font-semibold text-ink-900">Địa chỉ:</span> {supplierMap.get(order.supplierId)?.address}</p>
-                                <p><span className="font-semibold text-ink-900">Đơn vị vận chuyển:</span> {order.shippingCarrier}</p>
-                                <p><span className="font-semibold text-ink-900">Trạng thái thanh toán:</span> {order.paymentStatus}</p>
-                                <p><span className="font-semibold text-ink-900">Phương thức thanh toán:</span> {order.paymentMethod}</p>
-                                <p><span className="font-semibold text-ink-900">Ghi chú:</span> {order.note || '-'}</p>
+                          <div className="space-y-4 rounded-3xl border border-ink-900/10 bg-gradient-to-br from-white via-white to-fog-50/70 p-5">
+                            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_340px]">
+                              <div className="rounded-3xl border border-ink-900/10 bg-white/90 p-4">
+                                <div className="flex items-start justify-between gap-4">
+                                  <div>
+                                    <p className="text-xs uppercase tracking-[0.3em] text-ink-500">Thông tin phiếu</p>
+                                    <h4 className="mt-2 text-lg font-semibold text-ink-900">{order.code}</h4>
+                                    <p className="mt-1 text-sm text-ink-600">Ngày nhập {formatDate(order.date)}</p>
+                                  </div>
+                                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${paymentStatusStyles[order.paymentStatus]}`}>
+                                    {order.paymentStatus}
+                                  </span>
+                                </div>
+                                <div className="mt-4 grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+                                  <ReceiptMetaItem label="Nhà phân phối" value={supplierMap.get(order.supplierId)?.name || '-'} />
+                                  <ReceiptMetaItem label="Người liên hệ" value={supplierMap.get(order.supplierId)?.contactName || '-'} />
+                                  <ReceiptMetaItem label="Số điện thoại" value={supplierMap.get(order.supplierId)?.phone || '-'} />
+                                  <ReceiptMetaItem label="Địa chỉ" value={supplierMap.get(order.supplierId)?.address || '-'} />
+                                  <ReceiptMetaItem label="Vận chuyển" value={order.shippingCarrier || '-'} />
+                                  <ReceiptMetaItem label="PT thanh toán" value={order.paymentMethod || '-'} />
+                                </div>
+                                <div className="mt-3 rounded-2xl bg-fog-50/90 px-4 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.22em] text-ink-500">Ghi chú</p>
+                                  <p className="mt-1 text-sm text-ink-700 break-words">{order.note || 'Không có ghi chú'}</p>
+                                </div>
                               </div>
-                              <div className="rounded-2xl bg-white px-4 py-3 text-sm text-ink-700">
-                                <p className="text-xs uppercase tracking-[0.25em] text-ink-500">Tổng hợp</p>
-                                <p className="mt-2 text-lg font-semibold text-ink-900">{formatCurrency(calcOrderTotal(order.lines))}</p>
-                                <p className="mt-1 text-xs text-ink-600">{order.lines.length} dòng thuốc</p>
+
+                              <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
+                                <ReceiptStatCard
+                                  label="Tổng tiền"
+                                  value={formatCurrency(calcOrderTotal(order.lines))}
+                                  helper={`${order.lines.length} dòng thuốc`}
+                                  tone="primary"
+                                />
+                                <ReceiptStatCard
+                                  label="Thanh toán"
+                                  value={order.paymentStatus}
+                                  helper={order.paymentMethod || 'Chưa chọn phương thức'}
+                                />
+                                <ReceiptStatCard
+                                  label="Nhà vận chuyển"
+                                  value={order.shippingCarrier || '-'}
+                                  helper={supplierMap.get(order.supplierId)?.name || 'Chưa có NPP'}
+                                />
                               </div>
                             </div>
-                            <div className="space-y-2 text-sm text-ink-700">
-                              {order.lines.map((line) => {
-                                const drug = drugMap.get(line.drugId)
-                                const pricing = calcLinePricing(line)
-                                return (
-                                  <div key={line.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white px-3 py-2">
-                                    <span className="font-semibold text-ink-900">{drug?.name ?? '-'}</span>
-                                    <span>Lô {line.lotNumber || '-'}</span>
-                                    <span>SL sau KM {pricing.quantityAfterPromo.toLocaleString('vi-VN')}</span>
-                                    <span>Giá sau KM {formatCurrency(pricing.unitPriceAfterPromo)}</span>
-                                    <span className="text-xs text-ink-700">Giá bán: {formatRetailPrices(line) || '-'}</span>
-                                    <span>{describePromo(line)}</span>
-                                    <span>HSD {formatDate(line.expDate)}</span>
-                                    <span>{formatCurrency(calcLineTotal(line))}</span>
-                                    <span className="text-xs text-ink-600">QR: {line.batchCode}</span>
-                                  </div>
-                                )
-                              })}
+
+                            <div className="space-y-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <p className="text-xs uppercase tracking-[0.3em] text-ink-500">Dòng thuốc</p>
+                                  <p className="mt-1 text-sm text-ink-700">Hiển thị chi tiết lô, giá sau khuyến mãi và giá bán theo đơn vị.</p>
+                                </div>
+                                <span className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-700">
+                                  {order.lines.length} dòng
+                                </span>
+                              </div>
+                              <div className="grid gap-3 xl:grid-cols-2">
+                                {order.lines.map((line, lineIndex) => (
+                                  <ReceiptLineCard
+                                    key={line.id}
+                                    line={line}
+                                    drug={drugMap.get(line.drugId)}
+                                    index={lineIndex + 1}
+                                  />
+                                ))}
+                              </div>
                             </div>
                           </div>
                         </td>
@@ -2862,29 +2974,26 @@ export function Purchases() {
                 </div>
 
                 {isExpanded ? (
-                  <div className="mt-3 rounded-xl border border-ink-900/10 bg-white p-3 text-xs text-ink-700">
-                    <div className="space-y-1.5">
-                      <p><span className="font-semibold text-ink-900">Liên hệ NPP:</span> {supplierMap.get(order.supplierId)?.contactName || '-'}</p>
-                      <p><span className="font-semibold text-ink-900">SĐT:</span> {supplierMap.get(order.supplierId)?.phone || '-'}</p>
-                      <p><span className="font-semibold text-ink-900">Địa chỉ:</span> {supplierMap.get(order.supplierId)?.address || '-'}</p>
-                      <p><span className="font-semibold text-ink-900">Vận chuyển:</span> {order.shippingCarrier || '-'}</p>
-                      <p><span className="font-semibold text-ink-900">Ghi chú:</span> {order.note || '-'}</p>
+                  <div className="mt-3 space-y-3 rounded-2xl border border-ink-900/10 bg-gradient-to-br from-white via-white to-fog-50/80 p-3 text-xs text-ink-700">
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <ReceiptMetaItem label="Người liên hệ" value={supplierMap.get(order.supplierId)?.contactName || '-'} />
+                      <ReceiptMetaItem label="Số điện thoại" value={supplierMap.get(order.supplierId)?.phone || '-'} />
+                      <ReceiptMetaItem label="Địa chỉ" value={supplierMap.get(order.supplierId)?.address || '-'} />
+                      <ReceiptMetaItem label="Vận chuyển" value={order.shippingCarrier || '-'} />
                     </div>
-                    <div className="mt-3 space-y-2">
-                      {order.lines.map((line) => {
-                        const drug = drugMap.get(line.drugId)
-                        const pricing = calcLinePricing(line)
-                        return (
-                          <div key={line.id} className="rounded-lg bg-fog-50 px-3 py-2">
-                            <p className="font-semibold text-ink-900">{drug?.name ?? '-'}</p>
-                            <p className="mt-1">Lô {line.lotNumber || '-'} · HSD {formatDate(line.expDate)}</p>
-                            <p>SL sau KM {pricing.quantityAfterPromo.toLocaleString('vi-VN')} · Giá sau KM {formatCurrency(pricing.unitPriceAfterPromo)}</p>
-                            <p className="text-ink-600">Giá bán: {formatRetailPrices(line) || '-'}</p>
-                            <p>{describePromo(line)} · {formatCurrency(calcLineTotal(line))}</p>
-                            <p className="text-ink-600">QR: {line.batchCode}</p>
-                          </div>
-                        )
-                      })}
+                    <div className="rounded-2xl bg-fog-50/90 px-3 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.22em] text-ink-500">Ghi chú</p>
+                      <p className="mt-1 text-sm text-ink-700 break-words">{order.note || 'Không có ghi chú'}</p>
+                    </div>
+                    <div className="grid gap-3">
+                      {order.lines.map((line, lineIndex) => (
+                        <ReceiptLineCard
+                          key={line.id}
+                          line={line}
+                          drug={drugMap.get(line.drugId)}
+                          index={lineIndex + 1}
+                        />
+                      ))}
                     </div>
                   </div>
                 ) : null}
