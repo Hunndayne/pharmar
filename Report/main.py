@@ -3,9 +3,10 @@ import json
 import logging
 import re
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import aio_pika
 import httpx
@@ -51,6 +52,7 @@ _SUMMARY_KEY = "report:summary"
 _EVENTS_KEY = "report:events"
 _EVENTS_DEDUP_KEY = "report:events:dedup"
 _MAX_EVENTS = 100
+REPORT_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 def _to_float(value: Any) -> float:
@@ -90,20 +92,58 @@ def _require_authorization(authorization: str | None) -> str:
     return token
 
 
+def _parse_timestamp(value: str) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _local_datetime(value: str) -> datetime | None:
+    parsed = _parse_timestamp(value)
+    if parsed is None:
+        return None
+    return parsed.astimezone(REPORT_TIMEZONE)
+
+
+def _local_date(value: str) -> date | None:
+    local_dt = _local_datetime(value)
+    return local_dt.date() if local_dt is not None else None
+
+
+def _in_local_date_range(value: str, date_from: date | None, date_to: date | None) -> bool:
+    local_value = _local_date(value)
+    if local_value is None:
+        return False
+    if date_from is not None and local_value < date_from:
+        return False
+    if date_to is not None and local_value > date_to:
+        return False
+    return True
+
+
 def _period_day_key(value: str) -> str:
-    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    return parsed.date().isoformat()
+    local_dt = _local_datetime(value)
+    return local_dt.date().isoformat() if local_dt is not None else ""
 
 
 def _period_week_key(value: str) -> str:
-    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    iso = parsed.isocalendar()
+    local_dt = _local_datetime(value)
+    if local_dt is None:
+        return ""
+    iso = local_dt.isocalendar()
     return f"{iso.year}-W{iso.week:02d}"
 
 
 def _period_month_key(value: str) -> str:
-    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    return parsed.strftime("%Y-%m")
+    local_dt = _local_datetime(value)
+    return local_dt.strftime("%Y-%m") if local_dt is not None else ""
 
 
 def _cache_key(prefix: str, payload: dict[str, Any]) -> str:
@@ -203,6 +243,9 @@ async def _fetch_profit_source_invoices(
     page = 1
     pages = 1
 
+    query_from = date_from - timedelta(days=1) if date_from else None
+    query_to = date_to + timedelta(days=1) if date_to else None
+
     while page <= pages:
         payload = await _request_service_json(
             "GET",
@@ -211,8 +254,8 @@ async def _fetch_profit_source_invoices(
             params={
                 "page": page,
                 "size": 200,
-                "date_from": date_from.isoformat() if date_from else None,
-                "date_to": date_to.isoformat() if date_to else None,
+                "date_from": query_from.isoformat() if query_from else None,
+                "date_to": query_to.isoformat() if query_to else None,
             },
         )
         rows = payload.get("items") if isinstance(payload, dict) else []
@@ -278,7 +321,12 @@ def _paginate_rows(items: list[dict[str, Any]], page: int, size: int) -> dict[st
     }
 
 
-def _build_profit_dataset(invoices: list[dict[str, Any]], batch_costs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _build_profit_dataset(
+    invoices: list[dict[str, Any]],
+    batch_costs: dict[str, dict[str, Any]],
+    date_from: date | None,
+    date_to: date | None,
+) -> dict[str, Any]:
     summary_invoice_count = 0
     summary_net_revenue = Decimal("0")
     summary_cogs = Decimal("0")
@@ -325,6 +373,8 @@ def _build_profit_dataset(invoices: list[dict[str, Any]], batch_costs: dict[str,
         created_at = str(invoice.get("created_at") or "")
         items = invoice.get("items") if isinstance(invoice.get("items"), list) else []
         if not created_at or not items:
+            continue
+        if not _in_local_date_range(created_at, date_from, date_to):
             continue
 
         subtotal = _to_decimal(invoice.get("subtotal"))
@@ -418,6 +468,8 @@ def _build_profit_dataset(invoices: list[dict[str, Any]], batch_costs: dict[str,
             (weekly_map, week_key),
             (monthly_map, month_key),
         ):
+            if not period_key:
+                continue
             row = bucket[period_key]
             row["period_key"] = period_key
             row["invoice_count"] += 1
@@ -534,7 +586,7 @@ async def _load_profit_dataset(
         if isinstance(item, dict)
     ]
     batch_costs = await _fetch_batch_costs(authorization, batch_ids)
-    dataset = _build_profit_dataset(invoices, batch_costs)
+    dataset = _build_profit_dataset(invoices, batch_costs, date_from, date_to)
     await _set_cached_json(cache_key, dataset, settings.REPORT_CACHE_TTL_SECONDS)
     return dataset
 

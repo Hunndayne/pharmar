@@ -85,6 +85,16 @@ const tabs: Array<{ id: ReportTab; label: string }> = [
 const MAX_REPORT_PAGES = 5
 const PAGE_SIZE = 50
 const PROFIT_PAGE_SIZE = 20
+const REPORT_TIME_ZONE = 'Asia/Ho_Chi_Minh'
+const REPORT_DATE_KEY_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: REPORT_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+const REPORT_DATE_DISPLAY_FORMATTER = new Intl.DateTimeFormat('vi-VN', {
+  timeZone: REPORT_TIME_ZONE,
+})
 
 const toNumber = (value: string | number | null | undefined) => {
   const parsed = Number(value)
@@ -99,18 +109,47 @@ const toNumberLoose = (value: unknown) => {
 
 const formatCurrency = (value: number) => `${Math.round(value || 0).toLocaleString('vi-VN')}đ`
 
+const toDateParts = (date: Date) => {
+  const parts = REPORT_DATE_KEY_FORMATTER.formatToParts(date)
+  const year = parts.find((part) => part.type === 'year')?.value ?? ''
+  const month = parts.find((part) => part.type === 'month')?.value ?? ''
+  const day = parts.find((part) => part.type === 'day')?.value ?? ''
+  return { year, month, day }
+}
+
+const formatDateKey = (value: string) => {
+  const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return value
+  return `${match[3]}/${match[2]}/${match[1]}`
+}
+
 const formatDate = (value: string) => {
   if (!value) return '-'
+  const normalized = value.trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return formatDateKey(normalized)
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value.slice(0, 10)
-  return date.toLocaleDateString('vi-VN')
+  return REPORT_DATE_DISPLAY_FORMATTER.format(date)
 }
 
 const toDateKey = (value: string) => {
   if (!value) return ''
+  const normalized = value.trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return normalized
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value.slice(0, 10)
-  return date.toISOString().slice(0, 10)
+  const { year, month, day } = toDateParts(date)
+  if (!year || !month || !day) return value.slice(0, 10)
+  return `${year}-${month}-${day}`
+}
+
+const shiftDateKey = (value: string, days: number) => {
+  const normalized = value.trim()
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return normalized
+  const shifted = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
+  shifted.setUTCDate(shifted.getUTCDate() + days)
+  return shifted.toISOString().slice(0, 10)
 }
 
 const firstString = (...values: unknown[]) => {
@@ -182,7 +221,11 @@ const getErrorMessage = (error: unknown, fallback: string) => {
   return fallback
 }
 
-const buildRevenueFromInvoices = (invoices: SaleInvoiceListItem[]): RevenueReportData => {
+const buildRevenueFromInvoices = (
+  invoices: SaleInvoiceListItem[],
+  from = '',
+  to = '',
+): RevenueReportData => {
   const dailyMap = new Map<string, RevenueDailyRow>()
   const paymentMap = new Map<string, { method: string; invoiceCount: number; amount: number }>()
 
@@ -200,32 +243,33 @@ const buildRevenueFromInvoices = (invoices: SaleInvoiceListItem[]): RevenueRepor
     const invoiceTotal = toNumber(invoice.total_amount)
     const invoicePaid = toNumber(invoice.amount_paid)
     const invoiceDebt = Math.max(0, invoiceTotal - invoicePaid)
+    const localDateKey = toDateKey(invoice.created_at)
 
     if (isCanceled) {
       canceledCount += 1
       return
     }
+    if (!localDateKey) return
+    if (from && localDateKey < from) return
+    if (to && localDateKey > to) return
 
     validCount += 1
     totalAmount += invoiceTotal
     paidAmount += invoicePaid
     debtAmount += invoiceDebt
 
-    const dayKey = toDateKey(invoice.created_at)
-    if (dayKey) {
-      const current = dailyMap.get(dayKey) ?? {
-        date: dayKey,
-        invoiceCount: 0,
-        totalAmount: 0,
-        paidAmount: 0,
-        debtAmount: 0,
-      }
-      current.invoiceCount += 1
-      current.totalAmount += invoiceTotal
-      current.paidAmount += invoicePaid
-      current.debtAmount += invoiceDebt
-      dailyMap.set(dayKey, current)
+    const current = dailyMap.get(localDateKey) ?? {
+      date: localDateKey,
+      invoiceCount: 0,
+      totalAmount: 0,
+      paidAmount: 0,
+      debtAmount: 0,
     }
+    current.invoiceCount += 1
+    current.totalAmount += invoiceTotal
+    current.paidAmount += invoicePaid
+    current.debtAmount += invoiceDebt
+    dailyMap.set(localDateKey, current)
 
     const method = paymentLabel(invoice.payment_method)
     const payment = paymentMap.get(method) ?? { method, invoiceCount: 0, amount: 0 }
@@ -286,20 +330,22 @@ export function Reports() {
       const invoices: SaleInvoiceListItem[] = []
       let page = 1
       let totalPages = 1
+      const requestDateFrom = dateFrom ? shiftDateKey(dateFrom, -1) : undefined
+      const requestDateTo = dateTo ? shiftDateKey(dateTo, 1) : undefined
 
       while (page <= totalPages && page <= MAX_REPORT_PAGES) {
         const response = await saleApi.listInvoices(accessToken, {
           page,
           size: PAGE_SIZE,
-          date_from: dateFrom || undefined,
-          date_to: dateTo || undefined,
+          date_from: requestDateFrom,
+          date_to: requestDateTo,
         })
         invoices.push(...response.items)
         totalPages = Math.max(1, response.pages || 1)
         page += 1
       }
 
-      return invoices
+      return invoices.filter((invoice) => inDateRange(invoice.created_at, dateFrom, dateTo))
     },
     [dateFrom, dateTo],
   )
@@ -344,7 +390,7 @@ export function Reports() {
     async (accessToken: string) => {
       const fallbackFromSaleInvoices = async () => {
         const invoices = await fetchInvoices(accessToken)
-        setRevenueData(buildRevenueFromInvoices(invoices))
+        setRevenueData(buildRevenueFromInvoices(invoices, dateFrom, dateTo))
       }
 
       try {

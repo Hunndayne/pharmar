@@ -265,17 +265,25 @@ def paid_import_quantity_for_batch(batch: dict[str, Any]) -> int:
 def batch_cost_snapshot(batch: dict[str, Any]) -> dict[str, Any]:
     qty_in = max(0, int(batch.get("qty_in", 0) or 0))
     import_price = round(float(batch.get("import_price", 0) or 0), 2)
+    promo_type = batch.get("promo_type", PromoType.NONE)
+    promo_discount_percent = batch.get("promo_discount_percent")
+    discount_percent = round(float(promo_discount_percent or 0), 4) if promo_discount_percent is not None else None
+    effective_import_price = import_price
+    if promo_type == PromoType.DISCOUNT_PERCENT and discount_percent and discount_percent > 0:
+        effective_import_price = round(import_price * max(0.0, 1 - (discount_percent / 100)), 2)
     paid_import_quantity = paid_import_quantity_for_batch(batch)
-    total_cost_amount = round(paid_import_quantity * import_price, 2)
+    total_cost_amount = round(paid_import_quantity * effective_import_price, 2)
     cost_per_base_unit = round(total_cost_amount / qty_in, 6) if qty_in > 0 else 0.0
 
     return {
         "batch_id": batch["id"],
         "qty_in": qty_in,
         "import_price": import_price,
-        "promo_type": batch.get("promo_type", PromoType.NONE),
+        "effective_import_price": effective_import_price,
+        "promo_type": promo_type,
         "promo_buy_qty": batch.get("promo_buy_qty"),
         "promo_get_qty": batch.get("promo_get_qty"),
+        "promo_discount_percent": discount_percent,
         "import_unit_conversion": import_unit_conversion(batch.get("unit_prices", [])),
         "paid_import_quantity": paid_import_quantity,
         "total_cost_amount": total_cost_amount,
