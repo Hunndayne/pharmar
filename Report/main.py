@@ -4,7 +4,7 @@ import logging
 import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_HALF_UP
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://redis:6379/0"
     SALE_SERVICE_URL: str = "http://sale-service:8003"
     INVENTORY_SERVICE_URL: str = "http://inventory-service:8002"
+    STORE_SERVICE_URL: str = "http://store-service:8005"
     REPORT_CACHE_TTL_SECONDS: int = 120
 
     RABBITMQ_ENABLED: bool = True
@@ -53,6 +54,9 @@ _EVENTS_KEY = "report:events"
 _EVENTS_DEDUP_KEY = "report:events:dedup"
 _MAX_EVENTS = 100
 REPORT_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
+DEFAULT_RESTOCK_SALES_WINDOW_DAYS = 60
+DEFAULT_RESTOCK_TARGET_COVER_DAYS = 14
+RESTOCK_DAY_QUANT = Decimal("0.1")
 
 
 def _to_float(value: Any) -> float:
@@ -78,6 +82,27 @@ def _to_money(value: Decimal | float | int) -> float:
 
 def _to_percent(value: Decimal) -> float:
     return float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def _to_rate(value: Decimal) -> float:
+    return float(value.quantize(RATIO_QUANT, rounding=ROUND_HALF_UP))
+
+
+def _to_days(value: Decimal) -> float:
+    return float(value.quantize(RESTOCK_DAY_QUANT, rounding=ROUND_HALF_UP))
+
+
+def _to_non_negative_int(value: Any, default: int = 0) -> int:
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        return max(0, default)
+    return parsed if parsed >= 0 else max(0, default)
+
+
+def _to_int_with_minimum(value: Any, default: int, minimum: int) -> int:
+    parsed = _to_non_negative_int(value, default)
+    return parsed if parsed >= minimum else default
 
 
 def _routing_keys() -> list[str]:
@@ -304,6 +329,26 @@ async def _fetch_batch_costs(
                 cost_map[batch_id] = row
 
     return cost_map
+
+
+async def _fetch_stock_summary(authorization: str) -> list[dict[str, Any]]:
+    payload = await _request_service_json(
+        "GET",
+        f"{settings.INVENTORY_SERVICE_URL}/api/v1/inventory/stock/summary",
+        authorization,
+    )
+    if not isinstance(payload, list):
+        return []
+    return [row for row in payload if isinstance(row, dict)]
+
+
+async def _fetch_inventory_settings(authorization: str) -> dict[str, Any]:
+    payload = await _request_service_json(
+        "GET",
+        f"{settings.STORE_SERVICE_URL}/api/v1/store/settings/group/inventory",
+        authorization,
+    )
+    return payload if isinstance(payload, dict) else {}
 
 
 def _paginate_rows(items: list[dict[str, Any]], page: int, size: int) -> dict[str, Any]:
@@ -562,6 +607,120 @@ def _build_profit_dataset(
     }
 
 
+def _build_restock_highlights(
+    invoices: list[dict[str, Any]],
+    stock_summary: list[dict[str, Any]],
+    *,
+    date_from: date,
+    date_to: date,
+    sales_window_days: int,
+    target_cover_days: int,
+    limit: int,
+) -> dict[str, Any]:
+    sold_qty_by_drug: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+
+    for invoice in invoices:
+        created_at = str(invoice.get("created_at") or "").strip()
+        items = invoice.get("items") if isinstance(invoice.get("items"), list) else []
+        if not created_at or not items:
+            continue
+        if not _in_local_date_range(created_at, date_from, date_to):
+            continue
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+
+            drug_id = str(item.get("product_id") or "").strip()
+            if not drug_id:
+                continue
+
+            quantity = _to_non_negative_int(item.get("quantity"))
+            returned_quantity = _to_non_negative_int(item.get("returned_quantity"))
+            returned_quantity = min(quantity, returned_quantity)
+            conversion_rate = max(1, _to_non_negative_int(item.get("conversion_rate"), 1))
+            sold_base_qty = max(0, quantity - returned_quantity) * conversion_rate
+            if sold_base_qty <= 0:
+                continue
+
+            sold_qty_by_drug[drug_id] += Decimal(sold_base_qty)
+
+    urgency_order = {"critical": 0, "high": 1, "normal": 2}
+    target_cover_days_decimal = Decimal(target_cover_days)
+    sales_window_days_decimal = Decimal(sales_window_days)
+
+    actionable_rows: list[dict[str, Any]] = []
+    critical_count = 0
+    high_count = 0
+
+    for row in stock_summary:
+        drug_id = str(row.get("drug_id") or "").strip()
+        if not drug_id:
+            continue
+
+        current_qty = _to_non_negative_int(row.get("total_qty"))
+        reorder_level = _to_non_negative_int(row.get("reorder_level"))
+        sold_qty_window = sold_qty_by_drug.get(drug_id, Decimal("0"))
+        avg_daily_sold = sold_qty_window / sales_window_days_decimal if sales_window_days > 0 else Decimal("0")
+        target_by_sales = int(
+            (avg_daily_sold * target_cover_days_decimal).to_integral_value(rounding=ROUND_CEILING)
+        )
+        target_qty = max(reorder_level, target_by_sales)
+        suggested_qty = max(0, target_qty - current_qty)
+        if suggested_qty <= 0:
+            continue
+
+        days_cover: float | None = None
+        if avg_daily_sold > 0:
+            days_cover = _to_days(Decimal(current_qty) / avg_daily_sold)
+
+        urgency = "normal"
+        if current_qty <= 0 or (days_cover is not None and days_cover <= 3):
+            urgency = "critical"
+            critical_count += 1
+        elif current_qty < reorder_level or (days_cover is not None and days_cover <= 7):
+            urgency = "high"
+            high_count += 1
+
+        actionable_rows.append(
+            {
+                "drug_id": drug_id,
+                "drug_code": str(row.get("drug_code") or "").strip(),
+                "drug_name": str(row.get("drug_name") or "").strip(),
+                "base_unit": str(row.get("base_unit") or "").strip(),
+                "current_qty": current_qty,
+                "reorder_level": reorder_level,
+                "sold_qty_window": int(sold_qty_window),
+                "avg_daily_sold": _to_rate(avg_daily_sold),
+                "target_qty": target_qty,
+                "suggested_qty": suggested_qty,
+                "days_cover": days_cover,
+                "stock_status": str(row.get("status") or "").strip(),
+                "urgency": urgency,
+            }
+        )
+
+    actionable_rows.sort(
+        key=lambda item: (
+            urgency_order.get(str(item.get("urgency") or "normal"), 99),
+            -_to_non_negative_int(item.get("suggested_qty")),
+            -_to_rate(_to_decimal(item.get("avg_daily_sold"))),
+            str(item.get("drug_name") or ""),
+        )
+    )
+
+    generated_at = datetime.now(REPORT_TIMEZONE).isoformat()
+    return {
+        "generated_at": generated_at,
+        "sales_window_days": sales_window_days,
+        "target_cover_days": target_cover_days,
+        "total_actionable": len(actionable_rows),
+        "critical_count": critical_count,
+        "high_count": high_count,
+        "items": actionable_rows[:limit],
+    }
+
+
 async def _load_profit_dataset(
     authorization: str,
     date_from: date | None,
@@ -587,6 +746,54 @@ async def _load_profit_dataset(
     ]
     batch_costs = await _fetch_batch_costs(authorization, batch_ids)
     dataset = _build_profit_dataset(invoices, batch_costs, date_from, date_to)
+    await _set_cached_json(cache_key, dataset, settings.REPORT_CACHE_TTL_SECONDS)
+    return dataset
+
+
+async def _load_restock_highlights(
+    authorization: str,
+    limit: int,
+) -> dict[str, Any]:
+    inventory_settings = await _fetch_inventory_settings(authorization)
+    sales_window_days = _to_int_with_minimum(
+        inventory_settings.get("inventory.restock_sales_window_days"),
+        default=DEFAULT_RESTOCK_SALES_WINDOW_DAYS,
+        minimum=7,
+    )
+    target_cover_days = _to_int_with_minimum(
+        inventory_settings.get("inventory.restock_target_cover_days"),
+        default=DEFAULT_RESTOCK_TARGET_COVER_DAYS,
+        minimum=1,
+    )
+    as_of = datetime.now(REPORT_TIMEZONE).date()
+
+    cache_key = _cache_key(
+        "report:restock:highlights",
+        {
+            "limit": limit,
+            "sales_window_days": sales_window_days,
+            "target_cover_days": target_cover_days,
+            "as_of": as_of.isoformat(),
+        },
+    )
+    cached = await _get_cached_json(cache_key)
+    if isinstance(cached, dict):
+        return cached
+
+    date_from = as_of - timedelta(days=max(0, sales_window_days - 1))
+    invoices, stock_summary = await asyncio.gather(
+        _fetch_profit_source_invoices(authorization, date_from, as_of),
+        _fetch_stock_summary(authorization),
+    )
+    dataset = _build_restock_highlights(
+        invoices,
+        stock_summary,
+        date_from=date_from,
+        date_to=as_of,
+        sales_window_days=sales_window_days,
+        target_cover_days=target_cover_days,
+        limit=limit,
+    )
     await _set_cached_json(cache_key, dataset, settings.REPORT_CACHE_TTL_SECONDS)
     return dataset
 
@@ -773,3 +980,12 @@ async def profit_top_products(
         _parse_optional_date(date_to, "date_to"),
     )
     return list(dataset["top_products"][:limit])
+
+
+@app.get("/api/v1/report/restock/highlights")
+async def restock_highlights(
+    limit: int = Query(default=8, ge=1, le=20),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    token = _require_authorization(authorization)
+    return await _load_restock_highlights(token, limit)

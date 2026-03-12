@@ -63,11 +63,41 @@ export type ProfitProductBreakdownRow = {
   margin_percent: number
 }
 
+export type RestockUrgency = 'critical' | 'high' | 'normal'
+
+export type RestockHighlightItem = {
+  drug_id: string
+  drug_code: string
+  drug_name: string
+  base_unit: string
+  current_qty: number
+  reorder_level: number
+  sold_qty_window: number
+  avg_daily_sold: number
+  target_qty: number
+  suggested_qty: number
+  days_cover: number | null
+  stock_status: string
+  urgency: RestockUrgency
+}
+
+export type RestockHighlightResponse = {
+  generated_at: string
+  sales_window_days: number
+  target_cover_days: number
+  total_actionable: number
+  critical_count: number
+  high_count: number
+  items: RestockHighlightItem[]
+}
+
 const toNumberSafe = (value: unknown) => {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return 0
   return parsed
 }
+
+const toStringSafe = (value: unknown) => (typeof value === 'string' ? value : '')
 
 const requestReportJson = async <T>(
   path: string,
@@ -182,5 +212,54 @@ export const reportApi = {
     return payload.filter(
       (item): item is ProfitProductBreakdownRow => typeof item === 'object' && item !== null,
     )
+  },
+
+  getRestockHighlights: async (
+    token: string,
+    params?: { limit?: number },
+  ) => {
+    const payload = await requestReportJson<unknown>(
+      '/report/restock/highlights',
+      token,
+      { method: 'GET' },
+      params,
+    )
+    const row = typeof payload === 'object' && payload !== null ? (payload as Record<string, unknown>) : {}
+    const itemsRaw = Array.isArray(row.items) ? row.items : []
+
+    return {
+      generated_at: toStringSafe(row.generated_at),
+      sales_window_days: Math.max(7, Math.round(toNumberSafe(row.sales_window_days)) || 60),
+      target_cover_days: Math.max(1, Math.round(toNumberSafe(row.target_cover_days)) || 14),
+      total_actionable: Math.max(0, Math.round(toNumberSafe(row.total_actionable))),
+      critical_count: Math.max(0, Math.round(toNumberSafe(row.critical_count))),
+      high_count: Math.max(0, Math.round(toNumberSafe(row.high_count))),
+      items: itemsRaw
+        .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+        .map((item) => {
+          const urgency = toStringSafe(item.urgency).toLowerCase()
+          return {
+            drug_id: toStringSafe(item.drug_id),
+            drug_code: toStringSafe(item.drug_code),
+            drug_name: toStringSafe(item.drug_name),
+            base_unit: toStringSafe(item.base_unit),
+            current_qty: Math.max(0, Math.round(toNumberSafe(item.current_qty))),
+            reorder_level: Math.max(0, Math.round(toNumberSafe(item.reorder_level))),
+            sold_qty_window: Math.max(0, Math.round(toNumberSafe(item.sold_qty_window))),
+            avg_daily_sold: Math.max(0, toNumberSafe(item.avg_daily_sold)),
+            target_qty: Math.max(0, Math.round(toNumberSafe(item.target_qty))),
+            suggested_qty: Math.max(0, Math.round(toNumberSafe(item.suggested_qty))),
+            days_cover:
+              item.days_cover === null || item.days_cover === undefined
+                ? null
+                : Math.max(0, toNumberSafe(item.days_cover)),
+            stock_status: toStringSafe(item.stock_status),
+            urgency:
+              urgency === 'critical' || urgency === 'high'
+                ? urgency
+                : 'normal',
+          } satisfies RestockHighlightItem
+        }),
+    } satisfies RestockHighlightResponse
   },
 }

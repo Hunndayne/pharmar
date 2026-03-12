@@ -148,6 +148,7 @@
       REDIS_URL: redis://redis:6379/0
       SALE_SERVICE_URL: http://sale-service:8003
       INVENTORY_SERVICE_URL: http://inventory-service:8002
+      STORE_SERVICE_URL: http://store-service:8005
       REPORT_CACHE_TTL_SECONDS: ${REPORT_CACHE_TTL_SECONDS:-120}
       RABBITMQ_ENABLED: ${RABBITMQ_ENABLED:-true}
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
@@ -316,7 +317,7 @@
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
     ports:
-      - "8008:8008"
+      - "${PAYMENT_QR_HOST_PORT:-18008}:8008"
     restart: unless-stopped
 
   frontend:

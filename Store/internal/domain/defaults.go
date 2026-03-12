@@ -219,6 +219,22 @@ func DefaultSettings() map[string]DefaultSetting {
 			IsPublic:    true,
 		},
 		{
+			Key:         "inventory.restock_sales_window_days",
+			Value:       60,
+			GroupName:   "inventory",
+			DataType:    "number",
+			Description: "Chu ky ban hang de goi y nhap hang (ngay)",
+			IsPublic:    true,
+		},
+		{
+			Key:         "inventory.restock_target_cover_days",
+			Value:       14,
+			GroupName:   "inventory",
+			DataType:    "number",
+			Description: "So ngay muc tieu du hang cho goi y nhap hang",
+			IsPublic:    true,
+		},
+		{
 			Key:         "customer.enable_points",
 			Value:       true,
 			GroupName:   "customer",

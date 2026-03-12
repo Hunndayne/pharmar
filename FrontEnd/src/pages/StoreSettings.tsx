@@ -52,6 +52,8 @@ type StoreSettingsForm = {
   nearDateDays: string
   enableFefo: boolean
   fefoThresholdDays: string
+  restockSalesWindowDays: string
+  restockTargetCoverDays: string
   timezone: string
   currency: string
 }
@@ -90,6 +92,8 @@ const defaultStoreSettings: StoreSettingsForm = {
   nearDateDays: '90',
   enableFefo: true,
   fefoThresholdDays: '180',
+  restockSalesWindowDays: '60',
+  restockTargetCoverDays: '14',
   timezone: 'Asia/Ho_Chi_Minh',
   currency: 'VND',
 }
@@ -243,6 +247,8 @@ const mapSettingsToForm = (settings: StoreSettingsMap): StoreSettingsForm => ({
   nearDateDays: asNumberString(settings['inventory.near_date_days'], 90),
   enableFefo: asBoolean(settings['inventory.enable_fefo'], true),
   fefoThresholdDays: asNumberString(settings['inventory.fefo_threshold_days'], 180),
+  restockSalesWindowDays: asNumberString(settings['inventory.restock_sales_window_days'], 60),
+  restockTargetCoverDays: asNumberString(settings['inventory.restock_target_cover_days'], 14),
   timezone: asString(settings['system.timezone'], 'Asia/Ho_Chi_Minh'),
   currency: asString(settings['system.currency'], 'VND'),
 })
@@ -836,6 +842,8 @@ export function StoreSettings() {
     const expiryDays = Number(storeSettingsForm.expiryWarningDays)
     const nearDateDays = Number(storeSettingsForm.nearDateDays)
     const fefoThresholdDays = Number(storeSettingsForm.fefoThresholdDays)
+    const restockSalesWindowDays = Number(storeSettingsForm.restockSalesWindowDays)
+    const restockTargetCoverDays = Number(storeSettingsForm.restockTargetCoverDays)
     const cashRoundingStep = Number(storeSettingsForm.cashRoundingStep)
     const returnWindowValue = Number(storeSettingsForm.returnWindowValue)
     const adsIntervalSeconds = Number(storeSettingsForm.customerDisplayAdsIntervalSeconds)
@@ -859,6 +867,14 @@ export function StoreSettings() {
     }
     if (!Number.isFinite(fefoThresholdDays) || fefoThresholdDays <= 0) {
       setSettingsError('Ngưỡng FEFO/FIFO không hợp lệ.')
+      return
+    }
+    if (!Number.isFinite(restockSalesWindowDays) || restockSalesWindowDays < 7) {
+      setSettingsError('Chu ky phan tich ban hang phai lon hon hoac bang 7 ngay.')
+      return
+    }
+    if (!Number.isFinite(restockTargetCoverDays) || restockTargetCoverDays < 1) {
+      setSettingsError('Muc tieu phu hang phai lon hon hoac bang 1 ngay.')
       return
     }
     if (!Number.isFinite(cashRoundingStep) || cashRoundingStep < 1) {
@@ -906,6 +922,8 @@ export function StoreSettings() {
           'inventory.near_date_days': Math.trunc(nearDateDays),
           'inventory.enable_fefo': storeSettingsForm.enableFefo,
           'inventory.fefo_threshold_days': Math.trunc(fefoThresholdDays),
+          'inventory.restock_sales_window_days': Math.trunc(restockSalesWindowDays),
+          'inventory.restock_target_cover_days': Math.trunc(restockTargetCoverDays),
           'system.timezone': storeSettingsForm.timezone.trim() || 'Asia/Ho_Chi_Minh',
           'system.currency': storeSettingsForm.currency.trim() || 'VND',
         }),
@@ -1594,6 +1612,38 @@ export function StoreSettings() {
             />
           </label>
 
+          <label className="space-y-2 text-sm text-ink-700">
+            <span>Chu kỳ phân tích bán hàng cho gợi ý nhập (ngày)</span>
+            <input
+              type="number"
+              min={7}
+              value={storeSettingsForm.restockSalesWindowDays}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({
+                  ...prev,
+                  restockSalesWindowDays: event.target.value,
+                }))
+              }
+              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              disabled={!canManageStore || storeLoading}
+            />
+          </label>
+          <label className="space-y-2 text-sm text-ink-700">
+            <span>Mục tiêu đủ hàng cho gợi ý nhập (ngày)</span>
+            <input
+              type="number"
+              min={1}
+              value={storeSettingsForm.restockTargetCoverDays}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({
+                  ...prev,
+                  restockTargetCoverDays: event.target.value,
+                }))
+              }
+              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              disabled={!canManageStore || storeLoading}
+            />
+          </label>
           {settingsError ? <p className="md:col-span-2 text-sm text-coral-500">{settingsError}</p> : null}
           {settingsMessage ? <p className="md:col-span-2 text-sm text-brand-600">{settingsMessage}</p> : null}
 
