@@ -59,7 +59,7 @@ const toNumber = (value: string | number | null | undefined) => {
 
 const formatCurrency = (value: string | number | null | undefined) => {
   const parsed = toNumber(value)
-  return `${parsed.toLocaleString('vi-VN')}d`
+  return `${Math.round(parsed).toLocaleString('vi-VN')}d`
 }
 
 const formatDate = (value: string) => {

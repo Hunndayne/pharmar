@@ -187,7 +187,7 @@ type CheckoutOptions = {
   noteSuffix?: string
 }
 
-const formatCurrency = (value: number) => `${Math.max(0, value).toLocaleString('vi-VN')}đ`
+const formatCurrency = (value: number) => `${Math.round(Math.max(0, value)).toLocaleString('vi-VN')}đ`
 
 const parseNonNegativeNumber = (value: string) => {
   const normalized = value.replace(/,/g, '').trim()

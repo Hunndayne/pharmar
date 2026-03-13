@@ -12,7 +12,7 @@ import { resolveAssetUrl } from '../utils/assets'
 type SearchMode = 'code' | 'phone'
 
 const formatCurrency = (value: string | number) =>
-  `${Math.max(0, Number(value || 0)).toLocaleString('vi-VN')}đ`
+  `${Math.round(Math.max(0, Number(value || 0))).toLocaleString('vi-VN')}đ`
 
 const formatDateTime = (value: string | null | undefined) => {
   if (!value) return '-'

@@ -20,6 +20,7 @@ from Source.catalog import (
     paginate_scalars,
     parse_decimal,
     product_has_inventory_batches,
+    round_money_decimal,
     search_filter,
     to_product_detail,
     to_product_list_item,
@@ -603,7 +604,7 @@ async def import_products_from_excel(
             errors.append(f"Row {row_index}: base_unit_name is required")
             continue
 
-        base_unit_price = parse_decimal(cell_value("base_unit_price"))
+        base_unit_price = round_money_decimal(cell_value("base_unit_price"))
         if base_unit_price < 0:
             errors.append(f"Row {row_index}: base_unit_price must be >= 0")
             continue

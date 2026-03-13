@@ -1,12 +1,45 @@
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Generic, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_serializer, field_validator
 
 
 T = TypeVar("T")
+
+MONEY_FIELD_NAMES = (
+    "current_debt",
+    "amount",
+    "balance_after",
+    "selling_price",
+    "base_price",
+)
+
+
+def _round_money_decimal(value):
+    if value is None:
+        return None
+    try:
+        parsed = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        parsed = Decimal("0")
+    return parsed.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+
+class MoneyInputModel(BaseModel):
+    @field_validator(*MONEY_FIELD_NAMES, mode="before", check_fields=False)
+    @classmethod
+    def normalize_money_fields(cls, value):
+        rounded = _round_money_decimal(value)
+        return value if rounded is None else rounded
+
+
+class MoneyOutputModel(BaseModel):
+    @field_serializer(*MONEY_FIELD_NAMES, when_used="json", check_fields=False)
+    def serialize_money_fields(self, value):
+        rounded = _round_money_decimal(value)
+        return None if rounded is None else int(rounded)
 
 
 class PageResponse(BaseModel, Generic[T]):
@@ -107,7 +140,7 @@ class ManufacturerResponse(BaseModel):
     updated_at: datetime
 
 
-class SupplierCreateRequest(BaseModel):
+class SupplierCreateRequest(MoneyInputModel):
     code: str | None = Field(default=None, max_length=20)
     name: str = Field(min_length=1, max_length=200)
     address: str | None = None
@@ -148,7 +181,7 @@ class SupplierUpdateRequest(BaseModel):
         return normalized or None
 
 
-class SupplierResponse(BaseModel):
+class SupplierResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -166,7 +199,7 @@ class SupplierResponse(BaseModel):
     updated_at: datetime
 
 
-class SupplierDebtHistoryResponse(BaseModel):
+class SupplierDebtHistoryResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -181,13 +214,13 @@ class SupplierDebtHistoryResponse(BaseModel):
     created_at: datetime
 
 
-class SupplierDebtPaymentRequest(BaseModel):
+class SupplierDebtPaymentRequest(MoneyInputModel):
     amount: Decimal = Field(gt=0)
     note: str | None = None
     reference_id: UUID | None = None
 
 
-class SupplierDebtResponse(BaseModel):
+class SupplierDebtResponse(MoneyOutputModel):
     supplier_id: UUID
     supplier_code: str
     supplier_name: str
@@ -195,7 +228,7 @@ class SupplierDebtResponse(BaseModel):
     history: PageResponse[SupplierDebtHistoryResponse]
 
 
-class ProductBaseUnitRequest(BaseModel):
+class ProductBaseUnitRequest(MoneyInputModel):
     unit_name: str = Field(min_length=1, max_length=30)
     selling_price: Decimal = Field(ge=0)
 
@@ -259,7 +292,7 @@ class ProductManufacturerRef(BaseModel):
     name: str
 
 
-class ProductUnitResponse(BaseModel):
+class ProductUnitResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -274,7 +307,7 @@ class ProductUnitResponse(BaseModel):
     updated_at: datetime
 
 
-class ProductListItemResponse(BaseModel):
+class ProductListItemResponse(MoneyOutputModel):
     id: UUID
     code: str
     barcode: str | None
@@ -311,7 +344,7 @@ class ProductDetailResponse(BaseModel):
     updated_at: datetime
 
 
-class ProductUnitCreateRequest(BaseModel):
+class ProductUnitCreateRequest(MoneyInputModel):
     unit_name: str = Field(min_length=1, max_length=30)
     conversion_rate: int = Field(gt=0)
     barcode: str | None = Field(default=None, max_length=50)
@@ -320,7 +353,7 @@ class ProductUnitCreateRequest(BaseModel):
     is_active: bool = True
 
 
-class ProductUnitUpdateRequest(BaseModel):
+class ProductUnitUpdateRequest(MoneyInputModel):
     unit_name: str | None = Field(default=None, min_length=1, max_length=30)
     conversion_rate: int | None = Field(default=None, gt=0)
     barcode: str | None = Field(default=None, max_length=50)

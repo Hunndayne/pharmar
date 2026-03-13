@@ -176,7 +176,7 @@ const formatUnits = (units: Unit[]) =>
   units
     .slice()
     .sort((a, b) => unitLevelOrder[a.level] - unitLevelOrder[b.level])
-    .map((unit) => `${unit.name} (${unitLevelLabel[unit.level]}) ${unit.price.toLocaleString('vi-VN')}đ`)
+    .map((unit) => `${unit.name} (${unitLevelLabel[unit.level]}) ${Math.round(unit.price).toLocaleString('vi-VN')}đ`)
     .join(' · ')
 
 const inferFormFromDrug = (drug: Drug) => {
@@ -2668,7 +2668,7 @@ export function DrugCatalog() {
                                       <span className="font-semibold text-ink-900">{unit.name}</span>
                                       <span>{unitLevelLabel[unit.level]}</span>
                                       <span>{unit.conversion} quy đổi</span>
-                                      <span>{unit.price.toLocaleString('vi-VN')}đ</span>
+                                      <span>{Math.round(unit.price).toLocaleString('vi-VN')}đ</span>
                                     </div>
                                   ))}
                                 </div>
@@ -2763,7 +2763,7 @@ export function DrugCatalog() {
                               <div key={unit.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-fog-50 px-3 py-2">
                                 <span className="font-semibold text-ink-900">{unit.name}</span>
                                 <span>{unitLevelLabel[unit.level]}</span>
-                                <span>{unit.price.toLocaleString('vi-VN')}đ</span>
+                                <span>{Math.round(unit.price).toLocaleString('vi-VN')}đ</span>
                               </div>
                             ))}
                         </div>

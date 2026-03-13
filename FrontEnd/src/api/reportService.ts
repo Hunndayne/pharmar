@@ -91,6 +91,27 @@ export type RestockHighlightResponse = {
   items: RestockHighlightItem[]
 }
 
+export type DashboardAiInsightSeverity = 'high' | 'medium' | 'low'
+export type DashboardAiInsightStatus = 'ready' | 'stale' | 'pending' | 'disabled'
+
+export type DashboardAiInsightItem = {
+  title: string
+  summary: string
+  why_it_matters: string
+  recommended_action: string
+  severity: DashboardAiInsightSeverity
+  confidence: number
+  source_refs: string[]
+}
+
+export type DashboardAiInsightsResponse = {
+  status: DashboardAiInsightStatus
+  generated_at: string
+  slot_at: string
+  model: string
+  items: DashboardAiInsightItem[]
+}
+
 const toNumberSafe = (value: unknown) => {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return 0
@@ -98,6 +119,45 @@ const toNumberSafe = (value: unknown) => {
 }
 
 const toStringSafe = (value: unknown) => (typeof value === 'string' ? value : '')
+
+const mapDashboardAiInsightsResponse = (payload: unknown) => {
+  const row = typeof payload === 'object' && payload !== null ? (payload as Record<string, unknown>) : {}
+  const itemsRaw = Array.isArray(row.items) ? row.items : []
+  const statusRaw = toStringSafe(row.status).toLowerCase()
+
+  return {
+    status:
+      statusRaw === 'ready' || statusRaw === 'stale' || statusRaw === 'disabled'
+        ? statusRaw
+        : 'pending',
+    generated_at: toStringSafe(row.generated_at),
+    slot_at: toStringSafe(row.slot_at),
+    model: toStringSafe(row.model),
+    items: itemsRaw
+      .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+      .map((item) => {
+        const severityRaw = toStringSafe(item.severity).toLowerCase()
+        const refsRaw = Array.isArray(item.source_refs) ? item.source_refs : []
+        return {
+          title: toStringSafe(item.title),
+          summary: toStringSafe(item.summary),
+          why_it_matters: toStringSafe(item.why_it_matters) || toStringSafe(item.summary),
+          recommended_action:
+            toStringSafe(item.recommended_action) ||
+            'Kiểm tra chi tiết trên dashboard và xử lý trong ngày.',
+          severity:
+            severityRaw === 'high' || severityRaw === 'low'
+              ? severityRaw
+              : 'medium',
+          confidence: Math.max(0, Math.min(1, toNumberSafe(item.confidence))),
+          source_refs: refsRaw
+            .map((entry) => toStringSafe(entry))
+            .filter(Boolean),
+        } satisfies DashboardAiInsightItem
+      })
+      .filter((item) => item.title && item.summary && item.why_it_matters && item.source_refs.length > 0),
+  } satisfies DashboardAiInsightsResponse
+}
 
 const requestReportJson = async <T>(
   path: string,
@@ -261,5 +321,27 @@ export const reportApi = {
           } satisfies RestockHighlightItem
         }),
     } satisfies RestockHighlightResponse
+  },
+
+  getDashboardAiInsights: async (
+    token: string,
+  ) => {
+    const payload = await requestReportJson<unknown>(
+      '/report/ai/dashboard-insights',
+      token,
+      { method: 'GET' },
+    )
+    return mapDashboardAiInsightsResponse(payload)
+  },
+
+  refreshDashboardAiInsights: async (
+    token: string,
+  ) => {
+    const payload = await requestReportJson<unknown>(
+      '/report/ai/dashboard-insights/refresh',
+      token,
+      { method: 'POST' },
+    )
+    return mapDashboardAiInsightsResponse(payload)
   },
 }

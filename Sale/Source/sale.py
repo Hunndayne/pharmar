@@ -19,7 +19,7 @@ from .db.models import HeldOrder, Invoice, InvoiceItem, PaymentMethod, Return, S
 settings = get_settings()
 
 
-DECIMAL_ZERO = Decimal("0.00")
+DECIMAL_ZERO = Decimal("0")
 
 
 @dataclass(slots=True)
@@ -60,7 +60,7 @@ def quantize_money(value: Decimal | int | float | str) -> Decimal:
             parsed = Decimal(str(value))
         except (InvalidOperation, ValueError):
             parsed = DECIMAL_ZERO
-    return parsed.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return parsed.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
 
 def safe_decimal(value: Any, default: Decimal = DECIMAL_ZERO) -> Decimal:

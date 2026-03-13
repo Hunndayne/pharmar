@@ -247,7 +247,7 @@ const parseNumber = (value: string) => {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-const formatCurrency = (value: number) => `${value.toLocaleString('vi-VN')}đ`
+const formatCurrency = (value: number) => `${Math.round(Number(value) || 0).toLocaleString('vi-VN')}đ`
 const paymentMethods: PaymentMethod[] = ['Ngân hàng', 'Ví điện tử Momo/ZaloPay', 'Thanh toán thẻ']
 const shippingCarriers: ShippingCarrier[] = ['GHN', 'J&T']
 const STORE_NAME = 'Nhà thuốc Thanh Huy'

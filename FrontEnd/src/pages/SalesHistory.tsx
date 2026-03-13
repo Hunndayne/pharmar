@@ -62,7 +62,7 @@ const toNumber = (value: string | number | null | undefined) => {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-const formatCurrency = (value: string | number | null | undefined) => `${toNumber(value).toLocaleString('vi-VN')}đ`
+const formatCurrency = (value: string | number | null | undefined) => `${Math.round(toNumber(value)).toLocaleString('vi-VN')}đ`
 
 const formatDateTime = (value: string | null | undefined) => {
   if (!value) return '-'

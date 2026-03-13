@@ -3,6 +3,7 @@ import json
 import re
 from enum import Enum
 from datetime import date, datetime, time, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -58,6 +59,16 @@ def _to_non_negative_int(value: Any, default: int) -> int:
     if parsed < 0:
         return default
     return parsed
+
+
+def round_money_value(value: Any, default: int = 0) -> int:
+    try:
+        if value is None or value == "":
+            return default
+        parsed = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return default
+    return int(parsed.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def _to_bool(value: Any, default: bool) -> bool:
@@ -181,7 +192,7 @@ def default_line_unit_prices(drug: dict[str, Any]) -> list[dict[str, Any]]:
                 "unit_id": unit_price["unit_id"],
                 "unit_name": unit_meta["name"],
                 "conversion": unit_meta["conversion"],
-                "price": unit_price["price"],
+                "price": round_money_value(unit_price["price"]),
             }
         )
     return result
@@ -194,7 +205,7 @@ def resolve_line_unit_prices(line: Any, drug: dict[str, Any]) -> list[dict[str, 
                 "unit_id": item.unit_id,
                 "unit_name": item.unit_name,
                 "conversion": item.conversion,
-                "price": item.price,
+                "price": round_money_value(item.price),
             }
             for item in line.unit_prices
         ]
@@ -264,15 +275,15 @@ def paid_import_quantity_for_batch(batch: dict[str, Any]) -> int:
 
 def batch_cost_snapshot(batch: dict[str, Any]) -> dict[str, Any]:
     qty_in = max(0, int(batch.get("qty_in", 0) or 0))
-    import_price = round(float(batch.get("import_price", 0) or 0), 2)
+    import_price = round_money_value(batch.get("import_price", 0))
     promo_type = batch.get("promo_type", PromoType.NONE)
     promo_discount_percent = batch.get("promo_discount_percent")
     discount_percent = round(float(promo_discount_percent or 0), 4) if promo_discount_percent is not None else None
     effective_import_price = import_price
     if promo_type == PromoType.DISCOUNT_PERCENT and discount_percent and discount_percent > 0:
-        effective_import_price = round(import_price * max(0.0, 1 - (discount_percent / 100)), 2)
+        effective_import_price = round_money_value(import_price * max(0.0, 1 - (discount_percent / 100)))
     paid_import_quantity = paid_import_quantity_for_batch(batch)
-    total_cost_amount = round(paid_import_quantity * effective_import_price, 2)
+    total_cost_amount = round_money_value(paid_import_quantity * effective_import_price)
     cost_per_base_unit = round(total_cost_amount / qty_in, 6) if qty_in > 0 else 0.0
 
     return {
@@ -414,10 +425,10 @@ def _to_positive_int(value: Any, default: int = 1) -> int:
 
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
-        parsed = float(value)
-    except (TypeError, ValueError):
+        parsed = round_money_value(value, int(default))
+    except Exception:
         return default
-    return parsed
+    return float(parsed)
 
 
 async def fetch_catalog_json(
@@ -478,14 +489,14 @@ def upsert_drug_from_catalog_product(
         unit_prices.append(
             {
                 "unit_id": unit_id,
-                "price": _to_float(unit.get("selling_price"), default=0.0),
+                "price": round_money_value(unit.get("selling_price"), default=0),
             }
         )
 
     if not units:
         fallback_unit_id = f"{product_code}-U1"
         units = [{"id": fallback_unit_id, "name": "Don vi", "conversion": 1, "barcode": ""}]
-        unit_prices = [{"unit_id": fallback_unit_id, "price": 0.0}]
+        unit_prices = [{"unit_id": fallback_unit_id, "price": 0}]
 
     units.sort(key=lambda item: item["conversion"])
     highest_unit = max(units, key=lambda item: item["conversion"])
@@ -1010,14 +1021,14 @@ def register_provisional_drug_from_line(line: Any) -> dict[str, Any]:
         unit_prices.append(
             {
                 "unit_id": candidate_unit_id,
-                "price": float(unit_price.price),
+                "price": round_money_value(unit_price.price),
             }
         )
 
     if not units:
         fallback_unit_id = f"{raw_code}-U1"
         units = [{"id": fallback_unit_id, "name": "Don vi", "conversion": 1, "barcode": ""}]
-        unit_prices = [{"unit_id": fallback_unit_id, "price": float(line.import_price)}]
+        unit_prices = [{"unit_id": fallback_unit_id, "price": round_money_value(line.import_price)}]
 
     if line.barcode:
         units[0]["barcode"] = line.barcode.strip()
@@ -1225,13 +1236,19 @@ def batch_to_view(batch: dict[str, Any], as_of: date | None = None) -> dict[str,
         "days_to_expiry": (batch["exp_date"] - day).days,
         "qty_in": batch["qty_in"],
         "qty_remaining": batch["qty_remaining"],
-        "import_price": batch["import_price"],
+        "import_price": round_money_value(batch["import_price"]),
         "barcode": batch.get("barcode", ""),
         "promo_type": batch.get("promo_type", PromoType.NONE),
         "promo_buy_qty": batch.get("promo_buy_qty"),
         "promo_get_qty": batch.get("promo_get_qty"),
         "promo_discount_percent": batch.get("promo_discount_percent"),
-        "unit_prices": batch.get("unit_prices", []),
+        "unit_prices": [
+            {
+                **unit_price,
+                "price": round_money_value(unit_price.get("price")),
+            }
+            for unit_price in batch.get("unit_prices", [])
+        ],
         "promo_note": batch["promo_note"],
         "status": batch_status(batch, day),
         "created_at": batch["created_at"],
@@ -1287,7 +1304,15 @@ def receipt_to_view(receipt: dict[str, Any]) -> dict[str, Any]:
         lines.append(
             {
                 **line,
-                "line_total": round(line["quantity"] * line["import_price"], 2),
+                "import_price": round_money_value(line["import_price"]),
+                "unit_prices": [
+                    {
+                        **unit_price,
+                        "price": round_money_value(unit_price.get("price")),
+                    }
+                    for unit_price in line.get("unit_prices", [])
+                ],
+                "line_total": round_money_value(line["quantity"] * line["import_price"]),
                 "batch_status": batch_status(batch) if batch else BatchStatus.CANCELLED,
             }
         )
@@ -1307,7 +1332,7 @@ def receipt_to_view(receipt: dict[str, Any]) -> dict[str, Any]:
         "created_by": receipt["created_by"],
         "created_at": receipt["created_at"],
         "updated_at": receipt["updated_at"],
-        "total_value": receipt["total_value"],
+        "total_value": round_money_value(receipt["total_value"]),
         "line_count": len(lines),
         "lines": lines,
         "can_edit": receipt_is_editable(receipt, raise_if_not=False),
@@ -1332,7 +1357,7 @@ def receipt_list_item_to_view(receipt: dict[str, Any]) -> dict[str, Any]:
         "payment_status": receipt.get("payment_status", PaymentStatus.PAID),
         "payment_method": receipt.get("payment_method", PaymentMethod.BANK),
         "status": receipt["status"],
-        "total_value": receipt["total_value"],
+        "total_value": round_money_value(receipt["total_value"]),
         "line_count": len(receipt.get("lines", [])),
         "created_at": receipt["created_at"],
         "updated_at": receipt["updated_at"],
@@ -1970,7 +1995,7 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
                 "exp_date": line.exp_date,
                 "qty_in": stock_quantity,
                 "qty_remaining": stock_quantity,
-                "import_price": line.import_price,
+                "import_price": round_money_value(line.import_price),
                 "barcode": barcode,
                 "promo_type": line.promo_type,
                 "promo_buy_qty": line.promo_buy_qty,
@@ -1996,7 +2021,7 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
                 "quantity": line.quantity,
                 "mfg_date": line.mfg_date,
                 "exp_date": line.exp_date,
-                "import_price": line.import_price,
+                "import_price": round_money_value(line.import_price),
                 "barcode": barcode,
                 "promo_type": line.promo_type,
                 "promo_buy_qty": line.promo_buy_qty,
@@ -2007,7 +2032,7 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
                 "stock_quantity": stock_quantity,
             }
             lines.append(row)
-            total += line.quantity * line.import_price
+            total += line.quantity * round_money_value(line.import_price)
             staged_movements.append((drug["id"], batch_id, stock_quantity))
 
         receipt = {
@@ -2027,7 +2052,7 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
             "created_by": actor,
             "created_at": now,
             "updated_at": now,
-            "total_value": round(total, 2),
+            "total_value": round_money_value(total),
             "lines": lines,
         }
 
@@ -2125,7 +2150,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                         "quantity": existing_line["quantity"],
                         "mfg_date": line.mfg_date,
                         "exp_date": line.exp_date,
-                        "import_price": line.import_price,
+                        "import_price": round_money_value(line.import_price),
                         "barcode": barcode,
                         "promo_type": line.promo_type,
                         "promo_buy_qty": line.promo_buy_qty,
@@ -2201,7 +2226,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                     "exp_date": line.exp_date,
                     "qty_in": stock_quantity,
                     "qty_remaining": stock_quantity,
-                    "import_price": line.import_price,
+                    "import_price": round_money_value(line.import_price),
                     "barcode": barcode,
                     "promo_type": line.promo_type,
                     "promo_buy_qty": line.promo_buy_qty,
@@ -2228,7 +2253,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                     "quantity": line.quantity,
                     "mfg_date": line.mfg_date,
                     "exp_date": line.exp_date,
-                    "import_price": line.import_price,
+                    "import_price": round_money_value(line.import_price),
                     "barcode": barcode,
                     "promo_type": line.promo_type,
                     "promo_buy_qty": line.promo_buy_qty,
@@ -2264,7 +2289,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
             receipt["payment_method"] = payload.payment_method
             receipt["note"] = payload.note
             receipt["lines"] = lines
-            receipt["total_value"] = round(total, 2)
+            receipt["total_value"] = round_money_value(total)
             receipt["updated_at"] = now
             for drug_id, batch_id, quantity in staged_movements:
                 add_movement(
@@ -2334,7 +2359,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                 "exp_date": line.exp_date,
                 "qty_in": stock_quantity,
                 "qty_remaining": stock_quantity,
-                "import_price": line.import_price,
+                "import_price": round_money_value(line.import_price),
                 "barcode": barcode,
                 "promo_type": line.promo_type,
                 "promo_buy_qty": line.promo_buy_qty,
@@ -2361,7 +2386,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                 "quantity": line.quantity,
                 "mfg_date": line.mfg_date,
                 "exp_date": line.exp_date,
-                "import_price": line.import_price,
+                "import_price": round_money_value(line.import_price),
                 "barcode": barcode,
                 "promo_type": line.promo_type,
                 "promo_buy_qty": line.promo_buy_qty,
@@ -2372,7 +2397,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                 "stock_quantity": stock_quantity,
             }
             lines.append(row)
-            total += line.quantity * line.import_price
+            total += line.quantity * round_money_value(line.import_price)
             staged_movements.append((drug["id"], batch_id, stock_quantity))
 
         for batch_id in old_batch_ids:
@@ -2398,7 +2423,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
         receipt["payment_method"] = payload.payment_method
         receipt["note"] = payload.note
         receipt["lines"] = lines
-        receipt["total_value"] = round(total, 2)
+        receipt["total_value"] = round_money_value(total)
         receipt["updated_at"] = now
         for drug_id, batch_id, quantity in staged_movements:
             add_movement(

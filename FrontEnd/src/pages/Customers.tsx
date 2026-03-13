@@ -33,7 +33,7 @@ const emptyForm: CustomerForm = {
 const formatCurrency = (value: string | number) => {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return '0đ'
-  return `${parsed.toLocaleString('vi-VN')}đ`
+  return `${Math.round(parsed).toLocaleString('vi-VN')}đ`
 }
 
 const formatDate = (value: string | null) => {

@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from math import ceil
 from typing import Any
 from uuid import UUID
@@ -301,6 +301,11 @@ def parse_decimal(value: Any, default: Decimal = Decimal("0.00")) -> Decimal:
         except Exception:
             return default
     return default
+
+
+def round_money_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
+    amount = parse_decimal(value, default)
+    return amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
 
 def search_filter(statement: Select[Any], query_text: str | None, *columns: Any) -> Select[Any]:

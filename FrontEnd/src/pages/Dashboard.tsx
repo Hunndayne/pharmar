@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom'
 import { inventoryApi } from '../api/inventoryService'
 import {
   reportApi,
+  type DashboardAiInsightSeverity,
+  type DashboardAiInsightsResponse,
   type RestockHighlightResponse,
   type RestockUrgency,
 } from '../api/reportService'
@@ -117,6 +119,43 @@ const urgencyMeta: Record<
   },
 }
 
+const aiSeverityMeta: Record<
+  DashboardAiInsightSeverity,
+  { label: string; className: string }
+> = {
+  high: {
+    label: 'Ưu tiên cao',
+    className: 'border-coral-500/20 bg-coral-500/10 text-coral-500',
+  },
+  medium: {
+    label: 'Cần theo dõi',
+    className: 'border-amber-500/30 bg-amber-500/10 text-amber-700',
+  },
+  low: {
+    label: 'Thông tin',
+    className: 'border-brand-500/20 bg-brand-500/10 text-brand-700',
+  },
+}
+
+const aiStatusMeta = {
+  ready: {
+    label: 'Sẵn sàng',
+    className: 'border-brand-500/20 bg-brand-500/10 text-brand-700',
+  },
+  stale: {
+    label: 'Dữ liệu cũ',
+    className: 'border-amber-500/30 bg-amber-500/10 text-amber-700',
+  },
+  pending: {
+    label: 'Đang chờ lịch',
+    className: 'border-ink-900/10 bg-white text-ink-700',
+  },
+  disabled: {
+    label: 'Đã tắt',
+    className: 'border-ink-900/10 bg-white text-ink-700',
+  },
+} as const
+
 export function Dashboard() {
   const { token } = useAuth()
   const lastLoadedAtRef = useRef(0)
@@ -124,14 +163,18 @@ export function Dashboard() {
 
   const [loading, setLoading] = useState(false)
   const [restockLoading, setRestockLoading] = useState(false)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiRefreshing, setAiRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [restockError, setRestockError] = useState<string | null>(null)
+  const [aiError, setAiError] = useState<string | null>(null)
   const [updatedAt, setUpdatedAt] = useState<string>('')
 
   const [kpis, setKpis] = useState<KpiItem[]>([])
   const [trendRows, setTrendRows] = useState<TrendRow[]>([])
   const [topProducts, setTopProducts] = useState<TopProductRow[]>([])
   const [restockData, setRestockData] = useState<RestockHighlightResponse | null>(null)
+  const [aiInsights, setAiInsights] = useState<DashboardAiInsightsResponse | null>(null)
 
   const fetchInvoicesByRange = useCallback(
     async (accessToken: string, dateFrom: string, dateTo: string) => {
@@ -277,6 +320,33 @@ export function Dashboard() {
     setRestockData(response)
   }, [])
 
+  const loadDashboardAiInsights = useCallback(async (accessToken: string) => {
+    const response = await reportApi.getDashboardAiInsights(accessToken)
+    setAiInsights(response)
+  }, [])
+
+  const refreshDashboardAiInsights = useCallback(async () => {
+    const accessToken = token?.access_token
+    if (!accessToken) {
+      setAiError('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.')
+      return
+    }
+
+    setAiRefreshing(true)
+    setAiError(null)
+
+    try {
+      const response = await reportApi.refreshDashboardAiInsights(accessToken)
+      setAiInsights(response)
+      setUpdatedAt(new Date().toLocaleString('vi-VN'))
+      lastLoadedAtRef.current = Date.now()
+    } catch (refreshError) {
+      setAiError(getErrorMessage(refreshError, 'Không thể phân tích AI Insight lúc này.'))
+    } finally {
+      setAiRefreshing(false)
+    }
+  }, [token?.access_token])
+
   const loadDashboard = useCallback(async (options?: { force?: boolean }) => {
     const force = Boolean(options?.force)
     if (!force) {
@@ -289,19 +359,23 @@ export function Dashboard() {
     if (!accessToken) {
       setError('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.')
       setRestockError('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.')
+      setAiError('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.')
       return
     }
 
     inFlightRef.current = true
     setLoading(true)
     setRestockLoading(true)
+    setAiLoading(true)
     setError(null)
     setRestockError(null)
+    setAiError(null)
 
     try {
-      const [coreResult, restockResult] = await Promise.allSettled([
+      const [coreResult, restockResult, aiResult] = await Promise.allSettled([
         loadDashboardCore(accessToken),
         loadRestockHighlights(accessToken),
+        loadDashboardAiInsights(accessToken),
       ])
 
       let refreshed = false
@@ -320,6 +394,14 @@ export function Dashboard() {
         )
       }
 
+      if (aiResult.status === 'fulfilled') {
+        refreshed = true
+      } else {
+        setAiError(
+          getErrorMessage(aiResult.reason, 'Không thể tải AI Insight lúc này.'),
+        )
+      }
+
       if (refreshed) {
         setUpdatedAt(new Date().toLocaleString('vi-VN'))
         lastLoadedAtRef.current = Date.now()
@@ -328,8 +410,9 @@ export function Dashboard() {
       inFlightRef.current = false
       setLoading(false)
       setRestockLoading(false)
+      setAiLoading(false)
     }
-  }, [kpis.length, loadDashboardCore, loadRestockHighlights, token?.access_token])
+  }, [kpis.length, loadDashboardAiInsights, loadDashboardCore, loadRestockHighlights, token?.access_token])
 
   useEffect(() => {
     void loadDashboard({ force: true })
@@ -340,11 +423,15 @@ export function Dashboard() {
     [trendRows],
   )
 
-  const dashboardBusy = loading || restockLoading
+  const aiBusy = aiLoading || aiRefreshing
+  const dashboardBusy = loading || restockLoading || aiBusy
   const restockItems = restockData?.items ?? []
   const restockSummary = restockData
     ? `${restockData.sales_window_days} ngày gần nhất · Mục tiêu đủ hàng ${restockData.target_cover_days} ngày`
     : 'Dựa trên tồn kho hiện tại, doanh số bán gần đây và cấu hình cửa hàng'
+  const aiStatus = aiInsights?.status ?? 'pending'
+  const aiStatusBadge = aiStatusMeta[aiStatus]
+  const aiItems = aiInsights?.items ?? []
 
   return (
     <div className="space-y-6">
@@ -572,6 +659,119 @@ export function Dashboard() {
                         <p className="text-xs uppercase tracking-[0.2em] text-ink-500">Ngưỡng</p>
                         <p className="mt-1">{formatQuantity(item.reorder_level)}</p>
                       </div>
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+          </>
+        ) : null}
+      </section>
+
+      <section className="glass-card rounded-3xl p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-600">AI Insight</p>
+            <h3 className="mt-2 text-2xl font-semibold text-ink-900">Phân tích tự động</h3>
+            <p className="mt-2 text-sm text-ink-600">
+              Snapshot AI được tạo theo lịch cố định lúc 07:00, 12:00, 18:00.
+            </p>
+            {aiInsights?.generated_at ? (
+              <p className="mt-2 text-xs text-ink-500">
+                Tạo lúc {formatDateTime(aiInsights.generated_at)}
+                {aiInsights.slot_at ? ` · Slot ${formatDateTime(aiInsights.slot_at)}` : ''}
+              </p>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                void refreshDashboardAiInsights()
+              }}
+              className="inline-flex rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 transition hover:border-ink-900/20 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={aiBusy || aiStatus === 'disabled'}
+            >
+              {aiRefreshing ? 'Đang phân tích...' : 'Phân tích ngay'}
+            </button>
+            <span
+              className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${aiStatusBadge.className}`}
+            >
+              {aiStatusBadge.label}
+            </span>
+          </div>
+        </div>
+
+        {aiBusy && !aiInsights ? (
+          <p className="mt-6 rounded-2xl bg-white/80 px-4 py-4 text-sm text-ink-600">
+            {aiRefreshing ? 'Đang phân tích AI Insight...' : 'Đang tải AI Insight...'}
+          </p>
+        ) : null}
+
+        {aiError ? (
+          <p className="mt-6 rounded-2xl bg-coral-500/10 px-4 py-4 text-sm text-coral-500">
+            {aiError}
+          </p>
+        ) : null}
+
+        {!aiError && aiStatus === 'disabled' ? (
+          <p className="mt-6 rounded-2xl bg-white/80 px-4 py-4 text-sm text-ink-600">
+            AI Insight đang được tắt trên hệ thống.
+          </p>
+        ) : null}
+
+        {!aiError && aiStatus === 'pending' ? (
+          <p className="mt-6 rounded-2xl bg-white/80 px-4 py-4 text-sm text-ink-600">
+            Chưa có snapshot AI. Dashboard sẽ đọc kết quả sau lần phân tích theo lịch tiếp theo hoặc khi bạn chạy phân tích ngay.
+          </p>
+        ) : null}
+
+        {!aiError && aiStatus === 'stale' ? (
+          <p className="mt-6 rounded-2xl bg-amber-500/10 px-4 py-4 text-sm text-amber-700">
+            AI tạm thời lỗi ở lượt gần nhất. Đang hiển thị snapshot thành công gần nhất.
+          </p>
+        ) : null}
+
+        {!aiError && aiStatus !== 'disabled' && aiStatus !== 'pending' && !aiItems.length ? (
+          <p className="mt-6 rounded-2xl bg-brand-500/10 px-4 py-4 text-sm text-brand-700">
+            AI chưa phát hiện điểm nổi bật nào trong snapshot hiện tại.
+          </p>
+        ) : null}
+
+        {aiItems.length ? (
+          <>
+            {aiBusy ? (
+              <p className="mt-4 text-xs text-ink-500">Đang đồng bộ lại snapshot AI...</p>
+            ) : null}
+            <div className="mt-6 grid gap-3 xl:grid-cols-2">
+              {aiItems.map((item, index) => {
+                const severity = aiSeverityMeta[item.severity]
+                return (
+                  <article key={`${item.title}-${index}`} className="rounded-3xl bg-white/80 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <h4 className="text-lg font-semibold text-ink-900">{item.title}</h4>
+                      <span
+                        className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold ${severity.className}`}
+                      >
+                        {severity.label}
+                      </span>
+                    </div>
+                    <p className="mt-3 text-sm leading-6 text-ink-700">{item.summary}</p>
+                    <div className="mt-4 rounded-2xl bg-ink-900/5 p-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-ink-500">
+                        Vì sao quan trọng
+                      </p>
+                      <p className="mt-2 text-sm leading-6 text-ink-700">{item.why_it_matters}</p>
+                    </div>
+                    <div className="mt-3 rounded-2xl bg-brand-500/10 p-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-brand-700">
+                        Việc nên làm
+                      </p>
+                      <p className="mt-2 text-sm leading-6 text-ink-800">{item.recommended_action}</p>
+                    </div>
+                    <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-ink-500">
+                      <span>Độ tin cậy {formatDecimal(item.confidence * 100, 0)}%</span>
+                      <span>{item.source_refs.length.toLocaleString('vi-VN')} fact nội bộ</span>
                     </div>
                   </article>
                 )

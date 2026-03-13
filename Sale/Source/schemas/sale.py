@@ -1,9 +1,9 @@
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Generic, Literal, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 
 T = TypeVar("T")
@@ -14,6 +14,65 @@ ReturnStatus = Literal["pending", "completed", "rejected"]
 HeldOrderStatus = Literal["active", "resumed", "expired", "cancelled"]
 ShiftStatus = Literal["open", "closed"]
 ServiceFeeMode = Literal["split", "separate"]
+
+MONEY_FIELD_NAMES = (
+    "unit_price",
+    "discount_amount",
+    "amount",
+    "service_fee_amount",
+    "amount_paid",
+    "change_amount",
+    "subtotal",
+    "total_amount",
+    "tier_discount",
+    "promotion_discount",
+    "points_discount",
+    "line_total",
+    "return_amount",
+    "total_return_amount",
+    "refund_amount",
+    "opening_amount",
+    "closing_amount",
+    "expected_amount",
+    "difference",
+    "total_sales",
+    "total_returns",
+    "total_cancelled",
+    "net_sales",
+    "cash_sales",
+    "card_sales",
+    "transfer_sales",
+    "momo_sales",
+    "zalopay_sales",
+    "vnpay_sales",
+    "commission_amount",
+    "avg_invoice_value",
+)
+
+
+def _round_money_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        parsed = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        parsed = Decimal("0")
+    return parsed.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+
+class MoneyInputModel(BaseModel):
+    @field_validator(*MONEY_FIELD_NAMES, mode="before", check_fields=False)
+    @classmethod
+    def normalize_money_fields(cls, value: Any) -> Any:
+        rounded = _round_money_decimal(value)
+        return value if rounded is None else rounded
+
+
+class MoneyOutputModel(BaseModel):
+    @field_serializer(*MONEY_FIELD_NAMES, when_used="json", check_fields=False)
+    def serialize_money_fields(self, value: Any) -> Any:
+        rounded = _round_money_decimal(value)
+        return None if rounded is None else int(rounded)
 
 
 class PageResponse(BaseModel, Generic[T]):
@@ -55,7 +114,7 @@ class PaymentMethodResponse(BaseModel):
     created_at: datetime
 
 
-class InvoiceCheckoutItemRequest(BaseModel):
+class InvoiceCheckoutItemRequest(MoneyInputModel):
     sku: str | None = Field(default=None, max_length=64)
     product_id: str = Field(min_length=1, max_length=64)
     product_code: str | None = Field(default=None, max_length=50)
@@ -71,7 +130,7 @@ class InvoiceCheckoutItemRequest(BaseModel):
     discount_amount: Decimal = Field(default=Decimal("0.00"), ge=0)
 
 
-class InvoiceCheckoutPaymentRequest(BaseModel):
+class InvoiceCheckoutPaymentRequest(MoneyInputModel):
     method: str = Field(min_length=1, max_length=20)
     amount: Decimal = Field(gt=0)
     reference_code: str | None = Field(default=None, max_length=50)
@@ -85,7 +144,7 @@ class InvoiceCheckoutPaymentRequest(BaseModel):
         return value.strip().lower()
 
 
-class InvoiceCreateRequest(BaseModel):
+class InvoiceCreateRequest(MoneyInputModel):
     customer_id: UUID | None = None
     items: list[InvoiceCheckoutItemRequest] = Field(min_length=1)
     promotion_code: str | None = Field(default=None, max_length=30)
@@ -137,7 +196,7 @@ class InvoiceCreateRequest(BaseModel):
         return self
 
 
-class InvoiceItemResponse(BaseModel):
+class InvoiceItemResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -159,7 +218,7 @@ class InvoiceItemResponse(BaseModel):
     created_at: datetime
 
 
-class InvoicePaymentResponse(BaseModel):
+class InvoicePaymentResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -173,7 +232,7 @@ class InvoicePaymentResponse(BaseModel):
     created_at: datetime
 
 
-class InvoiceResponse(BaseModel):
+class InvoiceResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -216,7 +275,7 @@ class InvoiceResponse(BaseModel):
     payments: list[InvoicePaymentResponse] = []
 
 
-class InvoiceListItemResponse(BaseModel):
+class InvoiceListItemResponse(MoneyOutputModel):
     id: UUID
     code: str
     customer_name: str | None
@@ -231,7 +290,7 @@ class InvoiceListItemResponse(BaseModel):
     created_at: datetime
 
 
-class PublicInvoiceListItemResponse(BaseModel):
+class PublicInvoiceListItemResponse(MoneyOutputModel):
     id: UUID
     code: str
     customer_name: str | None
@@ -245,7 +304,7 @@ class PublicInvoiceListItemResponse(BaseModel):
     created_at: datetime
 
 
-class PublicInvoiceItemResponse(BaseModel):
+class PublicInvoiceItemResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -262,7 +321,7 @@ class PublicInvoiceItemResponse(BaseModel):
     created_at: datetime
 
 
-class PublicInvoicePaymentResponse(BaseModel):
+class PublicInvoicePaymentResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -272,7 +331,7 @@ class PublicInvoicePaymentResponse(BaseModel):
     created_at: datetime
 
 
-class PublicInvoiceResponse(BaseModel):
+class PublicInvoiceResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -307,7 +366,7 @@ class InvoiceCancelRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
-class HeldOrderItemRequest(BaseModel):
+class HeldOrderItemRequest(MoneyInputModel):
     product_id: str = Field(min_length=1, max_length=64)
     product_code: str | None = Field(default=None, max_length=50)
     product_name: str | None = Field(default=None, max_length=300)
@@ -319,7 +378,7 @@ class HeldOrderItemRequest(BaseModel):
     line_total: Decimal | None = Field(default=None, ge=0)
 
 
-class HeldOrderCreateRequest(BaseModel):
+class HeldOrderCreateRequest(MoneyInputModel):
     customer_id: UUID | None = None
     customer_name: str | None = Field(default=None, max_length=100)
     customer_phone: str | None = Field(default=None, max_length=20)
@@ -332,7 +391,7 @@ class HeldOrderCreateRequest(BaseModel):
     note: str | None = None
 
 
-class HeldOrderUpdateRequest(BaseModel):
+class HeldOrderUpdateRequest(MoneyInputModel):
     customer_id: UUID | None = None
     customer_name: str | None = Field(default=None, max_length=100)
     customer_phone: str | None = Field(default=None, max_length=20)
@@ -345,7 +404,7 @@ class HeldOrderUpdateRequest(BaseModel):
     note: str | None = None
 
 
-class HeldOrderResumeRequest(BaseModel):
+class HeldOrderResumeRequest(MoneyInputModel):
     additional_items: list[InvoiceCheckoutItemRequest] = Field(default_factory=list)
     payment_method: str | None = Field(default="cash", max_length=20)
     amount_paid: Decimal | None = Field(default=None, ge=0)
@@ -353,7 +412,7 @@ class HeldOrderResumeRequest(BaseModel):
     note: str | None = None
 
 
-class HeldOrderResponse(BaseModel):
+class HeldOrderResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -395,7 +454,7 @@ class ReturnRejectRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
-class ProfitSourceInvoiceItemResponse(BaseModel):
+class ProfitSourceInvoiceItemResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -411,7 +470,7 @@ class ProfitSourceInvoiceItemResponse(BaseModel):
     line_total: Decimal
 
 
-class ProfitSourceInvoiceResponse(BaseModel):
+class ProfitSourceInvoiceResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -435,7 +494,7 @@ class ProfitSourceInvoiceResponse(BaseModel):
     items: list[ProfitSourceInvoiceItemResponse] = []
 
 
-class ReturnItemResponse(BaseModel):
+class ReturnItemResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -453,7 +512,7 @@ class ReturnItemResponse(BaseModel):
     created_at: datetime
 
 
-class ReturnResponse(BaseModel):
+class ReturnResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -476,17 +535,17 @@ class ReturnResponse(BaseModel):
     items: list[ReturnItemResponse] = []
 
 
-class ShiftOpenRequest(BaseModel):
+class ShiftOpenRequest(MoneyInputModel):
     opening_amount: Decimal = Field(default=Decimal("0.00"), ge=0)
     note: str | None = None
 
 
-class ShiftCloseRequest(BaseModel):
+class ShiftCloseRequest(MoneyInputModel):
     closing_amount: Decimal = Field(ge=0)
     note: str | None = None
 
 
-class ShiftResponse(BaseModel):
+class ShiftResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -524,7 +583,7 @@ class ShiftReportResponse(BaseModel):
     invoices: list[dict[str, Any]]
 
 
-class StatsTodayResponse(BaseModel):
+class StatsTodayResponse(MoneyOutputModel):
     date: date
     total_invoices: int
     total_sales: Decimal
@@ -533,7 +592,7 @@ class StatsTodayResponse(BaseModel):
     net_sales: Decimal
 
 
-class CashierStatsItemResponse(BaseModel):
+class CashierStatsItemResponse(MoneyOutputModel):
     user_id: str
     user_code: str | None
     user_name: str | None
