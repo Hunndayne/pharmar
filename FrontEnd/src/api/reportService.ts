@@ -15,6 +15,12 @@ export type ReportPageResponse<T> = {
 }
 export type ProfitBreakdownGroup = 'invoice' | 'day' | 'week' | 'month' | 'product'
 
+export type ExpenseBreakdownItem = {
+  category: string
+  total_amount: number
+  count: number
+}
+
 export type ProfitSummaryResponse = {
   invoice_count: number
   net_revenue: number
@@ -23,6 +29,10 @@ export type ProfitSummaryResponse = {
   collected_profit: number
   gross_margin_percent: number
   service_fee_total: number
+  operating_expenses: number
+  net_profit: number
+  net_margin_percent: number
+  expense_breakdown: ExpenseBreakdownItem[]
 }
 
 export type ProfitInvoiceBreakdownRow = {
@@ -218,6 +228,7 @@ export const reportApi = {
       params,
     )
     const row = typeof payload === 'object' && payload !== null ? (payload as Record<string, unknown>) : {}
+    const expenseBreakdownRaw = Array.isArray(row.expense_breakdown) ? row.expense_breakdown : []
     return {
       invoice_count: Math.max(0, Math.round(toNumberSafe(row.invoice_count))),
       net_revenue: Math.max(0, toNumberSafe(row.net_revenue)),
@@ -226,6 +237,16 @@ export const reportApi = {
       collected_profit: toNumberSafe(row.collected_profit),
       gross_margin_percent: toNumberSafe(row.gross_margin_percent),
       service_fee_total: Math.max(0, toNumberSafe(row.service_fee_total)),
+      operating_expenses: Math.max(0, toNumberSafe(row.operating_expenses)),
+      net_profit: toNumberSafe(row.net_profit),
+      net_margin_percent: toNumberSafe(row.net_margin_percent),
+      expense_breakdown: expenseBreakdownRaw
+        .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+        .map((item) => ({
+          category: toStringSafe(item.category),
+          total_amount: toNumberSafe(item.total_amount),
+          count: Math.max(0, Math.round(toNumberSafe(item.count))),
+        })),
     } satisfies ProfitSummaryResponse
   },
 

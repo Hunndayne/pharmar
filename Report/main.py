@@ -401,6 +401,27 @@ async def _fetch_system_settings(authorization: str) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+async def _fetch_expense_summary(
+    authorization: str,
+    date_from: date | None,
+    date_to: date | None,
+) -> dict[str, Any]:
+    try:
+        payload = await _request_service_json(
+            "GET",
+            f"{settings.STORE_SERVICE_URL}/api/v1/store/expenses/summary",
+            authorization,
+            params={
+                "date_from": date_from.isoformat() if date_from else None,
+                "date_to": date_to.isoformat() if date_to else None,
+            },
+        )
+        return payload if isinstance(payload, dict) else {"items": [], "grand_total": 0}
+    except Exception:
+        logger.warning("Failed to fetch expense summary from store service")
+        return {"items": [], "grand_total": 0}
+
+
 def _paginate_rows(items: list[dict[str, Any]], page: int, size: int) -> dict[str, Any]:
     total = len(items)
     pages = max(1, (total + size - 1) // size)
@@ -1807,7 +1828,7 @@ async def _load_profit_dataset(
     date_to: date | None,
 ) -> dict[str, Any]:
     cache_key = _cache_key(
-        "report:profit:dataset",
+        "report:profit:dataset:v2",
         {
             "date_from": date_from.isoformat() if date_from else None,
             "date_to": date_to.isoformat() if date_to else None,
@@ -1825,8 +1846,35 @@ async def _load_profit_dataset(
         for item in (invoice.get("items") if isinstance(invoice.get("items"), list) else [])
         if isinstance(item, dict)
     ]
-    batch_costs = await _fetch_batch_costs(authorization, batch_ids)
+    batch_costs_task = _fetch_batch_costs(authorization, batch_ids)
+    expense_summary_task = _fetch_expense_summary(authorization, date_from, date_to)
+    batch_costs, expense_summary = await asyncio.gather(batch_costs_task, expense_summary_task)
+
     dataset = _build_profit_dataset(invoices, batch_costs, date_from, date_to)
+
+    # Enrich with operating expenses and net profit
+    expense_items = expense_summary.get("items") if isinstance(expense_summary.get("items"), list) else []
+    operating_expenses_total = Decimal(str(expense_summary.get("grand_total") or 0))
+    gross_profit = _to_decimal(dataset["summary"]["gross_profit"])
+    net_profit = gross_profit - operating_expenses_total
+    net_revenue = _to_decimal(dataset["summary"]["net_revenue"])
+    net_margin_percent = Decimal("0")
+    if net_revenue > 0:
+        net_margin_percent = (net_profit / net_revenue) * Decimal("100")
+
+    dataset["summary"]["operating_expenses"] = _to_money(operating_expenses_total)
+    dataset["summary"]["net_profit"] = _to_money(net_profit)
+    dataset["summary"]["net_margin_percent"] = _to_percent(net_margin_percent)
+    dataset["summary"]["expense_breakdown"] = [
+        {
+            "category": str(item.get("category") or ""),
+            "total_amount": _to_money(_to_decimal(item.get("total_amount"))),
+            "count": int(item.get("count") or 0),
+        }
+        for item in expense_items
+        if isinstance(item, dict)
+    ]
+
     await _set_cached_json(cache_key, dataset, settings.REPORT_CACHE_TTL_SECONDS)
     return dataset
 

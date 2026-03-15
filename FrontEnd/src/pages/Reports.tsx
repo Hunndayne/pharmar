@@ -13,9 +13,28 @@ import {
   type ReportEvent,
 } from '../api/reportService'
 import { saleApi, type SaleInvoiceListItem } from '../api/saleService'
+import {
+  storeApi,
+  type OperatingExpense,
+  type CreateExpensePayload,
+} from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { downloadCsv } from '../utils/csv'
+
+const EXPENSE_CATEGORIES = [
+  { value: 'electricity', label: 'Tiền điện' },
+  { value: 'water', label: 'Tiền nước' },
+  { value: 'internet', label: 'Internet' },
+  { value: 'rent', label: 'Mặt bằng' },
+  { value: 'salary', label: 'Lương nhân viên' },
+  { value: 'maintenance', label: 'Bảo trì' },
+  { value: 'other', label: 'Khác' },
+] as const
+
+const EXPENSE_CATEGORY_LABEL: Record<string, string> = Object.fromEntries(
+  EXPENSE_CATEGORIES.map((c) => [c.value, c.label]),
+)
 
 type ReportTab = 'revenue' | 'profit' | 'inventory' | 'debt' | 'customer'
 
@@ -825,8 +844,10 @@ export function Reports() {
       return [
         { label: 'Doanh thu thuần', value: formatCurrency(profitData.summary.net_revenue) },
         { label: 'Giá vốn', value: formatCurrency(profitData.summary.cogs) },
-        { label: 'Lời theo hóa đơn', value: formatCurrency(profitData.summary.gross_profit) },
-        { label: 'Lời theo thực thu', value: formatCurrency(profitData.summary.collected_profit) },
+        { label: 'Lợi nhuận gộp', value: formatCurrency(profitData.summary.gross_profit) },
+        { label: 'Chi phí vận hành', value: formatCurrency(profitData.summary.operating_expenses) },
+        { label: 'Lợi nhuận thực', value: formatCurrency(profitData.summary.net_profit) },
+        { label: 'Biên LN thực', value: `${toNumber(profitData.summary.net_margin_percent).toLocaleString('vi-VN', { maximumFractionDigits: 2 })}%` },
       ]
     }
 
@@ -892,11 +913,10 @@ export function Reports() {
               key={item.id}
               type="button"
               onClick={() => setTab(item.id)}
-              className={`rounded-full px-4 py-2 text-sm font-semibold ${
-                tab === item.id
+              className={`rounded-full px-4 py-2 text-sm font-semibold ${tab === item.id
                   ? 'bg-ink-900 text-white'
                   : 'border border-ink-900/10 bg-white text-ink-700'
-              }`}
+                }`}
             >
               {item.label}
             </button>
@@ -916,11 +936,10 @@ export function Reports() {
                 key={groupId}
                 type="button"
                 onClick={() => setProfitGroupBy(groupId)}
-                className={`rounded-full px-4 py-2 text-sm font-semibold ${
-                  profitGroupBy === groupId
+                className={`rounded-full px-4 py-2 text-sm font-semibold ${profitGroupBy === groupId
                     ? 'bg-sky-100 text-sky-700'
                     : 'border border-ink-900/10 bg-white text-ink-700'
-                }`}
+                  }`}
               >
                 {label}
               </button>
@@ -973,11 +992,13 @@ export function Reports() {
       </section>
 
       {summaryCards.length > 0 ? (
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <section className={`grid gap-4 sm:grid-cols-2 ${tab === 'profit' ? 'xl:grid-cols-3' : 'xl:grid-cols-4'}`}>
           {summaryCards.map((item) => (
             <article key={item.label} className="glass-card rounded-3xl p-5">
               <p className="text-xs uppercase tracking-[0.25em] text-ink-600">{item.label}</p>
-              <p className="mt-3 text-2xl font-semibold text-ink-900">{item.value}</p>
+              <p className={`mt-3 text-2xl font-semibold ${item.label === 'Lợi nhuận thực' ? (profitData && profitData.summary.net_profit >= 0 ? 'text-emerald-600' : 'text-coral-500') : 'text-ink-900'}`}>
+                {item.value}
+              </p>
             </article>
           ))}
         </section>

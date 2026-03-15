@@ -75,6 +75,13 @@ func (h *Handler) routes() http.Handler {
 		r.With(auth.OwnerOnly(h.cfg)).Put("/drug-groups/{groupID}", h.updateDrugGroup)
 		r.With(auth.OwnerOnly(h.cfg)).Delete("/drug-groups/{groupID}", h.deleteDrugGroup)
 
+		r.Get("/expenses/summary", h.expenseSummary)
+		r.With(auth.OwnerOnly(h.cfg)).Get("/expenses", h.listExpenses)
+		r.With(auth.OwnerOnly(h.cfg)).Get("/expenses/{expenseID}", h.getExpense)
+		r.With(auth.OwnerOnly(h.cfg)).Post("/expenses", h.createExpense)
+		r.With(auth.OwnerOnly(h.cfg)).Put("/expenses/{expenseID}", h.updateExpense)
+		r.With(auth.OwnerOnly(h.cfg)).Delete("/expenses/{expenseID}", h.deleteExpense)
+
 		r.Route("/backup", func(r chi.Router) {
 			r.With(auth.OwnerOnly(h.cfg)).Get("/list", h.listBackups)
 			r.With(auth.OwnerOnly(h.cfg)).Post("/create", h.createBackup)
@@ -480,6 +487,113 @@ func (h *Handler) handleServiceError(w http.ResponseWriter, err error) {
 	default:
 		writeError(w, http.StatusInternalServerError, "Internal server error")
 	}
+}
+
+// --- Expense handlers ---
+
+func (h *Handler) listExpenses(w http.ResponseWriter, r *http.Request) {
+	dateFrom := strings.TrimSpace(r.URL.Query().Get("date_from"))
+	dateTo := strings.TrimSpace(r.URL.Query().Get("date_to"))
+	category := strings.TrimSpace(r.URL.Query().Get("category"))
+
+	items, err := h.svc.ListExpenses(r.Context(), dateFrom, dateTo, category)
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items,
+		"total": len(items),
+	})
+}
+
+func (h *Handler) getExpense(w http.ResponseWriter, r *http.Request) {
+	expenseID := chi.URLParam(r, "expenseID")
+	item, err := h.svc.GetExpense(r.Context(), expenseID)
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (h *Handler) createExpense(w http.ResponseWriter, r *http.Request) {
+	var payload domain.CreateExpenseRequest
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	item, err := h.svc.CreateExpense(r.Context(), payload, getActorSubject(r))
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"message": "Expense created",
+		"data":    item,
+	})
+}
+
+func (h *Handler) updateExpense(w http.ResponseWriter, r *http.Request) {
+	expenseID := chi.URLParam(r, "expenseID")
+	if strings.TrimSpace(expenseID) == "" {
+		writeError(w, http.StatusBadRequest, "expenseID is required")
+		return
+	}
+
+	var payload domain.UpdateExpenseRequest
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	item, err := h.svc.UpdateExpense(r.Context(), expenseID, payload, getActorSubject(r))
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Expense updated",
+		"data":    item,
+	})
+}
+
+func (h *Handler) deleteExpense(w http.ResponseWriter, r *http.Request) {
+	expenseID := chi.URLParam(r, "expenseID")
+	if strings.TrimSpace(expenseID) == "" {
+		writeError(w, http.StatusBadRequest, "expenseID is required")
+		return
+	}
+
+	if err := h.svc.DeleteExpense(r.Context(), expenseID); err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Expense deleted",
+		"id":      expenseID,
+	})
+}
+
+func (h *Handler) expenseSummary(w http.ResponseWriter, r *http.Request) {
+	dateFrom := strings.TrimSpace(r.URL.Query().Get("date_from"))
+	dateTo := strings.TrimSpace(r.URL.Query().Get("date_to"))
+
+	items, grandTotal, err := h.svc.SumExpenses(r.Context(), dateFrom, dateTo)
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":       items,
+		"grand_total": grandTotal,
+	})
 }
 
 // --- Backup handlers ---
