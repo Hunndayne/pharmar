@@ -2423,22 +2423,22 @@ export function Pos() {
         : 'Bán theo lô tắt: hệ thống tự gợi ý xuất kho FIFO.')
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       <header>
         <p className="text-xs uppercase tracking-[0.35em] text-ink-600">POS</p>
-        <h2 className="mt-2 text-3xl font-semibold text-ink-900">Bán hàng tại quầy</h2>
-        <p className="mt-2 text-sm text-ink-600">Quét QR số lô, xử lý nhiều khách cùng lúc và thanh toán tiền mặt.</p>
-        <p className="mt-1 text-xs text-ink-500">Chính sách xuất kho hiện tại: {policyDescription}</p>
+        <h2 className="mt-1 text-2xl font-semibold text-ink-900 sm:mt-2 sm:text-3xl">Bán hàng tại quầy</h2>
+        <p className="mt-1 hidden text-sm text-ink-600 sm:block">Quét QR số lô, xử lý nhiều khách cùng lúc và thanh toán tiền mặt.</p>
+        <p className="mt-1 text-xs text-ink-500 hidden sm:block">Chính sách xuất kho hiện tại: {policyDescription}</p>
       </header>
 
-      <section className="glass-card rounded-3xl p-4 sm:p-6">
+      <section className="glass-card rounded-2xl p-3 sm:rounded-3xl sm:p-5">
         <div className="flex flex-wrap items-center gap-2 min-w-0">
           {orders.map((order, index) => (
             <div key={order.id} className="flex items-center gap-1">
               <button
                 type="button"
                 onClick={() => setActiveOrderId(order.id)}
-                className={`rounded-full px-4 py-2 text-sm font-semibold ${
+                className={`rounded-full px-3 py-1.5 text-xs font-semibold sm:px-4 sm:py-2 sm:text-sm ${
                   activeOrder?.id === order.id
                     ? 'bg-ink-900 text-white'
                     : 'border border-ink-900/10 bg-white text-ink-900'
@@ -2460,15 +2460,15 @@ export function Pos() {
           <button
             type="button"
             onClick={addOrder}
-            className="rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900"
+            className="rounded-full border border-ink-900/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink-900 sm:px-4 sm:py-2 sm:text-sm"
           >
-            + Thêm khách
+            + Thêm
           </button>
         </div>
 
         {activeOrder ? (
-          <div className="mt-4 space-y-3">
-            <div className="grid gap-3 md:grid-cols-[220px,1fr]">
+          <div className="mt-3 space-y-2 sm:mt-4 sm:space-y-3">
+            <div className="grid gap-2 sm:gap-3 md:grid-cols-[220px,1fr]">
               <label className="space-y-2 text-sm text-ink-700">
                 <span>Loại khách</span>
                 <select
@@ -2501,7 +2501,7 @@ export function Pos() {
                       }
                     })
                   }}
-                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                 >
                   <option value="walk_in">Khách vãng lai</option>
                   <option value="member">Khách hàng thân thiết</option>
@@ -2516,7 +2516,7 @@ export function Pos() {
                     onChange={(event) =>
                       updateActiveOrder((order) => ({ ...order, customerName: event.target.value }))
                     }
-                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                     placeholder="Khách vãng lai"
                   />
                 </label>
@@ -2540,7 +2540,7 @@ export function Pos() {
                         }))
                         setNewMemberPhone(phone)
                       }}
-                      className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                      className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                       placeholder="Nhap so dien thoai"
                     />
                   </label>
@@ -2593,7 +2593,7 @@ export function Pos() {
               <input
                 value={activeOrder.note}
                 onChange={(event) => updateActiveOrder((order) => ({ ...order, note: event.target.value }))}
-                className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                 placeholder="Ghi chú thêm"
               />
             </label>
@@ -2601,8 +2601,8 @@ export function Pos() {
         ) : null}
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1.7fr,1fr]">
-        <article className="glass-card rounded-3xl p-4 sm:p-6">
+      <section className="grid gap-3 sm:gap-4 xl:grid-cols-[1.7fr,1fr]">
+        <article className="glass-card rounded-2xl p-3 sm:rounded-3xl sm:p-5">
           <div className="flex flex-wrap items-center gap-2 min-w-0">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:flex-nowrap">
               <input
@@ -2620,7 +2620,7 @@ export function Pos() {
                     setScanOpen(true)
                   }
                 }}
-                className="min-w-[180px] flex-1 rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+                className="min-w-0 flex-1 rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-sm sm:min-w-[180px] sm:rounded-2xl sm:px-4 sm:py-2"
                 placeholder={
                   sellByLot
                     ? 'Quét QR số lô hoặc nhập mã lô'
@@ -2639,7 +2639,7 @@ export function Pos() {
                   setScanOpen(true)
                 }}
                 disabled={addingByQr || !activeOrder}
-                className="shrink-0 rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
+                className="shrink-0 rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink-900 disabled:opacity-60 sm:rounded-2xl sm:px-4 sm:py-2 sm:text-sm"
               >
                 {addingByQr
                   ? 'Đang xử lý...'
@@ -2654,15 +2654,15 @@ export function Pos() {
               onClick={() => {
                 void loadPosData()
               }}
-              className="shrink-0 rounded-2xl border border-ink-900/10 bg-white px-3 py-2 text-sm font-semibold text-ink-900 sm:px-4"
+              className="shrink-0 rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink-900 sm:rounded-2xl sm:px-4 sm:py-2 sm:text-sm"
             >
               <span className="sm:hidden">Tải lại</span>
               <span className="hidden sm:inline">Tải lại dữ liệu</span>
             </button>
           </div>
 
-          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-[minmax(0,1.7fr),minmax(0,1fr),120px,160px,auto]">
-            <div className="space-y-1 min-w-0 md:col-span-2 2xl:col-span-1">
+          <div className="mt-2 grid grid-cols-2 gap-2 sm:mt-3 sm:gap-3 md:grid-cols-2 2xl:grid-cols-[minmax(0,1.7fr),minmax(0,1fr),120px,160px,auto]">
+            <div className="col-span-2 space-y-1 min-w-0 2xl:col-span-1">
               <input
                 value={drugSearch}
                 onChange={(event) => {
@@ -2694,7 +2694,7 @@ export function Pos() {
                   setDrugSearch(buildDrugSearchLabel(pickedDrug))
                 }}
                 list="pos-drug-suggestions"
-                className="w-full min-w-0 rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+                className="w-full min-w-0 rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-sm sm:rounded-2xl sm:px-4 sm:py-2"
                 placeholder="Tìm và chọn thuốc (mã/tên)"
               />
               <datalist id="pos-drug-suggestions">
@@ -2707,7 +2707,7 @@ export function Pos() {
             <select
               value={selectedUnitId}
               onChange={(event) => setSelectedUnitId(event.target.value)}
-              className="w-full min-w-0 rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+              className="w-full min-w-0 rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-sm sm:rounded-2xl sm:px-4 sm:py-2"
               disabled={!selectedDrug}
             >
               {(selectedDrug?.units ?? []).map((unit) => (
@@ -2720,14 +2720,14 @@ export function Pos() {
             <input
               value={selectedQuantity}
               onChange={(event) => setSelectedQuantity(event.target.value)}
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+              className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-sm sm:rounded-2xl sm:px-4 sm:py-2"
               placeholder="SL"
             />
 
             <input
               value={selectedUnit ? formatCurrency(selectedUnit.price) : ''}
               readOnly
-              className="w-full rounded-2xl border border-ink-900/10 bg-white/70 px-4 py-2 text-sm text-ink-500"
+              className="hidden w-full rounded-xl border border-ink-900/10 bg-white/70 px-3 py-1.5 text-sm text-ink-500 sm:block sm:rounded-2xl sm:px-4 sm:py-2"
               placeholder="Giá đơn vị"
               title="Giá đơn vị tham khảo"
             />
@@ -2738,7 +2738,7 @@ export function Pos() {
                 void handleAddByDrug()
               }}
               disabled={addingByDrug || !activeOrder || !selectedDrug || !selectedUnit || selectedDrugOutOfStock}
-              className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60 md:col-span-2 2xl:col-span-1"
+              className="rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink-900 disabled:opacity-60 col-span-2 sm:rounded-2xl sm:px-4 sm:py-2 sm:text-sm md:col-span-2 2xl:col-span-1"
             >
               {addingByDrug ? 'Đang thêm...' : 'Thêm theo gợi ý'}
             </button>
@@ -2769,7 +2769,7 @@ export function Pos() {
             </p>
           ) : null}
 
-          <div className="mt-4 space-y-3">
+          <div className="mt-3 space-y-2 sm:space-y-3">
             {!activeOrder?.items.length ? (
               <p className="rounded-2xl border border-dashed border-ink-900/20 bg-white/70 px-4 py-6 text-sm text-ink-600">
                 Chưa có mặt hàng trong đơn này.
@@ -2786,7 +2786,7 @@ export function Pos() {
               const quantityInvalid = quantity <= 0 || quantity > availableInUnit
 
               return (
-                <div key={item.id} className="rounded-2xl border border-ink-900/10 bg-white p-4">
+                <div key={item.id} className="rounded-xl border border-ink-900/10 bg-white p-2.5 sm:rounded-2xl sm:p-4">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
                       <p className="font-semibold text-ink-900">{item.drugName}</p>
@@ -2808,13 +2808,13 @@ export function Pos() {
                     </button>
                   </div>
 
-                  <div className="mt-3 grid gap-3 md:grid-cols-5">
+                  <div className="mt-2 grid grid-cols-2 gap-2 sm:mt-3 sm:gap-3 md:grid-cols-5">
                     <label className="space-y-1 text-xs text-ink-600">
-                      Đơn vị bán
+                      Đơn vị
                       <select
                         value={item.unitId}
                         onChange={(event) => handleItemUnitChange(item.id, event.target.value)}
-                        className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
+                        className="w-full rounded-lg border border-ink-900/10 bg-white px-2 py-1.5 text-sm text-ink-900 sm:rounded-xl sm:px-3 sm:py-2"
                       >
                         {(drug?.units ?? []).map((unit) => (
                           <option key={unit.id} value={unit.id}>
@@ -2829,12 +2829,12 @@ export function Pos() {
                       <input
                         value={item.quantity}
                         onChange={(event) => handleItemQuantityChange(item.id, event.target.value)}
-                        className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
+                        className="w-full rounded-lg border border-ink-900/10 bg-white px-2 py-1.5 text-sm text-ink-900 sm:rounded-xl sm:px-3 sm:py-2"
                       />
                     </label>
 
-                    <label className="space-y-1 text-xs text-ink-600">
-                      Giá đơn vị tham khảo
+                    <label className="hidden space-y-1 text-xs text-ink-600 sm:block">
+                      Giá tham khảo
                       <input
                         value={formatCurrency(unitRefPrice)}
                         readOnly
@@ -2843,27 +2843,27 @@ export function Pos() {
                     </label>
 
                     <label className="space-y-1 text-xs text-ink-600">
-                      Giá bán ({item.unitName})
+                      Giá bán
                       <input
                         value={String(item.unitPrice)}
                         onChange={(event) => {
                           const nextPrice = parseNonNegativeNumber(event.target.value)
                           updateItemField(item.id, (current) => ({ ...current, unitPrice: nextPrice }))
                         }}
-                        className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
+                        className="w-full rounded-lg border border-ink-900/10 bg-white px-2 py-1.5 text-sm text-ink-900 sm:rounded-xl sm:px-3 sm:py-2"
                       />
                     </label>
 
                     <div className="space-y-1 text-xs text-ink-600">
                       <p>Tạm tính</p>
-                      <p className="rounded-xl border border-ink-900/10 bg-fog-50 px-3 py-2 text-sm font-semibold text-ink-900">
+                      <p className="rounded-lg border border-ink-900/10 bg-fog-50 px-2 py-1.5 text-sm font-semibold text-ink-900 sm:rounded-xl sm:px-3 sm:py-2">
                         {formatCurrency(lineTotal)}
                       </p>
                     </div>
                   </div>
 
-                  <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-ink-600">
-                    <span>Tồn khả dụng: {availableInUnit.toLocaleString('vi-VN')} {item.unitName}</span>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-ink-600 sm:mt-2 sm:gap-3">
+                    <span>Tồn: {availableInUnit.toLocaleString('vi-VN')} {item.unitName}</span>
                     <span>({item.batchQtyRemaining.toLocaleString('vi-VN')} đơn vị gốc)</span>
                   </div>
 
@@ -2881,12 +2881,12 @@ export function Pos() {
           </div>
         </article>
 
-        <aside className="glass-card rounded-3xl p-4 sm:p-6">
+        <aside className="glass-card rounded-2xl p-3 sm:rounded-3xl sm:p-5">
           <p className="text-xs uppercase tracking-[0.25em] text-ink-600">Thanh toán</p>
-          <h3 className="mt-2 text-2xl font-semibold text-ink-900">Đơn đang chọn</h3>
+          <h3 className="mt-1 text-xl font-semibold text-ink-900 sm:mt-2 sm:text-2xl">Đơn đang chọn</h3>
 
           {activeOrder ? (
-            <div className="mt-4 space-y-4">
+            <div className="mt-3 space-y-2 sm:mt-4 sm:space-y-3">
               <label className="space-y-2 text-sm text-ink-700">
                 <span>Phí dịch vụ</span>
                 <input
@@ -2894,7 +2894,7 @@ export function Pos() {
                   onChange={(event) =>
                     updateActiveOrder((order) => ({ ...order, serviceFee: event.target.value }))
                   }
-                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                   placeholder="0"
                 />
               </label>
@@ -2909,14 +2909,14 @@ export function Pos() {
                       serviceFeeMode: event.target.value as ServiceFeeMode,
                     }))
                   }
-                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                 >
                   <option value="split">Chia đều vào các dòng thuốc</option>
                   <option value="separate">Mục riêng trong hóa đơn</option>
                 </select>
               </label>
 
-              <div className="rounded-2xl border border-ink-900/10 bg-white p-4 text-sm text-ink-700">
+              <div className="rounded-xl border border-ink-900/10 bg-white p-3 text-sm text-ink-700 sm:rounded-2xl sm:p-4">
                 <div className="flex items-center justify-between py-1">
                   <span>Tam tinh thuoc</span>
                   <span className="font-semibold text-ink-900">{formatCurrency(subtotal)}</span>
@@ -2947,7 +2947,7 @@ export function Pos() {
                       paymentMode: event.target.value as PaymentMode,
                     }))
                   }
-                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                 >
                   <option value="cash">Tiền mặt</option>
                   <option value="debt">Mua nợ</option>
@@ -2961,12 +2961,12 @@ export function Pos() {
                   onChange={(event) =>
                     updateActiveOrder((order) => ({ ...order, cashReceived: event.target.value }))
                   }
-                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                   placeholder="0"
                 />
               </label>
 
-              <div className="rounded-2xl border border-ink-900/10 bg-white p-4">
+              <div className="rounded-xl border border-ink-900/10 bg-white p-3 sm:rounded-2xl sm:p-4">
                 <p className="text-sm text-ink-600">
                   {activeOrder.paymentMode === 'debt' ? 'Con no' : 'Tien tra lai'}
                 </p>
@@ -2988,7 +2988,7 @@ export function Pos() {
                   void handleCheckout()
                 }}
                 disabled={checkingOut || !activeOrder.items.length || (activeOrder.paymentMode === 'cash' && changeAmount < 0)}
-                className="w-full rounded-2xl bg-ink-900 px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
+                className="w-full rounded-xl bg-ink-900 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60 sm:rounded-2xl sm:py-3"
               >
                 {checkingOut
                   ? 'Đang thanh toán...'
@@ -3007,7 +3007,7 @@ export function Pos() {
                   !activeOrder.items.length ||
                   activeOrder.paymentMode === 'debt'
                 }
-                className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm font-semibold text-ink-900 disabled:opacity-60"
+                className="w-full rounded-xl border border-ink-900/10 bg-white px-4 py-2.5 text-sm font-semibold text-ink-900 disabled:opacity-60 sm:rounded-2xl sm:py-3"
               >
                 {generatingBankQr ? 'Đang tạo QR ngân hàng...' : 'Thanh toán QR ngân hàng'}
               </button>
