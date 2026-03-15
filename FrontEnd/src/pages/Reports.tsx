@@ -13,28 +13,9 @@ import {
   type ReportEvent,
 } from '../api/reportService'
 import { saleApi, type SaleInvoiceListItem } from '../api/saleService'
-import {
-  storeApi,
-  type OperatingExpense,
-  type CreateExpensePayload,
-} from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { downloadCsv } from '../utils/csv'
-
-const EXPENSE_CATEGORIES = [
-  { value: 'electricity', label: 'Tiền điện' },
-  { value: 'water', label: 'Tiền nước' },
-  { value: 'internet', label: 'Internet' },
-  { value: 'rent', label: 'Mặt bằng' },
-  { value: 'salary', label: 'Lương nhân viên' },
-  { value: 'maintenance', label: 'Bảo trì' },
-  { value: 'other', label: 'Khác' },
-] as const
-
-const EXPENSE_CATEGORY_LABEL: Record<string, string> = Object.fromEntries(
-  EXPENSE_CATEGORIES.map((c) => [c.value, c.label]),
-)
 
 type ReportTab = 'revenue' | 'profit' | 'inventory' | 'debt' | 'customer'
 
