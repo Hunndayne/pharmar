@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { catalogApi, type SupplierItem } from '../api/catalogService'
 import { customerApi, type CustomerRecord } from '../api/customerService'
 import { inventoryApi, type InventoryStockSummary } from '../api/inventoryService'
@@ -13,9 +13,28 @@ import {
   type ReportEvent,
 } from '../api/reportService'
 import { saleApi, type SaleInvoiceListItem } from '../api/saleService'
+import {
+  storeApi,
+  type OperatingExpense,
+  type CreateExpensePayload,
+} from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { downloadCsv } from '../utils/csv'
+
+const EXPENSE_CATEGORIES = [
+  { value: 'electricity', label: 'Tiền điện' },
+  { value: 'water', label: 'Tiền nước' },
+  { value: 'internet', label: 'Internet' },
+  { value: 'rent', label: 'Mặt bằng' },
+  { value: 'salary', label: 'Lương nhân viên' },
+  { value: 'maintenance', label: 'Bảo trì' },
+  { value: 'other', label: 'Khác' },
+] as const
+
+const EXPENSE_CATEGORY_LABEL: Record<string, string> = Object.fromEntries(
+  EXPENSE_CATEGORIES.map((c) => [c.value, c.label]),
+)
 
 type ReportTab = 'revenue' | 'profit' | 'inventory' | 'debt' | 'customer'
 
@@ -325,6 +344,19 @@ export function Reports() {
   const [debtData, setDebtData] = useState<DebtReportData | null>(null)
   const [customerData, setCustomerData] = useState<CustomerReportData | null>(null)
 
+  // Expense management state
+  const [expenses, setExpenses] = useState<OperatingExpense[]>([])
+  const [showExpenseForm, setShowExpenseForm] = useState(false)
+  const [editingExpense, setEditingExpense] = useState<OperatingExpense | null>(null)
+  const [expenseForm, setExpenseForm] = useState<CreateExpensePayload>({
+    category: 'electricity',
+    name: '',
+    amount: 0,
+    expense_date: '',
+    note: '',
+  })
+  const [expenseSaving, setExpenseSaving] = useState(false)
+
   const fetchInvoices = useCallback(
     async (accessToken: string) => {
       const invoices: SaleInvoiceListItem[] = []
@@ -550,6 +582,13 @@ export function Reports() {
         breakdown,
         topProducts,
       })
+
+      // Load expense list (non-blocking - runs in parallel)
+      storeApi.listExpenses(accessToken, {
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+      }).then((res) => setExpenses(res.items ?? []))
+        .catch(() => setExpenses([]))
     },
     [dateFrom, dateTo, profitGroupBy],
   )
@@ -1168,6 +1207,205 @@ export function Reports() {
               )}
             </div>
           </article>
+        </section>
+      ) : null}
+
+      {tab === 'profit' ? (
+        <section className="glass-card rounded-3xl p-6">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-ink-900">Chi phí vận hành</h3>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingExpense(null)
+                setExpenseForm({ category: 'electricity', name: '', amount: 0, expense_date: '', note: '' })
+                setShowExpenseForm(true)
+              }}
+              className="rounded-full bg-ink-900 px-4 py-2 text-sm font-semibold text-white"
+            >
+              + Thêm chi phí
+            </button>
+          </div>
+
+          {profitData && profitData.summary.expense_breakdown.length > 0 ? (
+            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              {profitData.summary.expense_breakdown.map((item) => (
+                <div key={item.category} className="rounded-2xl border border-ink-900/10 bg-white px-4 py-3">
+                  <p className="text-xs uppercase tracking-[0.2em] text-ink-600">
+                    {EXPENSE_CATEGORY_LABEL[item.category] || item.category}
+                  </p>
+                  <p className="mt-1 text-lg font-semibold text-ink-900">{formatCurrency(item.total_amount)}</p>
+                  <p className="text-xs text-ink-500">{item.count} khoản</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-4 text-sm text-ink-500">Chưa có chi phí nào trong kỳ báo cáo.</p>
+          )}
+
+          {expenses.length > 0 ? (
+            <div className="mt-4 overflow-x-auto">
+              <table className="min-w-[700px] w-full text-left text-sm">
+                <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
+                  <tr>
+                    <th className="py-2">Loại</th>
+                    <th className="py-2">Tên chi phí</th>
+                    <th className="py-2">Số tiền</th>
+                    <th className="py-2">Ngày</th>
+                    <th className="py-2">Ghi chú</th>
+                    <th className="py-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {expenses.map((item) => (
+                    <tr key={item.id} className="border-t border-ink-900/5">
+                      <td className="py-2">{EXPENSE_CATEGORY_LABEL[item.category] || item.category}</td>
+                      <td className="py-2 font-semibold text-ink-900">{item.name}</td>
+                      <td className="py-2">{formatCurrency(item.amount)}</td>
+                      <td className="py-2">{formatDate(item.expense_date)}</td>
+                      <td className="py-2 text-ink-500">{item.note || '-'}</td>
+                      <td className="py-2">
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingExpense(item)
+                              setExpenseForm({
+                                category: item.category,
+                                name: item.name,
+                                amount: item.amount,
+                                expense_date: item.expense_date,
+                                note: item.note || '',
+                              })
+                              setShowExpenseForm(true)
+                            }}
+                            className="text-xs text-sky-600 hover:underline"
+                          >
+                            Sửa
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (!token || !confirm('Xóa chi phí này?')) return
+                              try {
+                                await storeApi.deleteExpense(token.access_token, item.id)
+                                setExpenses((prev) => prev.filter((e) => e.id !== item.id))
+                              } catch {}
+                            }}
+                            className="text-xs text-coral-500 hover:underline"
+                          >
+                            Xóa
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
+          {showExpenseForm ? (
+            <div className="mt-4 rounded-2xl border border-ink-900/10 bg-white p-5">
+              <h4 className="text-sm font-semibold text-ink-900">
+                {editingExpense ? 'Cập nhật chi phí' : 'Thêm chi phí mới'}
+              </h4>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <div>
+                  <label className="block text-xs text-ink-600 mb-1">Loại chi phí</label>
+                  <select
+                    value={expenseForm.category}
+                    onChange={(e) => setExpenseForm((f) => ({ ...f, category: e.target.value }))}
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm"
+                  >
+                    {EXPENSE_CATEGORIES.map((c) => (
+                      <option key={c.value} value={c.value}>{c.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-ink-600 mb-1">Tên chi phí</label>
+                  <input
+                    type="text"
+                    value={expenseForm.name}
+                    onChange={(e) => setExpenseForm((f) => ({ ...f, name: e.target.value }))}
+                    placeholder="VD: Tiền điện tháng 3"
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-ink-600 mb-1">Số tiền</label>
+                  <input
+                    type="number"
+                    value={expenseForm.amount || ''}
+                    onChange={(e) => setExpenseForm((f) => ({ ...f, amount: Number(e.target.value) || 0 }))}
+                    placeholder="1500000"
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-ink-600 mb-1">Ngày</label>
+                  <input
+                    type="date"
+                    value={expenseForm.expense_date}
+                    onChange={(e) => setExpenseForm((f) => ({ ...f, expense_date: e.target.value }))}
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-xs text-ink-600 mb-1">Ghi chú</label>
+                  <input
+                    type="text"
+                    value={expenseForm.note || ''}
+                    onChange={(e) => setExpenseForm((f) => ({ ...f, note: e.target.value }))}
+                    placeholder="Ghi chú tùy chọn"
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm"
+                  />
+                </div>
+              </div>
+              <div className="mt-4 flex gap-2">
+                <button
+                  type="button"
+                  disabled={expenseSaving}
+                  onClick={async () => {
+                    if (!token || !expenseForm.name.trim() || !expenseForm.amount || !expenseForm.expense_date) return
+                    setExpenseSaving(true)
+                    try {
+                      if (editingExpense) {
+                        const res = await storeApi.updateExpense(token.access_token, editingExpense.id, {
+                          category: expenseForm.category,
+                          name: expenseForm.name,
+                          amount: expenseForm.amount,
+                          expense_date: expenseForm.expense_date,
+                          note: expenseForm.note || undefined,
+                        })
+                        setExpenses((prev) => prev.map((e) => (e.id === editingExpense.id ? res.data : e)))
+                      } else {
+                        const res = await storeApi.createExpense(token.access_token, expenseForm)
+                        setExpenses((prev) => [res.data, ...prev])
+                      }
+                      setShowExpenseForm(false)
+                      setEditingExpense(null)
+                    } catch {}
+                    setExpenseSaving(false)
+                  }}
+                  className="rounded-full bg-ink-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {expenseSaving ? 'Đang lưu...' : editingExpense ? 'Cập nhật' : 'Lưu'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowExpenseForm(false)
+                    setEditingExpense(null)
+                  }}
+                  className="rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-700"
+                >
+                  Hủy
+                </button>
+              </div>
+            </div>
+          ) : null}
         </section>
       ) : null}
 
