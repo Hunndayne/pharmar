@@ -85,6 +85,7 @@ def _invoice_event_payload(invoice: Invoice) -> dict[str, Any]:
         "customer_name": invoice.customer_name,
         "customer_phone": invoice.customer_phone,
         "total_amount": _decimal_to_float(invoice.total_amount),
+        "rounding_adjustment_amount": _decimal_to_float(invoice.rounding_adjustment_amount),
         "amount_paid": _decimal_to_float(invoice.amount_paid),
         "change_amount": _decimal_to_float(invoice.change_amount),
         "service_fee_amount": _decimal_to_float(invoice.service_fee_amount),
@@ -247,6 +248,11 @@ async def _prepare_invoice_creation(
     if service_fee_mode == "separate" and service_fee_amount > Decimal("0.00"):
         total_amount = _normalize_decimal(total_amount + service_fee_amount)
 
+    rounding_adjustment_amount = _normalize_decimal(payload.rounding_adjustment_amount or Decimal("0.00"))
+    if total_amount + rounding_adjustment_amount < Decimal("0.00"):
+        rounding_adjustment_amount = _normalize_decimal(-total_amount)
+    total_amount = _normalize_decimal(total_amount + rounding_adjustment_amount)
+
     payment_methods = await list_active_payment_methods_map(db)
 
     invoice_payments: list[InvoicePayment] = []
@@ -293,7 +299,9 @@ async def _prepare_invoice_creation(
         )
         payment_method = single_method
 
+    debt_amount = _normalize_decimal(max(total_amount - amount_paid, Decimal("0.00")))
     change_amount = _normalize_decimal(max(amount_paid - total_amount, Decimal("0.00")))
+    effective_payment_method = "debt" if debt_amount > Decimal("0.00") else payment_method
 
     points_earned = 0
     if payload.customer_id is not None and total_amount > Decimal("0.00"):
@@ -326,9 +334,10 @@ async def _prepare_invoice_creation(
         points_used=points_used_applied,
         points_earned=points_earned,
         promotion_code=payload.promotion_code,
-        payment_method=payment_method,
+        payment_method=effective_payment_method,
         service_fee_amount=service_fee_amount,
         service_fee_mode=service_fee_mode,
+        rounding_adjustment_amount=rounding_adjustment_amount,
         amount_paid=_normalize_decimal(amount_paid),
         change_amount=_normalize_decimal(change_amount),
         status="completed",
@@ -483,6 +492,7 @@ async def public_list_invoices_by_phone(
                 customer_name=item.customer_name,
                 customer_phone=item.customer_phone,
                 total_amount=item.total_amount,
+                rounding_adjustment_amount=item.rounding_adjustment_amount,
                 amount_paid=item.amount_paid,
                 payment_method=item.payment_method,
                 service_fee_amount=item.service_fee_amount,
@@ -535,6 +545,7 @@ async def list_invoices(
                 customer_name=item.customer_name,
                 customer_phone=item.customer_phone,
                 total_amount=item.total_amount,
+                rounding_adjustment_amount=item.rounding_adjustment_amount,
                 amount_paid=item.amount_paid,
                 payment_method=item.payment_method,
                 service_fee_amount=item.service_fee_amount,
@@ -732,6 +743,9 @@ async def print_invoice_data(invoice_id: UUID, _: AnyUser, token: AccessToken, d
     if invoice.payment_method == "mixed":
         payment_name = "Thanh toán kết hợp"
 
+    if invoice.payment_method == "debt":
+        payment_name = "Mua nợ"
+
     raw_window_value = sale_settings.get("sale.return_window_value", 7)
     try:
         return_window_value = int(raw_window_value)
@@ -785,12 +799,14 @@ async def print_invoice_data(invoice_id: UUID, _: AnyUser, token: AccessToken, d
             "points_discount": invoice.points_discount,
             "service_fee_amount": invoice.service_fee_amount,
             "service_fee_mode": invoice.service_fee_mode,
+            "rounding_adjustment_amount": invoice.rounding_adjustment_amount,
             "total": invoice.total_amount,
         },
         payment={
             "method": payment_name,
             "amount_paid": invoice.amount_paid,
             "change": invoice.change_amount,
+            "debt_amount": _normalize_decimal(max(invoice.total_amount - invoice.amount_paid, Decimal("0.00"))),
         },
         points={
             "used": invoice.points_used,

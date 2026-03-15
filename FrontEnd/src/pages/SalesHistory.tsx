@@ -36,11 +36,13 @@ const pageSize = 10
 const paymentMethodLabels: Record<string, string> = {
   cash: 'Tiền mặt',
   card: 'Thẻ',
+  bank: 'Ngân hàng',
   transfer: 'Chuyển khoản',
   momo: 'Ví MoMo',
   zalopay: 'Ví ZaloPay',
   vnpay: 'VNPay',
   mixed: 'Hỗn hợp',
+  debt: 'Mua nợ',
 }
 
 const statusLabels: Record<string, string> = {
@@ -204,9 +206,19 @@ const renderInvoicePrintHtml = (printData: SaleInvoicePrintData) => {
           <div class="summary">
             <div class="summary-row"><span>Tạm tính</span><strong>${formatCurrency(printData.summary?.subtotal || 0)}</strong></div>
             <div class="summary-row"><span>Giảm giá</span><strong>${formatCurrency(toNumber(printData.summary?.tier_discount || 0) + toNumber(printData.summary?.promotion?.amount || 0) + toNumber(printData.summary?.points_discount || 0))}</strong></div>
+            ${
+              toNumber(printData.summary?.rounding_adjustment_amount || 0) !== 0
+                ? `<div class="summary-row"><span>Làm tròn tiền mặt</span><strong>${formatCurrency(printData.summary?.rounding_adjustment_amount || 0)}</strong></div>`
+                : ''
+            }
             <div class="summary-row total"><span>Tổng thanh toán</span><strong>${formatCurrency(printData.summary?.total || 0)}</strong></div>
             <div class="summary-row"><span>Khách đưa</span><strong>${formatCurrency(printData.payment?.amount_paid || 0)}</strong></div>
             <div class="summary-row"><span>Tiền thừa</span><strong>${formatCurrency(printData.payment?.change || 0)}</strong></div>
+            ${
+              toNumber(printData.payment?.debt_amount || 0) > 0
+                ? `<div class="summary-row"><span>Còn nợ</span><strong>${formatCurrency(printData.payment?.debt_amount || 0)}</strong></div>`
+                : ''
+            }
           </div>
 
           <div class="footer">
@@ -769,6 +781,9 @@ export function SalesHistory() {
                             <p>Thu ngân: {detail.created_by_name || detail.created_by}</p>
                             <p>Tạm tính: {formatCurrency(detail.subtotal)}</p>
                             <p>Giảm giá: {formatCurrency(detail.discount_amount)}</p>
+                            {toNumber(detail.rounding_adjustment_amount) !== 0 ? (
+                              <p>Làm tròn tiền mặt: {formatCurrency(detail.rounding_adjustment_amount)}</p>
+                            ) : null}
                             <p className="font-semibold text-ink-900">Tổng: {formatCurrency(detail.total_amount)}</p>
                             {detail.items.slice(0, 5).map((line) => (
                               <p key={line.id}>
@@ -922,6 +937,9 @@ export function SalesHistory() {
                                         <div className="mt-3 space-y-2">
                                           <p className="flex items-center justify-between gap-3"><span>Tạm tính</span><span className="font-semibold text-ink-900">{formatCurrency(detail.subtotal)}</span></p>
                                           <p className="flex items-center justify-between gap-3"><span>Giảm giá</span><span className="font-semibold text-ink-900">{formatCurrency(detail.discount_amount)}</span></p>
+                                          {toNumber(detail.rounding_adjustment_amount) !== 0 ? (
+                                            <p className="flex items-center justify-between gap-3"><span>Làm tròn tiền mặt</span><span className="font-semibold text-ink-900">{formatCurrency(detail.rounding_adjustment_amount)}</span></p>
+                                          ) : null}
                                           <p className="flex items-center justify-between gap-3 border-t border-ink-900/10 pt-2"><span>Thành tiền</span><span className="text-base font-semibold text-ink-900">{formatCurrency(detail.total_amount)}</span></p>
                                           <p className="flex items-center justify-between gap-3"><span>Khách đưa</span><span className="font-semibold text-ink-900">{formatCurrency(detail.amount_paid)}</span></p>
                                           <p className="flex items-center justify-between gap-3"><span>Tiền thừa</span><span className="font-semibold text-ink-900">{formatCurrency(detail.change_amount)}</span></p>

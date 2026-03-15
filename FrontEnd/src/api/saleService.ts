@@ -25,6 +25,7 @@ export type SaleInvoiceCreatePayload = {
   payment_method?: string
   service_fee_amount?: number
   service_fee_mode?: 'split' | 'separate'
+  rounding_adjustment_amount?: number
   amount_paid?: number
   note?: string | null
 }
@@ -83,6 +84,7 @@ export type SaleInvoiceResponse = {
   promotion_discount: string | number
   points_discount: string | number
   total_amount: string | number
+  rounding_adjustment_amount: string | number
   points_used: number
   points_earned: number
   promotion_code: string | null
@@ -111,6 +113,7 @@ export type SaleInvoiceListItem = {
   customer_name: string | null
   customer_phone: string | null
   total_amount: string | number
+  rounding_adjustment_amount: string | number
   amount_paid: string | number
   payment_method: string
   service_fee_amount: string | number
@@ -126,6 +129,7 @@ export type PublicSaleInvoiceListItem = {
   customer_name: string | null
   customer_phone: string | null
   total_amount: string | number
+  rounding_adjustment_amount: string | number
   amount_paid: string | number
   payment_method: string
   service_fee_amount: string | number
@@ -169,6 +173,7 @@ export type PublicSaleInvoiceResponse = {
   promotion_discount: string | number
   points_discount: string | number
   total_amount: string | number
+  rounding_adjustment_amount: string | number
   points_used: number
   points_earned: number
   promotion_code: string | null
@@ -259,12 +264,14 @@ export type SaleInvoicePrintData = {
     points_discount?: number | string | null
     service_fee_amount?: number | string | null
     service_fee_mode?: string | null
+    rounding_adjustment_amount?: number | string | null
     total?: number | string | null
   }
   payment: {
     method?: string | null
     amount_paid?: number | string | null
     change?: number | string | null
+    debt_amount?: number | string | null
   }
   points: {
     used?: number | string | null

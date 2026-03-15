@@ -54,6 +54,11 @@ class Invoice(Base):
     promotion_discount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False, default=Decimal("0.00"))
     points_discount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False, default=Decimal("0.00"))
     total_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    rounding_adjustment_amount: Mapped[Decimal] = mapped_column(
+        Numeric(15, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+    )
 
     points_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     points_earned: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -30,6 +30,7 @@ const paymentLabel = (value: string) => {
   if (normalized === 'zalopay') return 'ZaloPay'
   if (normalized === 'vnpay') return 'VNPay'
   if (normalized === 'mixed') return 'Nhiều phương thức'
+  if (normalized === 'debt') return 'Mua nợ'
   return value || '-'
 }
 

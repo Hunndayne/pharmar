@@ -79,6 +79,14 @@ async def lifespan(_: FastAPI):
                 """
             )
         )
+        await connection.execute(
+            text(
+                f"""
+                ALTER TABLE {SCHEMA_NAME}.invoices
+                ADD COLUMN IF NOT EXISTS rounding_adjustment_amount NUMERIC(15, 2) NOT NULL DEFAULT 0
+                """
+            )
+        )
 
     await _seed_default_payment_methods()
     await init_event_publisher(

@@ -113,6 +113,7 @@ type InvoicePreview = {
   amountPaid: number
   changeAmount: number
   debtAmount: number
+  roundingAdjustmentAmount: number
   medicineTotal: number
   serviceFee: number
   grandTotal: number
@@ -187,7 +188,8 @@ type CheckoutOptions = {
   noteSuffix?: string
 }
 
-const formatCurrency = (value: number) => `${Math.round(Math.max(0, value)).toLocaleString('vi-VN')}đ`
+const formatCurrency = (value: number) =>
+  `${Math.round(Number.isFinite(value) ? value : 0).toLocaleString('vi-VN')}đ`
 
 const parseNonNegativeNumber = (value: string) => {
   const normalized = value.replace(/,/g, '').trim()
@@ -1157,6 +1159,11 @@ export function Pos() {
                   ? `<div class="summary-row"><span>Phí dịch vụ</span><strong>${formatCurrency(preview.serviceFee)}</strong></div>`
                   : ''
               }
+              ${
+                preview.roundingAdjustmentAmount !== 0
+                  ? `<div class="summary-row"><span>Làm tròn tiền mặt</span><strong>${formatCurrency(preview.roundingAdjustmentAmount)}</strong></div>`
+                  : ''
+              }
               <div class="summary-row total"><span>Tổng thanh toán</span><strong>${formatCurrency(preview.grandTotal)}</strong></div>
               <div class="summary-row"><span>Khách đưa</span><strong>${formatCurrency(preview.amountPaid)}</strong></div>
               <div class="summary-row"><span>Tiền thừa</span><strong>${formatCurrency(Math.max(0, preview.changeAmount))}</strong></div>
@@ -1917,14 +1924,21 @@ export function Pos() {
 
   const grandTotal = subtotal + serviceFee
   const cashReceived = parseNonNegativeNumber(activeOrder?.cashReceived ?? '0')
-  const changeAmount = cashReceived - grandTotal
-  const outstandingAmount = Math.max(0, grandTotal - cashReceived)
+  const roundedCashGrandTotal = useMemo(() => {
+    if (activeOrder?.paymentMode !== 'cash' || !cashRoundingEnabled) return grandTotal
+    return roundCashTotalByStep(grandTotal, cashRoundingUnit)
+  }, [activeOrder?.paymentMode, cashRoundingEnabled, cashRoundingUnit, grandTotal])
+  const cashRoundingAdjustmentAmount = useMemo(() => {
+    if (activeOrder?.paymentMode !== 'cash' || !cashRoundingEnabled) return 0
+    return roundedCashGrandTotal - grandTotal
+  }, [activeOrder?.paymentMode, cashRoundingEnabled, grandTotal, roundedCashGrandTotal])
+  const displayGrandTotal = activeOrder?.paymentMode === 'cash' ? roundedCashGrandTotal : grandTotal
+  const changeAmount = cashReceived - displayGrandTotal
+  const outstandingAmount = Math.max(0, displayGrandTotal - cashReceived)
   const roundedCashChangeAmount = useMemo(() => {
     if (activeOrder?.paymentMode !== 'cash') return 0
-    const positiveChange = Math.max(0, changeAmount)
-    if (!cashRoundingEnabled) return positiveChange
-    return roundCashTotalByStep(positiveChange, cashRoundingUnit)
-  }, [activeOrder?.paymentMode, changeAmount, cashRoundingEnabled, cashRoundingUnit])
+    return Math.max(0, changeAmount)
+  }, [activeOrder?.paymentMode, changeAmount])
 
   const customerDisplayPayload = useMemo<CustomerDisplayPayload>(() => {
     const lines = activeOrderLineDetails.map((row) => ({
@@ -1957,7 +1971,7 @@ export function Pos() {
         itemCount: lines.length,
         subtotal,
         serviceFee,
-        total: grandTotal,
+        total: displayGrandTotal,
         lines,
       },
       paymentQr: bankQrState
@@ -1981,7 +1995,7 @@ export function Pos() {
     customerDisplayAdsTransitionMs,
     customerDisplayShowPrice,
     customerDisplayShowTotal,
-    grandTotal,
+    displayGrandTotal,
     serviceFee,
     storeInfo?.address,
     storeInfo?.name,
@@ -2151,13 +2165,17 @@ export function Pos() {
       }
 
       const checkoutPaymentMethod = options?.paymentMethod ?? 'cash'
-      const shouldRoundCashChange =
+      const shouldRoundCashTotal =
         checkoutPaymentMethod === 'cash' &&
         activeOrder.paymentMode === 'cash' &&
         cashRoundingEnabled
 
+      const checkoutTotal = shouldRoundCashTotal
+        ? roundCashTotalByStep(grandTotal, cashRoundingUnit)
+        : grandTotal
+      const roundingAdjustmentAmount = shouldRoundCashTotal ? checkoutTotal - grandTotal : 0
       const amountPaid = options?.amountPaid ?? parseNonNegativeNumber(activeOrder.cashReceived)
-      if (activeOrder.paymentMode === 'cash' && amountPaid < grandTotal) {
+      if (activeOrder.paymentMode === 'cash' && amountPaid < checkoutTotal) {
         throw new ApiError('Tiền khách đưa chưa đủ để thanh toán.', 400)
       }
       if (activeOrder.customerMode === 'member' && !activeOrder.customerId) {
@@ -2169,11 +2187,8 @@ export function Pos() {
       if (serviceFeeValue > 0 && activeOrder.serviceFeeMode === 'separate') {
         noteParts.push(`Phí dịch vụ: ${formatCurrency(serviceFeeValue)} (mục riêng)`)
       }
-      const debtAmount = Math.max(0, grandTotal - amountPaid)
-      const paymentChangeRaw = Math.max(0, amountPaid - grandTotal)
-      const paymentChange = shouldRoundCashChange
-        ? roundCashTotalByStep(paymentChangeRaw, cashRoundingUnit)
-        : paymentChangeRaw
+      const debtAmount = Math.max(0, checkoutTotal - amountPaid)
+      const paymentChange = Math.max(0, amountPaid - checkoutTotal)
       if (debtAmount > 0) {
         noteParts.push(`Cong no: ${formatCurrency(debtAmount)}`)
       }
@@ -2198,6 +2213,7 @@ export function Pos() {
         payment_method: checkoutPaymentMethod,
         service_fee_amount: serviceFeeValue,
         service_fee_mode: activeOrder.serviceFeeMode,
+        rounding_adjustment_amount: roundingAdjustmentAmount,
         amount_paid: amountPaid,
         note: noteParts.join(' | ') || null,
         items: lines.map((line) => ({
@@ -2258,13 +2274,15 @@ export function Pos() {
         customerName: activeOrder.customerName.trim() || 'Khach vang lai',
         customerPhone: activeOrder.customerPhone.trim(),
         note: activeOrder.note.trim(),
-        paymentMethod: debtAmount > 0 ? 'Mua no' : (options?.paymentLabel ?? 'Tien mat'),
+        paymentMethod: invoice.payment_method === 'debt' ? 'Mua no' : (options?.paymentLabel ?? 'Tien mat'),
         amountPaid,
         changeAmount: paymentChange,
         debtAmount,
+        roundingAdjustmentAmount:
+          Number(invoice.rounding_adjustment_amount ?? roundingAdjustmentAmount) || roundingAdjustmentAmount,
         medicineTotal,
         serviceFee: serviceFeeValue,
-        grandTotal,
+        grandTotal: Number(invoice.total_amount ?? checkoutTotal) || checkoutTotal,
         serviceFeeMode: activeOrder.serviceFeeMode,
         returnPolicyText,
         lines: previewLines,
@@ -2290,7 +2308,7 @@ export function Pos() {
       }))
 
       setActionMessage(
-        `Thanh toan thanh cong ${invoice.code}. Thanh tien: ${formatCurrency(grandTotal)}. Tien thua: ${formatCurrency(paymentChange)}.`,
+        `Thanh toan thanh cong ${invoice.code}. Thanh tien: ${formatCurrency(Number(invoice.total_amount ?? checkoutTotal) || checkoutTotal)}. Tien thua: ${formatCurrency(paymentChange)}.`,
       )
       return true
     } catch (error) {
@@ -2907,9 +2925,15 @@ export function Pos() {
                   <span>Phi dich vu</span>
                   <span className="font-semibold text-ink-900">{formatCurrency(serviceFee)}</span>
                 </div>
+                {activeOrder.paymentMode === 'cash' && cashRoundingAdjustmentAmount !== 0 ? (
+                  <div className="flex items-center justify-between py-1">
+                    <span>Làm tròn tiền mặt</span>
+                    <span className="font-semibold text-ink-900">{formatCurrency(cashRoundingAdjustmentAmount)}</span>
+                  </div>
+                ) : null}
                 <div className="mt-2 flex items-center justify-between border-t border-ink-900/10 pt-2">
                   <span className="font-semibold">Thanh tien</span>
-                  <span className="text-lg font-semibold text-ink-900">{formatCurrency(grandTotal)}</span>
+                  <span className="text-lg font-semibold text-ink-900">{formatCurrency(displayGrandTotal)}</span>
                 </div>
               </div>
 
@@ -2966,7 +2990,11 @@ export function Pos() {
                 disabled={checkingOut || !activeOrder.items.length || (activeOrder.paymentMode === 'cash' && changeAmount < 0)}
                 className="w-full rounded-2xl bg-ink-900 px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
               >
-                {checkingOut ? 'Đang thanh toán...' : 'Thanh toán tiền mặt'}
+                {checkingOut
+                  ? 'Đang thanh toán...'
+                  : activeOrder.paymentMode === 'debt'
+                    ? 'Chốt mua nợ'
+                    : 'Thanh toán tiền mặt'}
               </button>
               <button
                 type="button"
@@ -3145,6 +3173,12 @@ export function Pos() {
                   <div className="flex items-center justify-between">
                     <span>Phí dịch vụ</span>
                     <span className="font-semibold text-ink-900">{formatCurrency(invoicePreview.serviceFee)}</span>
+                  </div>
+                ) : null}
+                {invoicePreview.roundingAdjustmentAmount !== 0 ? (
+                  <div className="flex items-center justify-between">
+                    <span>Làm tròn tiền mặt</span>
+                    <span className="font-semibold text-ink-900">{formatCurrency(invoicePreview.roundingAdjustmentAmount)}</span>
                   </div>
                 ) : null}
                 <div className="flex items-center justify-between border-t border-ink-900/10 pt-2">

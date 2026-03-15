@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_valid
 
 T = TypeVar("T")
 
-PaymentMethodCode = Literal["cash", "card", "transfer", "momo", "zalopay", "vnpay", "mixed"]
+PaymentMethodCode = Literal["cash", "card", "transfer", "momo", "zalopay", "vnpay", "mixed", "debt"]
 InvoiceStatus = Literal["pending", "completed", "cancelled", "returned"]
 ReturnStatus = Literal["pending", "completed", "rejected"]
 HeldOrderStatus = Literal["active", "resumed", "expired", "cancelled"]
@@ -24,6 +24,7 @@ MONEY_FIELD_NAMES = (
     "change_amount",
     "subtotal",
     "total_amount",
+    "rounding_adjustment_amount",
     "tier_discount",
     "promotion_discount",
     "points_discount",
@@ -152,6 +153,7 @@ class InvoiceCreateRequest(MoneyInputModel):
     payment_method: str | None = Field(default="cash", max_length=20)
     service_fee_amount: Decimal = Field(default=Decimal("0.00"), ge=0)
     service_fee_mode: ServiceFeeMode = "split"
+    rounding_adjustment_amount: Decimal = Field(default=Decimal("0.00"))
     amount_paid: Decimal | None = Field(default=None, ge=0)
     payments: list[InvoiceCheckoutPaymentRequest] | None = None
     note: str | None = None
@@ -248,6 +250,7 @@ class InvoiceResponse(MoneyOutputModel):
     promotion_discount: Decimal
     points_discount: Decimal
     total_amount: Decimal
+    rounding_adjustment_amount: Decimal
     points_used: int
     points_earned: int
     promotion_id: UUID | None
@@ -281,6 +284,7 @@ class InvoiceListItemResponse(MoneyOutputModel):
     customer_name: str | None
     customer_phone: str | None
     total_amount: Decimal
+    rounding_adjustment_amount: Decimal
     amount_paid: Decimal
     payment_method: str
     service_fee_amount: Decimal
@@ -296,6 +300,7 @@ class PublicInvoiceListItemResponse(MoneyOutputModel):
     customer_name: str | None
     customer_phone: str | None
     total_amount: Decimal
+    rounding_adjustment_amount: Decimal
     amount_paid: Decimal
     payment_method: str
     service_fee_amount: Decimal
@@ -345,6 +350,7 @@ class PublicInvoiceResponse(MoneyOutputModel):
     promotion_discount: Decimal
     points_discount: Decimal
     total_amount: Decimal
+    rounding_adjustment_amount: Decimal
     points_used: int
     points_earned: int
     promotion_code: str | None
