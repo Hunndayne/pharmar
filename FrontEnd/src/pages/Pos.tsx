@@ -277,12 +277,17 @@ const normalizeSearchText = (value: string) =>
   value
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^0-9a-zA-Z]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase()
 
+const buildDrugSearchLabel = (drug: Pick<PosDrug, 'code' | 'name'>) => `${drug.code} - ${drug.name}`
+const buildDrugSearchHaystack = (drug: Pick<PosDrug, 'code' | 'name' | 'group'>) =>
+  normalizeSearchText([drug.code, drug.name, drug.group].join(' '))
+
 const extractDrugSearchNeedles = (raw: string) => {
-  const normalized = normalizeSearchText(raw.replace(/\s*-\s*/g, ' '))
+  const normalized = normalizeSearchText(raw)
   if (!normalized) return [] as string[]
 
   const needles = new Set<string>([normalized])
@@ -727,7 +732,7 @@ export function Pos() {
     if (!needles.length) return searchableDrugs
 
     return searchableDrugs.filter((drug) => {
-      const haystack = normalizeSearchText([drug.code, drug.name, drug.group].join(' '))
+      const haystack = buildDrugSearchHaystack(drug)
       const code = normalizeSearchText(drug.code)
       const name = normalizeSearchText(drug.name)
       return needles.some((needle) => {
@@ -753,8 +758,36 @@ export function Pos() {
     return map
   }, [drugs])
 
+  const findDrugByExactSearch = useCallback(
+    (raw: string) => {
+      const normalized = normalizeSearchText(raw)
+      if (!normalized) return null
+
+      const codeMatches = normalized.match(/\b[a-z]{1,4}\d{3,}\b/g) ?? []
+      for (const matchedCode of codeMatches) {
+        const matchedDrug = searchableDrugs.find(
+          (drug) => normalizeSearchText(drug.code) === matchedCode,
+        )
+        if (matchedDrug) return matchedDrug
+      }
+
+      return (
+        searchableDrugs.find((drug) => {
+          const code = normalizeSearchText(drug.code)
+          const name = normalizeSearchText(drug.name)
+          const label = normalizeSearchText(buildDrugSearchLabel(drug))
+          return code === normalized || name === normalized || label === normalized
+        }) ?? null
+      )
+    },
+    [searchableDrugs],
+  )
+
   const resolveDrugFromSearch = useCallback(
     (raw: string) => {
+      const exactDrug = findDrugByExactSearch(raw)
+      if (exactDrug) return exactDrug
+
       const needles = extractDrugSearchNeedles(raw)
       if (!needles.length) return null
       const primary = needles[0]
@@ -762,11 +795,11 @@ export function Pos() {
         searchableDrugs.find((drug) => {
           const code = normalizeSearchText(drug.code)
           const name = normalizeSearchText(drug.name)
-          const codeName = `${code} ${name}`
-          return code === primary || name === primary || codeName === primary
+          const label = normalizeSearchText(buildDrugSearchLabel(drug))
+          return code === primary || name === primary || label === primary
         }) ??
         searchableDrugs.find((drug) => {
-          const haystack = normalizeSearchText([drug.code, drug.name, drug.group].join(' '))
+          const haystack = buildDrugSearchHaystack(drug)
           const code = normalizeSearchText(drug.code)
           const name = normalizeSearchText(drug.name)
           return needles.some((needle) => haystack.includes(needle) || needle.includes(code) || needle.includes(name))
@@ -774,7 +807,7 @@ export function Pos() {
         null
       )
     },
-    [searchableDrugs],
+    [findDrugByExactSearch, searchableDrugs],
   )
 
   useEffect(() => {
@@ -784,13 +817,23 @@ export function Pos() {
   }, [orders, activeOrderId])
 
   useEffect(() => {
+    const exactDrug = findDrugByExactSearch(drugSearch)
+    if (exactDrug) {
+      if (selectedDrugId !== exactDrug.id) {
+        setSelectedDrugId(exactDrug.id)
+      }
+      return
+    }
+
     if (!filteredDrugs.length) {
-      setSelectedDrugId('')
+      if (selectedDrugId) {
+        setSelectedDrugId('')
+      }
       return
     }
     if (selectedDrugId && filteredDrugs.some((drug) => drug.id === selectedDrugId)) return
     setSelectedDrugId(filteredDrugs[0].id)
-  }, [filteredDrugs, selectedDrugId])
+  }, [drugSearch, filteredDrugs, findDrugByExactSearch, selectedDrugId])
 
   useEffect(() => {
     if (!selectedDrug) {
@@ -2608,26 +2651,29 @@ export function Pos() {
                   const nextValue = event.target.value
                   setDrugSearch(nextValue)
 
-                  const pickedDrug = resolveDrugFromSearch(nextValue)
+                  const pickedDrug = findDrugByExactSearch(nextValue)
                   if (pickedDrug) setSelectedDrugId(pickedDrug.id)
                 }}
                 onBlur={() => {
-                  const pickedDrug = resolveDrugFromSearch(drugSearch)
+                  const pickedDrug = findDrugByExactSearch(drugSearch) ?? resolveDrugFromSearch(drugSearch)
                   if (!pickedDrug) return
 
                   setSelectedDrugId(pickedDrug.id)
-                  setDrugSearch(`${pickedDrug.code} - ${pickedDrug.name}`)
+                  setDrugSearch(buildDrugSearchLabel(pickedDrug))
                 }}
                 onKeyDown={(event) => {
                   if (event.key !== 'Enter') return
                   event.preventDefault()
 
                   const pickedDrug =
-                    resolveDrugFromSearch(drugSearch) ?? filteredDrugs[0] ?? null
+                    findDrugByExactSearch(drugSearch) ??
+                    resolveDrugFromSearch(drugSearch) ??
+                    filteredDrugs[0] ??
+                    null
                   if (!pickedDrug) return
 
                   setSelectedDrugId(pickedDrug.id)
-                  setDrugSearch(`${pickedDrug.code} - ${pickedDrug.name}`)
+                  setDrugSearch(buildDrugSearchLabel(pickedDrug))
                 }}
                 list="pos-drug-suggestions"
                 className="w-full min-w-0 rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
