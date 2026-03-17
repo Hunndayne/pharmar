@@ -59,6 +59,7 @@ from Source.schemas.sale import (
 
 
 settings = get_settings()
+MIN_DEBT_AMOUNT_AFTER_ROUNDING = Decimal("500.00")
 
 router = APIRouter(prefix="/sale", tags=["sale-invoices"])
 
@@ -75,6 +76,22 @@ def _decimal_to_float(value: Decimal | None) -> float:
     if value is None:
         return 0.0
     return float(value)
+
+
+def _apply_minimum_debt_threshold(
+    total_amount: Decimal,
+    amount_paid: Decimal,
+    rounding_adjustment_amount: Decimal,
+) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    debt_amount = _normalize_decimal(max(total_amount - amount_paid, Decimal("0.00")))
+    if Decimal("0.00") < debt_amount <= MIN_DEBT_AMOUNT_AFTER_ROUNDING:
+        # Absorb tiny residual balances into the rounding adjustment to avoid meaningless debt.
+        rounding_adjustment_amount = _normalize_decimal(rounding_adjustment_amount - debt_amount)
+        total_amount = _normalize_decimal(total_amount - debt_amount)
+        debt_amount = Decimal("0.00")
+
+    change_amount = _normalize_decimal(max(amount_paid - total_amount, Decimal("0.00")))
+    return total_amount, rounding_adjustment_amount, debt_amount, change_amount
 
 
 def _invoice_event_payload(invoice: Invoice) -> dict[str, Any]:
@@ -299,8 +316,11 @@ async def _prepare_invoice_creation(
         )
         payment_method = single_method
 
-    debt_amount = _normalize_decimal(max(total_amount - amount_paid, Decimal("0.00")))
-    change_amount = _normalize_decimal(max(amount_paid - total_amount, Decimal("0.00")))
+    total_amount, rounding_adjustment_amount, debt_amount, change_amount = _apply_minimum_debt_threshold(
+        total_amount,
+        amount_paid,
+        rounding_adjustment_amount,
+    )
     effective_payment_method = "debt" if debt_amount > Decimal("0.00") else payment_method
 
     points_earned = 0

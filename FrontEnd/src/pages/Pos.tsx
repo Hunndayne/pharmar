@@ -188,6 +188,8 @@ type CheckoutOptions = {
   noteSuffix?: string
 }
 
+const MIN_DEBT_AMOUNT_AFTER_ROUNDING = 500
+
 const formatCurrency = (value: number) =>
   `${Math.round(Number.isFinite(value) ? value : 0).toLocaleString('vi-VN')}đ`
 
@@ -202,6 +204,25 @@ const roundCashTotalByStep = (amount: number, step: number) => {
   const safeAmount = Math.max(0, amount)
   const safeStep = Math.max(1, Math.floor(step))
   return Math.round(safeAmount / safeStep) * safeStep
+}
+
+const applyMinimumDebtThreshold = (
+  totalAmount: number,
+  amountPaid: number,
+  roundingAdjustmentAmount: number,
+) => {
+  const rawDebtAmount = Math.max(0, totalAmount - amountPaid)
+  const absorbedDebtAmount =
+    rawDebtAmount > 0 && rawDebtAmount <= MIN_DEBT_AMOUNT_AFTER_ROUNDING ? rawDebtAmount : 0
+  const adjustedTotalAmount = Math.max(0, totalAmount - absorbedDebtAmount)
+
+  return {
+    totalAmount: adjustedTotalAmount,
+    debtAmount: Math.max(0, adjustedTotalAmount - amountPaid),
+    changeAmount: Math.max(0, amountPaid - adjustedTotalAmount),
+    roundingAdjustmentAmount: roundingAdjustmentAmount - absorbedDebtAmount,
+    absorbedDebtAmount,
+  }
 }
 
 const parsePositiveInt = (value: string, fallback = 0) => {
@@ -1161,7 +1182,7 @@ export function Pos() {
               }
               ${
                 preview.roundingAdjustmentAmount !== 0
-                  ? `<div class="summary-row"><span>Làm tròn tiền mặt</span><strong>${formatCurrency(preview.roundingAdjustmentAmount)}</strong></div>`
+                  ? `<div class="summary-row"><span>Điều chỉnh làm tròn</span><strong>${formatCurrency(preview.roundingAdjustmentAmount)}</strong></div>`
                   : ''
               }
               <div class="summary-row total"><span>Tổng thanh toán</span><strong>${formatCurrency(preview.grandTotal)}</strong></div>
@@ -1932,13 +1953,24 @@ export function Pos() {
     if (activeOrder?.paymentMode !== 'cash' || !cashRoundingEnabled) return 0
     return roundedCashGrandTotal - grandTotal
   }, [activeOrder?.paymentMode, cashRoundingEnabled, grandTotal, roundedCashGrandTotal])
-  const displayGrandTotal = activeOrder?.paymentMode === 'cash' ? roundedCashGrandTotal : grandTotal
+  const baseDisplayGrandTotal = activeOrder?.paymentMode === 'cash' ? roundedCashGrandTotal : grandTotal
+  const paymentSummary = useMemo(
+    () =>
+      applyMinimumDebtThreshold(
+        baseDisplayGrandTotal,
+        cashReceived,
+        activeOrder?.paymentMode === 'cash' ? cashRoundingAdjustmentAmount : 0,
+      ),
+    [activeOrder?.paymentMode, baseDisplayGrandTotal, cashReceived, cashRoundingAdjustmentAmount],
+  )
+  const displayGrandTotal = paymentSummary.totalAmount
+  const displayRoundingAdjustmentAmount = paymentSummary.roundingAdjustmentAmount
   const changeAmount = cashReceived - displayGrandTotal
-  const outstandingAmount = Math.max(0, displayGrandTotal - cashReceived)
+  const outstandingAmount = paymentSummary.debtAmount
   const roundedCashChangeAmount = useMemo(() => {
     if (activeOrder?.paymentMode !== 'cash') return 0
-    return Math.max(0, changeAmount)
-  }, [activeOrder?.paymentMode, changeAmount])
+    return paymentSummary.changeAmount
+  }, [activeOrder?.paymentMode, paymentSummary.changeAmount])
 
   const customerDisplayPayload = useMemo<CustomerDisplayPayload>(() => {
     const lines = activeOrderLineDetails.map((row) => ({
@@ -2173,9 +2205,18 @@ export function Pos() {
       const checkoutTotal = shouldRoundCashTotal
         ? roundCashTotalByStep(grandTotal, cashRoundingUnit)
         : grandTotal
-      const roundingAdjustmentAmount = shouldRoundCashTotal ? checkoutTotal - grandTotal : 0
+      const baseRoundingAdjustmentAmount = shouldRoundCashTotal ? checkoutTotal - grandTotal : 0
       const amountPaid = options?.amountPaid ?? parseNonNegativeNumber(activeOrder.cashReceived)
-      if (activeOrder.paymentMode === 'cash' && amountPaid < checkoutTotal) {
+      const paymentSummary = applyMinimumDebtThreshold(
+        checkoutTotal,
+        amountPaid,
+        baseRoundingAdjustmentAmount,
+      )
+      const effectiveCheckoutTotal = paymentSummary.totalAmount
+      const roundingAdjustmentAmount = paymentSummary.roundingAdjustmentAmount
+      const debtAmount = paymentSummary.debtAmount
+
+      if (activeOrder.paymentMode === 'cash' && amountPaid < effectiveCheckoutTotal) {
         throw new ApiError('Tiền khách đưa chưa đủ để thanh toán.', 400)
       }
       if (activeOrder.customerMode === 'member' && !activeOrder.customerId) {
@@ -2187,8 +2228,6 @@ export function Pos() {
       if (serviceFeeValue > 0 && activeOrder.serviceFeeMode === 'separate') {
         noteParts.push(`Phí dịch vụ: ${formatCurrency(serviceFeeValue)} (mục riêng)`)
       }
-      const debtAmount = Math.max(0, checkoutTotal - amountPaid)
-      const paymentChange = Math.max(0, amountPaid - checkoutTotal)
       if (debtAmount > 0) {
         noteParts.push(`Cong no: ${formatCurrency(debtAmount)}`)
       }
@@ -2260,6 +2299,12 @@ export function Pos() {
         })
       }
 
+      const invoiceAmountPaid = Number(invoice.amount_paid ?? amountPaid) || amountPaid
+      const invoiceGrandTotal = Number(invoice.total_amount ?? effectiveCheckoutTotal) || effectiveCheckoutTotal
+      const invoiceChangeAmount =
+        Number(invoice.change_amount ?? Math.max(0, invoiceAmountPaid - invoiceGrandTotal)) ||
+        Math.max(0, invoiceAmountPaid - invoiceGrandTotal)
+      const invoiceDebtAmount = Math.max(0, invoiceGrandTotal - invoiceAmountPaid)
       const preview: InvoicePreview = {
         id: invoice.id,
         code: invoice.code,
@@ -2275,14 +2320,14 @@ export function Pos() {
         customerPhone: activeOrder.customerPhone.trim(),
         note: activeOrder.note.trim(),
         paymentMethod: invoice.payment_method === 'debt' ? 'Mua no' : (options?.paymentLabel ?? 'Tien mat'),
-        amountPaid,
-        changeAmount: paymentChange,
-        debtAmount,
+        amountPaid: invoiceAmountPaid,
+        changeAmount: invoiceChangeAmount,
+        debtAmount: invoiceDebtAmount,
         roundingAdjustmentAmount:
           Number(invoice.rounding_adjustment_amount ?? roundingAdjustmentAmount) || roundingAdjustmentAmount,
         medicineTotal,
         serviceFee: serviceFeeValue,
-        grandTotal: Number(invoice.total_amount ?? checkoutTotal) || checkoutTotal,
+        grandTotal: invoiceGrandTotal,
         serviceFeeMode: activeOrder.serviceFeeMode,
         returnPolicyText,
         lines: previewLines,
@@ -2308,7 +2353,7 @@ export function Pos() {
       }))
 
       setActionMessage(
-        `Thanh toan thanh cong ${invoice.code}. Thanh tien: ${formatCurrency(Number(invoice.total_amount ?? checkoutTotal) || checkoutTotal)}. Tien thua: ${formatCurrency(paymentChange)}.`,
+        `Thanh toan thanh cong ${invoice.code}. Thanh tien: ${formatCurrency(invoiceGrandTotal)}.${invoiceDebtAmount > 0 ? ` Con no: ${formatCurrency(invoiceDebtAmount)}.` : ` Tien thua: ${formatCurrency(invoiceChangeAmount)}.`}`,
       )
       return true
     } catch (error) {
@@ -2925,10 +2970,10 @@ export function Pos() {
                   <span>Phi dich vu</span>
                   <span className="font-semibold text-ink-900">{formatCurrency(serviceFee)}</span>
                 </div>
-                {activeOrder.paymentMode === 'cash' && cashRoundingAdjustmentAmount !== 0 ? (
+                {displayRoundingAdjustmentAmount !== 0 ? (
                   <div className="flex items-center justify-between py-1">
-                    <span>Làm tròn tiền mặt</span>
-                    <span className="font-semibold text-ink-900">{formatCurrency(cashRoundingAdjustmentAmount)}</span>
+                    <span>Điều chỉnh làm tròn</span>
+                    <span className="font-semibold text-ink-900">{formatCurrency(displayRoundingAdjustmentAmount)}</span>
                   </div>
                 ) : null}
                 <div className="mt-2 flex items-center justify-between border-t border-ink-900/10 pt-2">
@@ -3177,7 +3222,7 @@ export function Pos() {
                 ) : null}
                 {invoicePreview.roundingAdjustmentAmount !== 0 ? (
                   <div className="flex items-center justify-between">
-                    <span>Làm tròn tiền mặt</span>
+                    <span>Điều chỉnh làm tròn</span>
                     <span className="font-semibold text-ink-900">{formatCurrency(invoicePreview.roundingAdjustmentAmount)}</span>
                   </div>
                 ) : null}
