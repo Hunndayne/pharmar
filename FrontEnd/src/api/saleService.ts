@@ -30,6 +30,22 @@ export type SaleInvoiceCreatePayload = {
   note?: string | null
 }
 
+export type SalePaymentMethod = {
+  code: string
+  name: string
+  is_active: boolean
+  display_order: number
+  requires_reference: boolean
+  created_at: string
+}
+
+export type SaleInvoiceCollectPaymentPayload = {
+  amount: number
+  payment_method: string
+  reference_code?: string | null
+  note?: string | null
+}
+
 export type PageResponse<T> = {
   items: T[]
   total: number
@@ -414,6 +430,13 @@ const requestPublicSaleJson = async <T>(
 }
 
 export const saleApi = {
+  listPaymentMethods: (token: string) =>
+    requestSaleJson<SalePaymentMethod[]>(
+      '/sale/payment-methods',
+      token,
+      { method: 'GET' },
+    ),
+
   listInvoices: (token: string, params?: SaleInvoiceListParams) =>
     requestSaleJson<PageResponse<SaleInvoiceListItem>>('/sale/invoices', token, { method: 'GET' }, params),
 
@@ -441,6 +464,16 @@ export const saleApi = {
   createInvoice: (token: string, payload: SaleInvoiceCreatePayload) =>
     requestSaleJson<SaleInvoiceResponse>(
       '/sale/invoices',
+      token,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  collectInvoicePayment: (token: string, invoiceId: string, payload: SaleInvoiceCollectPaymentPayload) =>
+    requestSaleJson<SaleInvoiceResponse>(
+      `/sale/invoices/${encodeURIComponent(invoiceId)}/collect-payment`,
       token,
       {
         method: 'POST',

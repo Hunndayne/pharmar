@@ -372,6 +372,18 @@ class InvoiceCancelRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class InvoiceCollectPaymentRequest(MoneyInputModel):
+    amount: Decimal = Field(default=Decimal("0.00"), ge=0)
+    payment_method: str = Field(default="cash", min_length=1, max_length=20)
+    reference_code: str | None = Field(default=None, max_length=50)
+    note: str | None = None
+
+    @field_validator("payment_method")
+    @classmethod
+    def normalize_payment_method(cls, value: str) -> str:
+        return value.strip().lower()
+
+
 class HeldOrderItemRequest(MoneyInputModel):
     product_id: str = Field(min_length=1, max_length=64)
     product_code: str | None = Field(default=None, max_length=50)

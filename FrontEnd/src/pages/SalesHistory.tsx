@@ -4,6 +4,7 @@ import {
   type SaleInvoiceListItem,
   type SaleInvoicePrintData,
   type SaleInvoiceResponse,
+  type SalePaymentMethod,
 } from '../api/saleService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
@@ -29,6 +30,16 @@ type ReturnModalState = {
   refund_method: RefundMethod
   reason: string
   lines: ReturnLineForm[]
+}
+
+type DebtCollectModalState = {
+  invoice_id: string
+  invoice_code: string
+  debt_amount: number
+  amount: string
+  payment_method: string
+  reference_code: string
+  note: string
 }
 
 const pageSize = 10
@@ -249,6 +260,10 @@ export function SalesHistory() {
   const [returnModal, setReturnModal] = useState<ReturnModalState | null>(null)
   const [returnModalError, setReturnModalError] = useState<string | null>(null)
   const [submittingReturn, setSubmittingReturn] = useState(false)
+  const [paymentMethods, setPaymentMethods] = useState<SalePaymentMethod[]>([])
+  const [debtCollectModal, setDebtCollectModal] = useState<DebtCollectModalState | null>(null)
+  const [debtCollectModalError, setDebtCollectModalError] = useState<string | null>(null)
+  const [submittingDebtCollection, setSubmittingDebtCollection] = useState(false)
 
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -303,6 +318,30 @@ export function SalesHistory() {
   useEffect(() => {
     void loadRows()
   }, [loadRows])
+
+  useEffect(() => {
+    if (!accessToken) {
+      setPaymentMethods([])
+      return
+    }
+
+    let cancelled = false
+    void (async () => {
+      try {
+        const methods = await saleApi.listPaymentMethods(accessToken)
+        if (cancelled) return
+        setPaymentMethods(
+          methods.filter((item) => item.is_active && item.code !== 'mixed' && item.code !== 'debt'),
+        )
+      } catch {
+        if (!cancelled) setPaymentMethods([])
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [accessToken])
 
   const summary = useMemo(() => {
     const completedOnPage = rows.filter((item) => item.status === 'completed').length
@@ -476,6 +515,39 @@ export function SalesHistory() {
     }
   }
 
+  const handleOpenDebtCollection = async (item: SaleInvoiceListItem) => {
+    if (!accessToken) return
+
+    setError(null)
+    setNotice(null)
+    setDebtCollectModalError(null)
+
+    try {
+      const detail = detailsById[item.id] ?? (await ensureInvoiceDetail(item.id))
+      const debtAmount = detail
+        ? debtAmountOfInvoice(detail.total_amount, detail.amount_paid)
+        : debtAmountOfInvoice(item.total_amount, item.amount_paid)
+
+      if (debtAmount <= 0) {
+        setNotice(`Hóa đơn ${item.code} không còn công nợ.`)
+        return
+      }
+
+      setDebtCollectModal({
+        invoice_id: item.id,
+        invoice_code: item.code,
+        debt_amount: debtAmount,
+        amount: debtAmount <= 500 ? '0' : String(debtAmount),
+        payment_method: paymentMethods[0]?.code || 'cash',
+        reference_code: '',
+        note: '',
+      })
+    } catch (collectError) {
+      if (collectError instanceof ApiError) setError(collectError.message)
+      else setError('Không thể mở form thu nợ.')
+    }
+  }
+
   const updateReturnLine = (
     invoiceItemId: string,
     updater: (line: ReturnLineForm) => ReturnLineForm,
@@ -489,6 +561,51 @@ export function SalesHistory() {
         ),
       }
     })
+  }
+
+  const submitDebtCollection = async () => {
+    if (!accessToken || !debtCollectModal) return
+
+    const selectedMethod = paymentMethods.find((item) => item.code === debtCollectModal.payment_method)
+    if (!selectedMethod) {
+      setDebtCollectModalError('Phương thức thanh toán không hợp lệ.')
+      return
+    }
+
+    if (selectedMethod.requires_reference && !debtCollectModal.reference_code.trim()) {
+      setDebtCollectModalError('Phương thức này cần mã tham chiếu.')
+      return
+    }
+
+    setSubmittingDebtCollection(true)
+    setDebtCollectModalError(null)
+    setError(null)
+    setNotice(null)
+
+    try {
+      const invoice = await saleApi.collectInvoicePayment(accessToken, debtCollectModal.invoice_id, {
+        amount: Math.max(0, toNumber(debtCollectModal.amount)),
+        payment_method: debtCollectModal.payment_method,
+        reference_code: debtCollectModal.reference_code.trim() || null,
+        note: debtCollectModal.note.trim() || null,
+      })
+
+      setDetailsById((prev) => ({ ...prev, [invoice.id]: invoice }))
+      await loadRows()
+
+      const remainingDebt = debtAmountOfInvoice(invoice.total_amount, invoice.amount_paid)
+      setNotice(
+        remainingDebt > 0
+          ? `Đã thu thêm cho hóa đơn ${invoice.code}. Còn nợ ${formatCurrency(remainingDebt)}.`
+          : `Đã chốt công nợ hóa đơn ${invoice.code}.`,
+      )
+      setDebtCollectModal(null)
+    } catch (collectError) {
+      if (collectError instanceof ApiError) setDebtCollectModalError(collectError.message)
+      else setDebtCollectModalError('Không thể thu nợ cho hóa đơn này.')
+    } finally {
+      setSubmittingDebtCollection(false)
+    }
   }
 
   const submitReturn = async () => {
@@ -585,6 +702,9 @@ export function SalesHistory() {
 
   const showingFrom = rows.length === 0 ? 0 : (page - 1) * pageSize + 1
   const showingTo = Math.min(page * pageSize, total)
+  const selectedDebtCollectMethod = debtCollectModal
+    ? paymentMethods.find((item) => item.code === debtCollectModal.payment_method)
+    : null
 
   return (
     <div className="space-y-6">
@@ -749,6 +869,17 @@ export function SalesHistory() {
                       >
                         {printingId === item.id ? 'Đang in...' : 'In hóa đơn'}
                       </button>
+
+                      {item.status === 'completed' && debtAmountOfInvoice(item.total_amount, item.amount_paid) > 0 ? (
+                        <button
+                          type="button"
+                          disabled={submittingDebtCollection}
+                          onClick={() => void handleOpenDebtCollection(item)}
+                          className="rounded-full border border-brand-500/30 bg-brand-500/10 px-3 py-1 text-xs font-semibold text-brand-600 disabled:opacity-60"
+                        >
+                          Thu nợ
+                        </button>
+                      ) : null}
 
                       {(item.status === 'completed' || item.status === 'returned') ? (
                         <button
@@ -950,6 +1081,55 @@ export function SalesHistory() {
                                       </div>
                                     </div>
 
+                                    <div className="rounded-2xl border border-ink-900/10 bg-white p-4 text-sm text-ink-700">
+                                      <div className="flex items-center justify-between gap-3">
+                                        <p className="text-xs uppercase tracking-[0.25em] text-ink-600">Lịch sử thanh toán</p>
+                                        {debtAmountOfInvoice(detail.total_amount, detail.amount_paid) > 0 ? (
+                                          <button
+                                            type="button"
+                                            disabled={submittingDebtCollection}
+                                            onClick={() => void handleOpenDebtCollection(item)}
+                                            className="rounded-full border border-brand-500/30 bg-brand-500/10 px-3 py-1 text-xs font-semibold text-brand-600 disabled:opacity-60"
+                                          >
+                                            Thu nợ
+                                          </button>
+                                        ) : null}
+                                      </div>
+
+                                      <div className="mt-3 overflow-x-auto">
+                                        <table className="w-full min-w-[720px] text-left text-sm">
+                                          <thead className="bg-fog-50 text-xs uppercase tracking-[0.18em] text-ink-600">
+                                            <tr>
+                                              <th className="px-4 py-3">Thời gian</th>
+                                              <th className="px-4 py-3">Phương thức</th>
+                                              <th className="px-4 py-3">Số tiền</th>
+                                              <th className="px-4 py-3">Mã tham chiếu</th>
+                                              <th className="px-4 py-3">Ghi chú</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-ink-900/5">
+                                            {detail.payments.length === 0 ? (
+                                              <tr>
+                                                <td className="px-4 py-4 text-ink-600" colSpan={5}>
+                                                  Chưa có bản ghi thanh toán.
+                                                </td>
+                                              </tr>
+                                            ) : null}
+
+                                            {detail.payments.map((payment) => (
+                                              <tr key={payment.id}>
+                                                <td className="px-4 py-3 text-ink-700">{formatDateTime(payment.created_at)}</td>
+                                                <td className="px-4 py-3 text-ink-700">{getPaymentMethodLabel(payment.payment_method)}</td>
+                                                <td className="px-4 py-3 font-semibold text-ink-900">{formatCurrency(payment.amount)}</td>
+                                                <td className="px-4 py-3 text-ink-700">{payment.reference_code || '-'}</td>
+                                                <td className="px-4 py-3 text-ink-700">{payment.note || '-'}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    </div>
+
                                     <div className="overflow-x-auto rounded-2xl border border-ink-900/10 bg-white">
                                       <table className="w-full min-w-[820px] text-left text-sm">
                                         <thead className="bg-fog-50 text-xs uppercase tracking-[0.18em] text-ink-600">
@@ -1028,6 +1208,143 @@ export function SalesHistory() {
           </button>
         </div>
       </section>
+
+      {debtCollectModal ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4">
+          <div className="flex w-full max-w-2xl max-h-[90vh] flex-col overflow-hidden rounded-3xl bg-white shadow-lift">
+            <div className="flex items-center justify-between border-b border-ink-900/10 px-6 py-5">
+              <div>
+                <p className="text-xs uppercase tracking-[0.3em] text-ink-600">Thu nợ</p>
+                <h3 className="mt-2 text-xl font-semibold text-ink-900">Hóa đơn {debtCollectModal.invoice_code}</h3>
+              </div>
+              <button
+                type="button"
+                disabled={submittingDebtCollection}
+                onClick={() => {
+                  setDebtCollectModal(null)
+                  setDebtCollectModalError(null)
+                }}
+                className="rounded-full border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
+              >
+                Đóng
+              </button>
+            </div>
+
+            <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
+              <div className="rounded-2xl border border-brand-500/20 bg-brand-500/5 p-4 text-sm text-ink-700">
+                <p>
+                  <span className="font-semibold text-ink-900">Công nợ hiện tại:</span> {formatCurrency(debtCollectModal.debt_amount)}
+                </p>
+                {debtCollectModal.debt_amount <= 500 ? (
+                  <p className="mt-2 text-xs text-ink-600">
+                    Công nợ nhỏ hơn hoặc bằng 500đ có thể để số thu bằng 0. Hệ thống sẽ tự điều chỉnh làm tròn để chốt nợ.
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Số tiền thu</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={Math.round(debtCollectModal.debt_amount)}
+                    value={debtCollectModal.amount}
+                    onChange={(event) =>
+                      setDebtCollectModal((prev) =>
+                        prev ? { ...prev, amount: event.target.value } : prev,
+                      )
+                    }
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    placeholder="0"
+                  />
+                </label>
+
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Phương thức thanh toán</span>
+                  <select
+                    value={debtCollectModal.payment_method}
+                    onChange={(event) =>
+                      setDebtCollectModal((prev) =>
+                        prev ? { ...prev, payment_method: event.target.value } : prev,
+                      )
+                    }
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  >
+                    {paymentMethods.map((method) => (
+                      <option key={method.code} value={method.code}>
+                        {getPaymentMethodLabel(method.code)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              {selectedDebtCollectMethod?.requires_reference ? (
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Mã tham chiếu</span>
+                  <input
+                    value={debtCollectModal.reference_code}
+                    onChange={(event) =>
+                      setDebtCollectModal((prev) =>
+                        prev ? { ...prev, reference_code: event.target.value } : prev,
+                      )
+                    }
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    placeholder="Nhập mã giao dịch/chuyển khoản"
+                  />
+                </label>
+              ) : null}
+
+              <label className="space-y-2 text-sm text-ink-700">
+                <span>Ghi chú</span>
+                <textarea
+                  value={debtCollectModal.note}
+                  onChange={(event) =>
+                    setDebtCollectModal((prev) =>
+                      prev ? { ...prev, note: event.target.value } : prev,
+                    )
+                  }
+                  rows={3}
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  placeholder="Ghi chú thu nợ (không bắt buộc)"
+                />
+              </label>
+
+              {debtCollectModalError ? (
+                <p className="text-sm text-coral-500">{debtCollectModalError}</p>
+              ) : null}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ink-900/10 px-6 py-4">
+              <p className="text-sm text-ink-600">
+                Số thu tối đa: {formatCurrency(debtCollectModal.debt_amount)}
+              </p>
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  disabled={submittingDebtCollection}
+                  onClick={() => {
+                    setDebtCollectModal(null)
+                    setDebtCollectModalError(null)
+                  }}
+                  className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="button"
+                  disabled={submittingDebtCollection}
+                  onClick={() => void submitDebtCollection()}
+                  className="rounded-full bg-brand-500 px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                >
+                  {submittingDebtCollection ? 'Đang xử lý...' : 'Xác nhận thu nợ'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {returnModal ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4">

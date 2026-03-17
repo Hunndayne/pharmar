@@ -47,6 +47,7 @@ from Source.sale import (
 )
 from Source.schemas.sale import (
     InvoiceCancelRequest,
+    InvoiceCollectPaymentRequest,
     InvoiceCreateRequest,
     InvoiceListItemResponse,
     InvoicePrintResponse,
@@ -610,6 +611,84 @@ async def create_invoice(
         payload=_invoice_event_payload(invoice),
     )
     return InvoiceResponse.model_validate(invoice)
+
+
+@router.post("/invoices/{invoice_id}/collect-payment", response_model=InvoiceResponse)
+async def collect_invoice_payment(
+    invoice_id: UUID,
+    payload: InvoiceCollectPaymentRequest,
+    current_user: AnyUser,
+    db: DbSession,
+) -> InvoiceResponse:
+    invoice = await _get_invoice_with_details(invoice_id, db)
+    if invoice.status != "completed":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only completed invoices can collect debt payments")
+
+    outstanding_before = _normalize_decimal(max(invoice.total_amount - invoice.amount_paid, Decimal("0.00")))
+    if outstanding_before <= Decimal("0.00"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invoice does not have outstanding debt")
+
+    payment_method = payload.payment_method.strip().lower()
+    if payment_method in {"mixed", "debt"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Payment method is not valid for debt collection")
+
+    payment_methods = await list_active_payment_methods_map(db)
+    payment_method_item = payment_methods.get(payment_method)
+    if payment_method_item is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Payment method '{payment_method}' is not available")
+    if payment_method_item.requires_reference and not payload.reference_code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Payment method '{payment_method}' requires reference_code",
+        )
+
+    collect_amount = _normalize_decimal(payload.amount or Decimal("0.00"))
+    if outstanding_before > MIN_DEBT_AMOUNT_AFTER_ROUNDING and collect_amount <= Decimal("0.00"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Collection amount must be greater than 0")
+    if collect_amount > outstanding_before:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Collection amount cannot exceed outstanding debt")
+
+    if collect_amount > Decimal("0.00"):
+        invoice.amount_paid = _normalize_decimal(invoice.amount_paid + collect_amount)
+        db.add(
+            InvoicePayment(
+                invoice_id=invoice.id,
+                payment_method=payment_method,
+                amount=collect_amount,
+                reference_code=payload.reference_code,
+                note=payload.note,
+            )
+        )
+
+    invoice.total_amount, invoice.rounding_adjustment_amount, debt_amount, invoice.change_amount = _apply_minimum_debt_threshold(
+        invoice.total_amount,
+        invoice.amount_paid,
+        invoice.rounding_adjustment_amount,
+    )
+    if outstanding_before > Decimal("0.00") or invoice.payment_method == "debt":
+        invoice.payment_method = "debt"
+    elif debt_amount <= Decimal("0.00"):
+        invoice.payment_method = payment_method
+
+    await db.commit()
+
+    refreshed = await _get_invoice_with_details(invoice.id, db)
+
+    await publish_sale_event(
+        event_type="sale.invoice.payment_collected",
+        routing_key="sale.invoice.payment_collected",
+        payload={
+            **_invoice_event_payload(refreshed),
+            "collected_amount": _decimal_to_float(collect_amount),
+            "collected_method": payment_method,
+            "collected_by": current_user.sub,
+            "outstanding_before": _decimal_to_float(outstanding_before),
+            "outstanding_after": _decimal_to_float(max(refreshed.total_amount - refreshed.amount_paid, Decimal("0.00"))),
+            "collection_note": payload.note,
+        },
+    )
+
+    return InvoiceResponse.model_validate(refreshed)
 
 
 @router.get("/reports/profit-source", response_model=PageResponse[ProfitSourceInvoiceResponse])
