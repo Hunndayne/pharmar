@@ -226,8 +226,6 @@
         condition: service_completed_successfully
       inventory-service:
         condition: service_started
-      sale-service:
-        condition: service_started
     restart: unless-stopped
 
   customer-service:
