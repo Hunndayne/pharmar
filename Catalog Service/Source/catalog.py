@@ -1,5 +1,6 @@
 from decimal import Decimal, ROUND_HALF_UP
 import json
+import logging
 from math import ceil
 from typing import Any
 from uuid import UUID
@@ -25,12 +26,21 @@ from .schemas.catalog import (
     ProductGroupRef,
     ProductListItemResponse,
     ProductManufacturerRef,
+    ProductUnitRole,
     ProductUnitResponse,
     SupplierDebtHistoryResponse,
+    UnitConfigStatus,
 )
 
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
+UNIT_ROLE_ORDER: dict[str, int] = {
+    "import": 0,
+    "intermediate": 1,
+    "retail": 2,
+}
+KNOWN_UNIT_ROLES = tuple(UNIT_ROLE_ORDER.keys())
 
 
 def normalize_optional_string(value: str | None) -> str | None:
@@ -172,22 +182,213 @@ async def get_product_unit_or_404(product_id: UUID, unit_id: UUID, db: AsyncSess
     return item
 
 
-def to_product_unit_response(unit: ProductUnit) -> ProductUnitResponse:
-    return ProductUnitResponse.model_validate(unit)
+def normalize_unit_role(value: str | None) -> ProductUnitRole | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in UNIT_ROLE_ORDER:
+        return normalized  # type: ignore[return-value]
+    return None
 
 
-def _active_base_unit(product: Product) -> ProductUnit | None:
-    for unit in product.units:
-        if unit.is_active and unit.is_base_unit:
-            return unit
-    for unit in product.units:
-        if unit.is_active:
+def _sort_product_units(units: list[ProductUnit]) -> list[ProductUnit]:
+    def sort_key(unit: ProductUnit) -> tuple[int, int, int, str]:
+        role = normalize_unit_role(unit.unit_role)
+        role_group = 0 if role is not None else 1
+        role_order = UNIT_ROLE_ORDER.get(role or "", 99)
+        return (
+            0 if unit.is_active else 1,
+            role_group,
+            role_order if role is not None else int(unit.conversion_rate),
+            unit.unit_name.casefold(),
+        )
+
+    return sorted(units, key=sort_key)
+
+
+def _active_units(units: list[ProductUnit]) -> list[ProductUnit]:
+    return [unit for unit in units if unit.is_active]
+
+
+def _find_role_unit(units: list[ProductUnit], role: ProductUnitRole) -> ProductUnit | None:
+    for unit in units:
+        if unit.is_active and normalize_unit_role(unit.unit_role) == role:
             return unit
     return None
 
 
+def get_primary_product_unit(product: Product) -> ProductUnit | None:
+    retail_unit = _find_role_unit(product.units, "retail")
+    if retail_unit is not None:
+        return retail_unit
+    for unit in product.units:
+        if unit.is_active and unit.is_base_unit:
+            return unit
+    active_units = _active_units(product.units)
+    if not active_units:
+        return None
+    return sorted(active_units, key=lambda item: (item.conversion_rate, item.unit_name.casefold()))[0]
+
+
+def _validate_role_based_units(units: list[ProductUnit]) -> tuple[bool, str | None]:
+    active_units = _active_units(units)
+    if not active_units:
+        return True, None
+
+    seen_roles: dict[ProductUnitRole, ProductUnit] = {}
+    for unit in active_units:
+        role = normalize_unit_role(unit.unit_role)
+        if role is None:
+            return False, "missing unit_role on active unit"
+        if role in seen_roles:
+            return False, f"duplicate active role '{role}'"
+        seen_roles[role] = unit
+
+    retail_unit = seen_roles.get("retail")
+    if retail_unit is None:
+        return False, "missing active retail unit"
+    if retail_unit.conversion_rate != 1:
+        return False, "retail unit must have conversion_rate = 1"
+
+    intermediate_unit = seen_roles.get("intermediate")
+    import_unit = seen_roles.get("import")
+    if intermediate_unit is not None and import_unit is None:
+        return False, "intermediate unit requires an import unit"
+    if intermediate_unit is not None and import_unit is not None:
+        if import_unit.conversion_rate < intermediate_unit.conversion_rate:
+            return False, "import conversion_rate must be >= intermediate conversion_rate"
+        if import_unit.conversion_rate % intermediate_unit.conversion_rate != 0:
+            return False, "import conversion_rate must be divisible by intermediate conversion_rate"
+
+    return True, None
+
+
+def _infer_legacy_unit_roles(units: list[ProductUnit]) -> tuple[dict[UUID, ProductUnitRole] | None, str | None]:
+    active_units = _active_units(units)
+    if not active_units:
+        return {}, None
+
+    if any(normalize_unit_role(unit.unit_role) is not None for unit in units):
+        return None, "mixed legacy and role-based unit data"
+    if len(active_units) > 3:
+        return None, "more than 3 active units"
+
+    base_units = [unit for unit in active_units if unit.conversion_rate == 1]
+    if len(base_units) != 1:
+        return None, "legacy units must have exactly one active conversion_rate = 1"
+
+    sorted_active = sorted(active_units, key=lambda item: (item.conversion_rate, item.unit_name.casefold()))
+    conversion_values = [unit.conversion_rate for unit in sorted_active]
+    if conversion_values != sorted(conversion_values):
+        return None, "legacy conversion_rate order is invalid"
+    if len(set(conversion_values)) != len(conversion_values):
+        return None, "legacy conversion_rate values are ambiguous"
+
+    mapping: dict[UUID, ProductUnitRole] = {}
+    if len(sorted_active) == 1:
+        mapping[sorted_active[0].id] = "retail"
+        return mapping, None
+    if len(sorted_active) == 2:
+        mapping[sorted_active[0].id] = "retail"
+        mapping[sorted_active[1].id] = "import"
+        return mapping, None
+
+    mapping[sorted_active[0].id] = "retail"
+    mapping[sorted_active[1].id] = "intermediate"
+    mapping[sorted_active[2].id] = "import"
+    return mapping, None
+
+
+def get_unit_config_status(product: Product) -> UnitConfigStatus:
+    active_units = _active_units(product.units)
+    if not active_units:
+        return "ok"
+
+    active_roles = [normalize_unit_role(unit.unit_role) for unit in active_units]
+    if any(role is not None for role in active_roles):
+        is_valid, _ = _validate_role_based_units(product.units)
+        return "ok" if is_valid else "conflict"
+
+    mapping, reason = _infer_legacy_unit_roles(product.units)
+    return "ok" if mapping is not None and reason is None else "conflict"
+
+
+def apply_unit_role_invariants(unit: ProductUnit) -> None:
+    role = normalize_unit_role(unit.unit_role)
+    if role == "retail":
+        unit.conversion_rate = 1
+        unit.is_base_unit = True
+    elif role in {"import", "intermediate"}:
+        unit.is_base_unit = False
+
+
+async def backfill_product_unit_roles(db: AsyncSession) -> None:
+    stmt = select(Product).options(selectinload(Product.units))
+    products = list((await db.scalars(stmt)).all())
+    has_changes = False
+
+    for product in products:
+        active_units = _active_units(product.units)
+        if not active_units:
+            continue
+
+        active_roles = [normalize_unit_role(unit.unit_role) for unit in active_units]
+        if any(role is not None for role in active_roles):
+            is_valid, reason = _validate_role_based_units(product.units)
+            if is_valid:
+                for unit in product.units:
+                    apply_unit_role_invariants(unit)
+                has_changes = True
+            else:
+                logger.warning(
+                    "Unit role conflict on product %s (%s): %s",
+                    product.id,
+                    product.code,
+                    reason or "unknown role validation error",
+                )
+            continue
+
+        mapping, reason = _infer_legacy_unit_roles(product.units)
+        if mapping is None:
+            logger.warning(
+                "Legacy unit mapping conflict on product %s (%s, %s): %s",
+                product.id,
+                product.code,
+                product.name,
+                reason or "unknown mapping error",
+            )
+            continue
+
+        for unit in product.units:
+            role = mapping.get(unit.id)
+            if role is None:
+                continue
+            unit.unit_role = role
+            apply_unit_role_invariants(unit)
+            has_changes = True
+
+    if has_changes:
+        await db.commit()
+
+
+def to_product_unit_response(unit: ProductUnit) -> ProductUnitResponse:
+    return ProductUnitResponse(
+        id=unit.id,
+        product_id=unit.product_id,
+        unit_name=unit.unit_name,
+        conversion_rate=unit.conversion_rate,
+        unit_role=normalize_unit_role(unit.unit_role),
+        barcode=unit.barcode,
+        selling_price=unit.selling_price,
+        is_base_unit=unit.is_base_unit,
+        is_active=unit.is_active,
+        created_at=unit.created_at,
+        updated_at=unit.updated_at,
+    )
+
+
 def to_product_list_item(product: Product) -> ProductListItemResponse:
-    base_unit = _active_base_unit(product)
+    base_unit = get_primary_product_unit(product)
     return ProductListItemResponse(
         id=product.id,
         code=product.code,
@@ -208,7 +409,7 @@ def to_product_list_item(product: Product) -> ProductListItemResponse:
 
 
 def to_product_detail(product: Product) -> ProductDetailResponse:
-    units = sorted(product.units, key=lambda item: (not item.is_base_unit, item.conversion_rate, item.unit_name))
+    units = _sort_product_units(product.units)
     return ProductDetailResponse(
         id=product.id,
         code=product.code,
@@ -239,6 +440,7 @@ def to_product_detail(product: Product) -> ProductDetailResponse:
         vat_rate=product.vat_rate,
         other_tax_rate=product.other_tax_rate,
         is_active=product.is_active,
+        unit_config_status=get_unit_config_status(product),
         units=[to_product_unit_response(unit) for unit in units],
         created_at=product.created_at,
         updated_at=product.updated_at,

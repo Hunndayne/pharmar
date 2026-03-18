@@ -9,12 +9,15 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from Source.catalog import (
+    apply_unit_role_invariants,
     ensure_unique_code,
     generate_next_code,
+    get_primary_product_unit,
     get_drug_group_or_404,
     get_manufacturer_or_404,
     get_product_or_404,
     get_product_unit_or_404,
+    normalize_unit_role,
     normalize_code,
     normalize_optional_string,
     paginate_scalars,
@@ -45,6 +48,8 @@ from Source.schemas.catalog import (
     ProductDetailResponse,
     ProductImportResult,
     ProductListItemResponse,
+    ProductRoleUnitConfigRequest,
+    ProductUnitRole,
     ProductUnitCreateRequest,
     ProductUnitResponse,
     ProductUnitUpdateRequest,
@@ -90,39 +95,142 @@ async def _validate_group_and_manufacturer(
     return group, manufacturer
 
 
-def _ensure_base_unit_rule(is_base_unit: bool, conversion_rate: int) -> None:
-    if is_base_unit and conversion_rate != 1:
+ROLE_DISPLAY_LABELS: dict[ProductUnitRole, str] = {
+    "import": "import",
+    "intermediate": "intermediate",
+    "retail": "retail",
+}
+
+
+def _normalize_unit_name_or_400(value: str, field_label: str = "Unit name") -> str:
+    normalized = normalize_optional_string(value)
+    if normalized is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{field_label} is required")
+    return normalized
+
+
+def _normalize_unit_role_or_400(
+    value: str | None,
+    *,
+    fallback_is_base: bool = False,
+    fallback_conversion: int | None = None,
+) -> ProductUnitRole:
+    normalized = normalize_unit_role(value)
+    if normalized is not None:
+        return normalized
+    if fallback_is_base or fallback_conversion == 1:
+        return "retail"
+    return "import"
+
+
+def _serialize_role_unit(
+    *,
+    role: ProductUnitRole,
+    config: ProductRoleUnitConfigRequest,
+    conversion_rate: int,
+) -> dict[str, object]:
+    if role == "retail" and not config.enabled:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Retail unit must stay enabled")
+    return {
+        "role": role,
+        "unit_name": _normalize_unit_name_or_400(config.unit_name, f"{ROLE_DISPLAY_LABELS[role]} unit name"),
+        "conversion_rate": conversion_rate,
+        "barcode": normalize_optional_string(config.barcode),
+        "selling_price": config.selling_price,
+        "enabled": bool(config.enabled),
+    }
+
+
+def _build_role_unit_specs(payload: ProductCreateRequest | ProductUpdateRequest) -> list[dict[str, object]] | None:
+    unit_config = payload.unit_config
+    if unit_config is None:
+        return None
+
+    specs: list[dict[str, object]] = [
+        _serialize_role_unit(role="retail", config=unit_config.retail, conversion_rate=1)
+    ]
+    import_config = unit_config.import_role
+    intermediate_config = unit_config.intermediate
+    import_enabled = bool(import_config and import_config.enabled)
+    intermediate_enabled = bool(intermediate_config and intermediate_config.enabled)
+
+    if intermediate_enabled and not import_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Base unit must have conversion_rate = 1",
+            detail="Intermediate unit requires the import unit to be enabled",
         )
 
+    if intermediate_enabled and intermediate_config is not None:
+        specs.append(
+            _serialize_role_unit(
+                role="intermediate",
+                config=intermediate_config,
+                conversion_rate=intermediate_config.conversion_to_lower_role,
+            )
+        )
 
-async def _find_existing_unit_name(
-    db: DbSession,
-    product_id: UUID,
-    unit_name: str,
-    exclude_unit_id: UUID | None = None,
-) -> ProductUnit | None:
-    stmt = select(ProductUnit).where(
-        ProductUnit.product_id == product_id,
-        func.lower(ProductUnit.unit_name) == unit_name.strip().lower(),
-    )
-    if exclude_unit_id is not None:
-        stmt = stmt.where(ProductUnit.id != exclude_unit_id)
-    return await db.scalar(stmt)
+    if import_enabled and import_config is not None:
+        import_conversion = import_config.conversion_to_lower_role
+        if intermediate_enabled and intermediate_config is not None:
+            import_conversion *= intermediate_config.conversion_to_lower_role
+        specs.append(
+            _serialize_role_unit(
+                role="import",
+                config=import_config,
+                conversion_rate=import_conversion,
+            )
+        )
+
+    return specs
 
 
-async def _has_other_active_base_unit(db: DbSession, product_id: UUID, exclude_unit_id: UUID | None = None) -> bool:
-    stmt = select(ProductUnit.id).where(
-        ProductUnit.product_id == product_id,
-        ProductUnit.is_base_unit.is_(True),
-        ProductUnit.is_active.is_(True),
-    )
-    if exclude_unit_id is not None:
-        stmt = stmt.where(ProductUnit.id != exclude_unit_id)
-    existing = await db.scalar(stmt)
-    return existing is not None
+def _build_fallback_retail_spec(payload: ProductCreateRequest) -> list[dict[str, object]]:
+    base_payload = payload.base_unit
+    base_unit_name = _normalize_unit_name_or_400(base_payload.unit_name, "Retail unit name") if base_payload else "Viên"
+    base_unit_price = base_payload.selling_price if base_payload else 0
+    return [
+        {
+            "role": "retail",
+            "unit_name": base_unit_name,
+            "conversion_rate": 1,
+            "barcode": normalize_optional_string(payload.barcode),
+            "selling_price": base_unit_price,
+            "enabled": True,
+        }
+    ]
+
+
+def _sync_product_units_by_role(product: Product, specs: list[dict[str, object]]) -> None:
+    desired_roles = {str(spec["role"]) for spec in specs}
+    existing_by_role = {
+        role: next((unit for unit in product.units if normalize_unit_role(unit.unit_role) == role), None)
+        for role in ("retail", "intermediate", "import")
+    }
+
+    for spec in specs:
+        role = str(spec["role"])
+        unit = existing_by_role.get(role)
+        if unit is None:
+            unit = ProductUnit(product_id=product.id)
+            product.units.append(unit)
+            existing_by_role[role] = unit
+        unit.unit_role = role
+        unit.unit_name = str(spec["unit_name"])
+        unit.conversion_rate = int(spec["conversion_rate"])
+        unit.barcode = spec["barcode"] if isinstance(spec["barcode"], str) or spec["barcode"] is None else None
+        unit.selling_price = spec["selling_price"]  # type: ignore[assignment]
+        unit.is_active = bool(spec["enabled"])
+        apply_unit_role_invariants(unit)
+
+    for unit in product.units:
+        role = normalize_unit_role(unit.unit_role)
+        if role is None:
+            if unit.is_active:
+                unit.is_active = False
+            continue
+        if role not in desired_roles:
+            unit.is_active = False
+            apply_unit_role_invariants(unit)
 
 
 @router.get("/products", response_model=PageResponse[ProductListItemResponse])
@@ -234,9 +342,7 @@ async def get_product_by_barcode(barcode: str, _: AnyUser, db: DbSession) -> Bar
     if product is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Barcode not found")
 
-    active_unit = next((item for item in product.units if item.is_active and item.is_base_unit), None)
-    if active_unit is None:
-        active_unit = next((item for item in product.units if item.is_active), None)
+    active_unit = get_primary_product_unit(product)
     if active_unit is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -275,21 +381,8 @@ async def create_product(
     )
     db.add(product)
     await db.flush()
-
-    base_payload = payload.base_unit
-    base_unit_name = base_payload.unit_name.strip() if base_payload else "Viên"
-    base_unit_price = base_payload.selling_price if base_payload else 0
-
-    unit = ProductUnit(
-        product_id=product.id,
-        unit_name=base_unit_name,
-        conversion_rate=1,
-        barcode=normalize_optional_string(payload.barcode),
-        selling_price=base_unit_price,
-        is_base_unit=True,
-        is_active=True,
-    )
-    db.add(unit)
+    desired_specs = _build_role_unit_specs(payload) or _build_fallback_retail_spec(payload)
+    _sync_product_units_by_role(product, desired_specs)
     await db.commit()
 
     created = await get_product_or_404(product.id, db)
@@ -341,6 +434,10 @@ async def update_product(
         product.other_tax_rate = payload.other_tax_rate
     if "is_active" in updates and payload.is_active is not None:
         product.is_active = payload.is_active
+    if "unit_config" in updates:
+        desired_specs = _build_role_unit_specs(payload)
+        if desired_specs is not None:
+            _sync_product_units_by_role(product, desired_specs)
 
     await db.commit()
     updated = await get_product_or_404(product_id, db)
@@ -393,7 +490,12 @@ async def list_product_units(
     product = await get_product_or_404(product_id, db)
     units = sorted(
         product.units,
-        key=lambda item: (not item.is_base_unit, item.conversion_rate, item.unit_name),
+        key=lambda item: (
+            0 if item.is_active else 1,
+            {"import": 0, "intermediate": 1, "retail": 2}.get(normalize_unit_role(item.unit_role) or "", 99),
+            item.conversion_rate,
+            item.unit_name.casefold(),
+        ),
     )
     if not include_inactive:
         units = [unit for unit in units if unit.is_active]
@@ -407,31 +509,36 @@ async def create_product_unit(
     _: ManagerOrOwner,
     db: DbSession,
 ) -> ProductUnitResponse:
-    await get_product_or_404(product_id, db)
-    _ensure_base_unit_rule(payload.is_base_unit, payload.conversion_rate)
-
-    existing_name = await _find_existing_unit_name(db, product_id, payload.unit_name)
-    if existing_name is not None:
+    product = await get_product_or_404(product_id, db)
+    role = _normalize_unit_role_or_400(
+        payload.unit_role,
+        fallback_is_base=payload.is_base_unit,
+        fallback_conversion=payload.conversion_rate,
+    )
+    existing_role = next(
+        (
+            unit
+            for unit in product.units
+            if unit.is_active and normalize_unit_role(unit.unit_role) == role
+        ),
+        None,
+    )
+    if existing_role is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Unit '{payload.unit_name}' already exists for this product",
-        )
-
-    if payload.is_base_unit and await _has_other_active_base_unit(db, product_id):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Product already has an active base unit",
+            detail=f"Product already has an active {ROLE_DISPLAY_LABELS[role]} unit",
         )
 
     item = ProductUnit(
         product_id=product_id,
-        unit_name=payload.unit_name.strip(),
-        conversion_rate=payload.conversion_rate,
+        unit_name=_normalize_unit_name_or_400(payload.unit_name),
+        unit_role=role,
+        conversion_rate=1 if role == "retail" else payload.conversion_rate,
         barcode=normalize_optional_string(payload.barcode),
         selling_price=payload.selling_price,
-        is_base_unit=payload.is_base_unit,
         is_active=payload.is_active,
     )
+    apply_unit_role_invariants(item)
     db.add(item)
     await db.commit()
     await db.refresh(item)
@@ -449,48 +556,43 @@ async def update_product_unit(
     await get_product_or_404(product_id, db)
     unit = await get_product_unit_or_404(product_id, unit_id, db)
     updates = payload.model_dump(exclude_unset=True)
-
-    target_is_base = payload.is_base_unit if "is_base_unit" in updates else unit.is_base_unit
-    target_conversion = payload.conversion_rate if "conversion_rate" in updates and payload.conversion_rate is not None else unit.conversion_rate
-    _ensure_base_unit_rule(bool(target_is_base), int(target_conversion))
-
-    if unit.is_base_unit and "is_base_unit" in updates and payload.is_base_unit is False:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot unset base unit directly",
+    target_role = _normalize_unit_role_or_400(
+        payload.unit_role if "unit_role" in updates else unit.unit_role,
+        fallback_is_base=payload.is_base_unit if "is_base_unit" in updates and payload.is_base_unit is not None else unit.is_base_unit,
+        fallback_conversion=payload.conversion_rate if "conversion_rate" in updates and payload.conversion_rate is not None else unit.conversion_rate,
+    )
+    if target_role != normalize_unit_role(unit.unit_role):
+        conflicting_role = await db.scalar(
+            select(ProductUnit.id).where(
+                ProductUnit.product_id == product_id,
+                ProductUnit.id != unit.id,
+                ProductUnit.unit_role == target_role,
+                ProductUnit.is_active.is_(True),
+            )
         )
-
-    if not unit.is_base_unit and target_is_base:
-        if await _has_other_active_base_unit(db, product_id, exclude_unit_id=unit.id):
+        if conflicting_role is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Product already has another active base unit",
+                detail=f"Product already has an active {ROLE_DISPLAY_LABELS[target_role]} unit",
             )
 
     if "unit_name" in updates and payload.unit_name is not None:
-        existing_name = await _find_existing_unit_name(db, product_id, payload.unit_name, exclude_unit_id=unit.id)
-        if existing_name is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Unit '{payload.unit_name}' already exists for this product",
-            )
-        unit.unit_name = payload.unit_name.strip()
-
+        unit.unit_name = _normalize_unit_name_or_400(payload.unit_name)
+    unit.unit_role = target_role
     if "conversion_rate" in updates and payload.conversion_rate is not None:
         unit.conversion_rate = payload.conversion_rate
     if "barcode" in updates:
         unit.barcode = normalize_optional_string(payload.barcode)
     if "selling_price" in updates and payload.selling_price is not None:
         unit.selling_price = payload.selling_price
-    if "is_base_unit" in updates and payload.is_base_unit is not None:
-        unit.is_base_unit = payload.is_base_unit
     if "is_active" in updates and payload.is_active is not None:
-        if unit.is_base_unit and not payload.is_active:
+        if target_role == "retail" and not payload.is_active:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Base unit cannot be deactivated",
+                detail="Retail unit cannot be deactivated",
             )
         unit.is_active = payload.is_active
+    apply_unit_role_invariants(unit)
 
     await db.commit()
     await db.refresh(unit)
@@ -507,10 +609,10 @@ async def delete_product_unit(
     await get_product_or_404(product_id, db)
     unit = await get_product_unit_or_404(product_id, unit_id, db)
 
-    if unit.is_base_unit:
+    if normalize_unit_role(unit.unit_role) == "retail" or unit.is_base_unit:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete base unit",
+            detail="Cannot delete retail unit",
         )
 
     unit.is_active = False

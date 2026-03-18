@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS catalog.product_units (
     id UUID PRIMARY KEY,
     product_id UUID NOT NULL REFERENCES catalog.products(id) ON DELETE CASCADE,
     unit_name VARCHAR(30) NOT NULL,
+    unit_role VARCHAR(20),
     conversion_rate INT NOT NULL DEFAULT 1,
     barcode VARCHAR(50),
     selling_price DECIMAL(12,2) NOT NULL,
@@ -80,7 +81,7 @@ CREATE TABLE IF NOT EXISTS catalog.product_units (
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (product_id, unit_name)
+    UNIQUE (product_id, unit_role)
 );
 
 CREATE INDEX IF NOT EXISTS idx_drug_groups_code ON catalog.drug_groups(code);

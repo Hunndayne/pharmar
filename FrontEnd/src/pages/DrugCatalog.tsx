@@ -7,7 +7,9 @@ import {
   type ManufacturerItem,
   type ProductDetailItem,
   type ProductListItem,
+  type ProductUnitConfigStatus,
   type ProductUnitItem,
+  type ProductUnitRole,
 } from '../api/catalogService'
 import { inventoryApi } from '../api/inventoryService'
 import { storeApi } from '../api/storeService'
@@ -22,7 +24,7 @@ type Unit = {
   name: string
   conversion: number
   price: number
-  level: 'import' | 'intermediate' | 'retail'
+  level: 'import' | 'intermediate' | 'retail' | 'unknown'
 }
 
 type Drug = {
@@ -42,6 +44,7 @@ type Drug = {
   usage: string
   note: string
   units: Unit[]
+  unitConfigStatus: ProductUnitConfigStatus
   active: boolean
   hasTransactions: boolean
   detailLoaded: boolean
@@ -66,6 +69,7 @@ type FormState = {
   usage: string
   note: string
   active: boolean
+  unitConfigStatus: ProductUnitConfigStatus
   singleUnit: boolean
   hasIntermediate: boolean
   importUnit: FormUnit
@@ -134,6 +138,7 @@ const emptyForm = (groupId = '', makerId = '', groupCategory = ''): FormState =>
   usage: '',
   note: '',
   active: true,
+  unitConfigStatus: 'ok',
   singleUnit: false,
   hasIntermediate: true,
   importUnit: {
@@ -153,17 +158,20 @@ const emptyForm = (groupId = '', makerId = '', groupCategory = ''): FormState =>
   },
 })
 
-const unitLevelLabel: Record<Unit['level'], string> = {
+const unitLevelLabel: Record<string, string> = {
   import: 'Nhập',
   intermediate: 'Trung gian',
   retail: 'Bán lẻ',
 }
 
-const unitLevelOrder: Record<Unit['level'], number> = {
+const unitLevelOrder: Record<string, number> = {
   import: 0,
   intermediate: 1,
   retail: 2,
 }
+
+unitLevelLabel.unknown = 'Chưa chuẩn hóa'
+unitLevelOrder.unknown = 3
 
 const toNumber = (value: string) => Number(value.trim())
 
@@ -180,9 +188,9 @@ const formatUnits = (units: Unit[]) =>
     .join(' · ')
 
 const inferFormFromDrug = (drug: Drug) => {
-  const byLevel: Partial<Record<Unit['level'], Unit>> = {}
+  const byLevel: Partial<Record<ProductUnitRole, Unit>> = {}
   for (const unit of drug.units) {
-    if (unit.level) byLevel[unit.level] = unit
+    if (unit.level !== 'unknown') byLevel[unit.level] = unit
   }
 
   if (!byLevel.retail) {
@@ -229,73 +237,29 @@ const toPriceNumber = (value: string | number | null | undefined) => {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+const isKnownUnitRole = (value: string | null | undefined): value is ProductUnitRole =>
+  value === 'import' || value === 'intermediate' || value === 'retail'
+
 const toUiUnitsFromProductUnits = (units: ProductUnitItem[]): Unit[] => {
-  const active = units
+  return units
     .filter((unit) => unit.is_active)
-    .sort((a, b) => a.conversion_rate - b.conversion_rate)
-
-  if (!active.length) return []
-
-  if (active.length === 1) {
-    const retail = active[0]
-    return [
-      {
-        id: retail.id,
-        name: retail.unit_name,
-        conversion: 1,
-        price: toPriceNumber(retail.selling_price),
-        level: 'retail',
-      },
-    ]
-  }
-
-  if (active.length === 2) {
-    const retail = active[0]
-    const importUnit = active[1]
-    return [
-      {
-        id: retail.id,
-        name: retail.unit_name,
-        conversion: 1,
-        price: toPriceNumber(retail.selling_price),
-        level: 'retail',
-      },
-      {
-        id: importUnit.id,
-        name: importUnit.unit_name,
-        conversion: Math.max(1, importUnit.conversion_rate),
-        price: toPriceNumber(importUnit.selling_price),
-        level: 'import',
-      },
-    ]
-  }
-
-  const retail = active[0]
-  const intermediate = active[active.length - 2]
-  const importUnit = active[active.length - 1]
-  return [
-    {
-      id: retail.id,
-      name: retail.unit_name,
-      conversion: 1,
-      price: toPriceNumber(retail.selling_price),
-      level: 'retail',
-    },
-    {
-      id: intermediate.id,
-      name: intermediate.unit_name,
-      conversion: Math.max(1, intermediate.conversion_rate),
-      price: toPriceNumber(intermediate.selling_price),
-      level: 'intermediate',
-    },
-    {
-      id: importUnit.id,
-      name: importUnit.unit_name,
-      conversion: Math.max(1, importUnit.conversion_rate),
-      price: toPriceNumber(importUnit.selling_price),
-      level: 'import',
-    },
-  ]
+    .map((unit) => {
+      const level: Unit['level'] = isKnownUnitRole(unit.unit_role) ? unit.unit_role : 'unknown'
+      return {
+        id: unit.id,
+        name: unit.unit_name,
+        conversion: Math.max(1, unit.conversion_rate),
+        price: toPriceNumber(unit.selling_price),
+        level,
+      }
+    })
+    .sort((a, b) => {
+      const levelDiff = (unitLevelOrder[a.level] ?? 99) - (unitLevelOrder[b.level] ?? 99)
+      if (levelDiff !== 0) return levelDiff
+      const conversionDiff = a.conversion - b.conversion
+      if (conversionDiff !== 0) return conversionDiff
+      return a.name.localeCompare(b.name, 'vi-VN')
+    })
 }
 
 const mergeManufacturerLists = (...groups: ManufacturerItem[][]) => {
@@ -329,6 +293,7 @@ const mapProductListItemToDrug = (item: ProductListItem): Drug => {
     usage: '',
     note: '',
     units: [],
+    unitConfigStatus: 'ok',
     active: item.is_active,
     hasTransactions: false,
     detailLoaded: false,
@@ -354,6 +319,7 @@ const mapProductDetailToDrug = (item: ProductDetailItem): Drug => {
     usage: item.instructions ?? '',
     note: item.note ?? '',
     units,
+    unitConfigStatus: item.unit_config_status,
     active: item.is_active,
     hasTransactions: false,
     detailLoaded: true,
@@ -406,6 +372,43 @@ const buildDesiredUnits = (form: FormState): DesiredUnit[] => {
   }
 
   return result
+}
+
+const buildUnitConfigPayload = (desiredUnits: DesiredUnit[]) => {
+  const retail = desiredUnits.find((item) => item.level === 'retail')
+  if (!retail) return null
+  const intermediate = desiredUnits.find((item) => item.level === 'intermediate')
+  const importUnit = desiredUnits.find((item) => item.level === 'import')
+
+  return {
+    retail: {
+      enabled: true,
+      unit_name: retail.name,
+      conversion_to_lower_role: 1,
+      selling_price: retail.price,
+      barcode: null,
+    },
+    intermediate: intermediate
+      ? {
+          enabled: true,
+          unit_name: intermediate.name,
+          conversion_to_lower_role: intermediate.conversion,
+          selling_price: intermediate.price,
+          barcode: null,
+        }
+      : null,
+    import: importUnit
+      ? {
+          enabled: true,
+          unit_name: importUnit.name,
+          conversion_to_lower_role: intermediate
+            ? Math.max(1, Math.round(importUnit.conversion / Math.max(1, intermediate.conversion)))
+            : importUnit.conversion,
+          selling_price: importUnit.price,
+          barcode: null,
+        }
+      : null,
+  }
 }
 
 const normalizeGroupKey = (value: string) => value.trim().toLocaleLowerCase('vi-VN')
@@ -1092,116 +1095,6 @@ export function DrugCatalog() {
       })
   }, [accessToken, debouncedMakerQuery, modalOpen, upsertKnownMakers])
 
-  const syncProductUnits = useCallback(
-    async (productId: string, existingUnits: ProductUnitItem[], desiredUnits: DesiredUnit[]) => {
-      if (!accessToken) return
-      const baseDesired = desiredUnits.find((item) => item.level === 'retail')
-      if (!baseDesired) return
-
-      const baseUnit = existingUnits.find((item) => item.is_base_unit) ?? existingUnits[0]
-      const desiredNonBase = desiredUnits
-        .filter((item) => item.level !== 'retail')
-        .sort((a, b) => a.conversion - b.conversion)
-      const activeNonBase = existingUnits
-        .filter((item) => !item.is_base_unit && item.is_active)
-        .sort((a, b) => a.conversion_rate - b.conversion_rate)
-
-      const unitsToDelete = activeNonBase.slice(desiredNonBase.length)
-      for (const unit of unitsToDelete) {
-        await catalogApi.deleteProductUnit(accessToken, productId, unit.id)
-      }
-
-      const keptUnits = baseUnit ? [baseUnit, ...activeNonBase.slice(0, desiredNonBase.length)] : activeNonBase.slice(0, desiredNonBase.length)
-      const plannedUpdates: Array<{
-        existing: ProductUnitItem
-        payload: {
-          unit_name: string
-          conversion_rate: number
-          selling_price: number
-          barcode: null
-          is_base_unit?: boolean
-          is_active: boolean
-        }
-      }> = []
-
-      if (baseUnit) {
-        plannedUpdates.push({
-          existing: baseUnit,
-          payload: {
-            unit_name: baseDesired.name,
-            conversion_rate: 1,
-            selling_price: baseDesired.price,
-            barcode: null,
-            is_base_unit: true,
-            is_active: true,
-          },
-        })
-      }
-
-      const unitsToCreate: DesiredUnit[] = []
-      for (let index = 0; index < desiredNonBase.length; index += 1) {
-        const desired = desiredNonBase[index]
-        const existing = activeNonBase[index]
-        if (existing) {
-          plannedUpdates.push({
-            existing,
-            payload: {
-              unit_name: desired.name,
-              conversion_rate: desired.conversion,
-              selling_price: desired.price,
-              barcode: null,
-              is_active: true,
-            },
-          })
-        } else {
-          unitsToCreate.push(desired)
-        }
-      }
-
-      const normalizeUnitName = (value: string) => value.trim().toLocaleLowerCase('vi-VN')
-      const activeNameOwner = new Map(
-        keptUnits
-          .filter((item) => item.is_active)
-          .map((item) => [normalizeUnitName(item.unit_name), item.id] as const),
-      )
-
-      const buildTemporaryUnitName = (unit: ProductUnitItem) => {
-        const suffix = unit.id.replace(/-/g, '').slice(0, 8).toUpperCase()
-        return `TMP-${suffix}`.slice(0, 30)
-      }
-
-      const needsTemporaryRename = plannedUpdates.filter(({ existing, payload }) => {
-        const targetKey = normalizeUnitName(payload.unit_name)
-        const currentOwner = activeNameOwner.get(targetKey)
-        return Boolean(targetKey && currentOwner && currentOwner !== existing.id)
-      })
-
-      for (const { existing } of needsTemporaryRename) {
-        const temporaryName = buildTemporaryUnitName(existing)
-        if (normalizeUnitName(existing.unit_name) === normalizeUnitName(temporaryName)) continue
-        await catalogApi.updateProductUnit(accessToken, productId, existing.id, {
-          unit_name: temporaryName,
-        })
-      }
-
-      for (const { existing, payload } of plannedUpdates) {
-        await catalogApi.updateProductUnit(accessToken, productId, existing.id, payload)
-      }
-
-      for (const desired of unitsToCreate) {
-        await catalogApi.createProductUnit(accessToken, productId, {
-          unit_name: desired.name,
-          conversion_rate: desired.conversion,
-          selling_price: desired.price,
-          barcode: null,
-          is_base_unit: false,
-          is_active: true,
-        })
-      }
-    },
-    [accessToken],
-  )
-
   const decorateDrugWithCurrentGroupMeta = useCallback(
     (drug: Drug): Drug => {
       const groupTax = drug.groupId ? groupTaxById[drug.groupId] : undefined
@@ -1348,6 +1241,8 @@ export function DrugCatalog() {
     if (!form.groupId) return null
     return groupTaxById[form.groupId] ?? null
   }, [form.groupId, groupTaxById])
+
+  const unitSectionLocked = Boolean(form.id && form.unitConfigStatus === 'conflict')
 
   const selectedMakerName = useMemo(() => {
     if (!form.makerId) return ''
@@ -1529,6 +1424,7 @@ export function DrugCatalog() {
       usage: drug.usage,
       note: drug.note,
       active: drug.active,
+      unitConfigStatus: drug.unitConfigStatus,
       ...unitForm,
     })
     setMakerQuery(drug.maker || '')
@@ -1803,16 +1699,6 @@ export function DrugCatalog() {
       }
     }
 
-    const selectedNames = [form.retailUnit.name.trim().toLowerCase()]
-    if (!form.singleUnit) {
-      selectedNames.push(form.importUnit.name.trim().toLowerCase())
-      if (form.hasIntermediate) selectedNames.push(form.intermediateUnit.name.trim().toLowerCase())
-    }
-    const unique = new Set(selectedNames.filter(Boolean))
-    if (unique.size !== selectedNames.filter(Boolean).length) {
-      next['unit-duplicate'] = 'Tên đơn vị không được trùng nhau.'
-    }
-
     setErrors(next)
     return Object.keys(next).length === 0
   }
@@ -1851,31 +1737,44 @@ export function DrugCatalog() {
         other_tax_rate: selectedGroupTax?.otherTaxRate ?? 0,
         is_active: form.active,
       }
+      const shouldSendUnitConfig = !(form.id && form.unitConfigStatus === 'conflict')
+      const unitConfig = shouldSendUnitConfig ? buildUnitConfigPayload(desiredUnits) : null
 
       if (form.id) {
-        const updated = await catalogApi.updateProduct(accessToken, form.id, productPayload)
-        await syncProductUnits(updated.id, updated.units, desiredUnits)
+        const updated = await catalogApi.updateProduct(
+          accessToken,
+          form.id,
+          unitConfig ? { ...productPayload, unit_config: unitConfig } : productPayload,
+        )
         productDetailCacheRef.current.delete(updated.id)
         productDetailRequestRef.current.delete(updated.id)
         setAlert('Đã cập nhật thuốc.')
-      } else {
-        const created = await catalogApi.createProduct(accessToken, {
-          ...productPayload,
-          base_unit: {
-            unit_name: baseUnit.name,
-            selling_price: baseUnit.price,
-          },
-        })
-        await syncProductUnits(created.id, created.units, desiredUnits)
-        productDetailCacheRef.current.delete(created.id)
-        productDetailRequestRef.current.delete(created.id)
-        clearDrugFormDraft()
-        setAlert('Đã thêm thuốc.')
+        setModalOpen(false)
+        setErrors({})
+        await loadCatalogData()
+        return
       }
 
+      const created = await catalogApi.createProduct(
+        accessToken,
+        unitConfig
+          ? { ...productPayload, unit_config: unitConfig }
+          : {
+              ...productPayload,
+              base_unit: {
+                unit_name: baseUnit.name,
+                selling_price: baseUnit.price,
+              },
+            },
+      )
+      productDetailCacheRef.current.delete(created.id)
+      productDetailRequestRef.current.delete(created.id)
+      clearDrugFormDraft()
+      setAlert('Đã thêm thuốc.')
       setModalOpen(false)
       setErrors({})
       await loadCatalogData()
+      return
     } catch (error) {
       setAlert(getApiErrorMessage(error, 'Không thể lưu thuốc.'))
     } finally {
@@ -2120,27 +2019,35 @@ export function DrugCatalog() {
             other_tax_rate: groupTax?.otherTaxRate ?? 0,
             is_active: active,
           }
+          const unitConfig = buildUnitConfigPayload(desiredUnits)
 
           const nameKey = normalizeGroupKey(name)
           const existing = (code ? existingByCode.get(code) : undefined) ?? existingByName.get(nameKey)
 
           if (existing) {
-            const updatedProduct = await catalogApi.updateProduct(accessToken, existing.id, payload)
-            await syncProductUnits(updatedProduct.id, updatedProduct.units, desiredUnits)
+            const updatedProduct = await catalogApi.updateProduct(
+              accessToken,
+              existing.id,
+              unitConfig ? { ...payload, unit_config: unitConfig } : payload,
+            )
             if (code) existingByCode.set(code, { id: updatedProduct.id })
             existingByName.set(nameKey, { id: updatedProduct.id })
             updated += 1
             continue
           }
 
-          const createdProduct = await catalogApi.createProduct(accessToken, {
-            ...payload,
-            base_unit: {
-              unit_name: baseUnit.name,
-              selling_price: baseUnit.price,
-            },
-          })
-          await syncProductUnits(createdProduct.id, createdProduct.units, desiredUnits)
+          const createdProduct = await catalogApi.createProduct(
+            accessToken,
+            unitConfig
+              ? { ...payload, unit_config: unitConfig }
+              : {
+                  ...payload,
+                  base_unit: {
+                    unit_name: baseUnit.name,
+                    selling_price: baseUnit.price,
+                  },
+                },
+          )
           if (code) existingByCode.set(code, { id: createdProduct.id })
           existingByName.set(nameKey, { id: createdProduct.id })
           created += 1
@@ -2991,6 +2898,12 @@ export function DrugCatalog() {
                 </label>
               </div>
               <div className="mt-6 space-y-4">
+                {unitSectionLocked ? (
+                  <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                    Thuốc này có dữ liệu đơn vị cũ chưa chuẩn hóa an toàn. Bạn vẫn sửa được thông tin chung, nhưng phần đơn vị đang bị khóa để tránh ghi đè sai dữ liệu.
+                  </div>
+                ) : null}
+                <fieldset disabled={unitSectionLocked} className="space-y-4 disabled:opacity-70">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <p className="text-sm font-semibold text-ink-900">Đơn vị bán sỉ / trung gian / bán lẻ</p>
                   <div className="flex flex-wrap items-center gap-4 text-sm text-ink-700">
@@ -3016,8 +2929,6 @@ export function DrugCatalog() {
                     ) : null}
                   </div>
                 </div>
-                {errors['unit-duplicate'] ? <p className="text-xs text-coral-500">{errors['unit-duplicate']}</p> : null}
-
                 {!form.singleUnit ? (
                   <div className="rounded-2xl bg-fog-50 p-4">
                     <p className="text-xs uppercase tracking-[0.25em] text-ink-600">Đơn vị bán sỉ</p>
@@ -3094,6 +3005,7 @@ export function DrugCatalog() {
                   <p className="font-semibold text-ink-900">Quy đổi tự động</p>
                   <p className="mt-2">{conversionHint}</p>
                 </div>
+                </fieldset>
               </div>
             </div>
             <div className="flex flex-wrap gap-3 border-t border-ink-900/10 px-6 py-4">

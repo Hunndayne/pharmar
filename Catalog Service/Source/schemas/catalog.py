@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from typing import Generic, TypeVar
+from typing import Generic, Literal, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_serializer, field_validator
@@ -233,6 +233,26 @@ class ProductBaseUnitRequest(MoneyInputModel):
     selling_price: Decimal = Field(ge=0)
 
 
+ProductUnitRole = Literal["import", "intermediate", "retail"]
+UnitConfigStatus = Literal["ok", "conflict"]
+
+
+class ProductRoleUnitConfigRequest(MoneyInputModel):
+    enabled: bool = True
+    unit_name: str = Field(min_length=1, max_length=30)
+    conversion_to_lower_role: int = Field(default=1, gt=0)
+    selling_price: Decimal = Field(ge=0)
+    barcode: str | None = Field(default=None, max_length=50)
+
+
+class ProductUnitConfigRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    retail: ProductRoleUnitConfigRequest
+    intermediate: ProductRoleUnitConfigRequest | None = None
+    import_role: ProductRoleUnitConfigRequest | None = Field(default=None, alias="import")
+
+
 class ProductCreateRequest(BaseModel):
     code: str | None = Field(default=None, max_length=20)
     barcode: str | None = Field(default=None, max_length=50)
@@ -247,6 +267,7 @@ class ProductCreateRequest(BaseModel):
     other_tax_rate: Decimal = Field(default=Decimal("0.00"), ge=0, le=100)
     is_active: bool = True
     base_unit: ProductBaseUnitRequest | None = None
+    unit_config: ProductUnitConfigRequest | None = None
 
     @field_validator("code")
     @classmethod
@@ -270,6 +291,7 @@ class ProductUpdateRequest(BaseModel):
     vat_rate: Decimal | None = Field(default=None, ge=0, le=100)
     other_tax_rate: Decimal | None = Field(default=None, ge=0, le=100)
     is_active: bool | None = None
+    unit_config: ProductUnitConfigRequest | None = None
 
     @field_validator("code")
     @classmethod
@@ -299,6 +321,7 @@ class ProductUnitResponse(MoneyOutputModel):
     product_id: UUID
     unit_name: str
     conversion_rate: int
+    unit_role: ProductUnitRole | None = None
     barcode: str | None
     selling_price: Decimal
     is_base_unit: bool
@@ -339,14 +362,18 @@ class ProductDetailResponse(BaseModel):
     vat_rate: Decimal
     other_tax_rate: Decimal
     is_active: bool
+    unit_config_status: UnitConfigStatus
     units: list[ProductUnitResponse]
     created_at: datetime
     updated_at: datetime
 
 
 class ProductUnitCreateRequest(MoneyInputModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     unit_name: str = Field(min_length=1, max_length=30)
     conversion_rate: int = Field(gt=0)
+    unit_role: ProductUnitRole | None = None
     barcode: str | None = Field(default=None, max_length=50)
     selling_price: Decimal = Field(ge=0)
     is_base_unit: bool = False
@@ -354,8 +381,11 @@ class ProductUnitCreateRequest(MoneyInputModel):
 
 
 class ProductUnitUpdateRequest(MoneyInputModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     unit_name: str | None = Field(default=None, min_length=1, max_length=30)
     conversion_rate: int | None = Field(default=None, gt=0)
+    unit_role: ProductUnitRole | None = None
     barcode: str | None = Field(default=None, max_length=50)
     selling_price: Decimal | None = Field(default=None, ge=0)
     is_base_unit: bool | None = None

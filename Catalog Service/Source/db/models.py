@@ -162,7 +162,7 @@ class Product(Base):
 class ProductUnit(Base):
     __tablename__ = "product_units"
     __table_args__ = (
-        UniqueConstraint("product_id", "unit_name", name="uq_product_units_product_unit_name"),
+        UniqueConstraint("product_id", "unit_role", name="uq_product_units_product_unit_role"),
         Index("idx_product_units_barcode", "barcode"),
         Index("idx_product_units_product", "product_id"),
         {"schema": SCHEMA_NAME},
@@ -175,6 +175,7 @@ class ProductUnit(Base):
         nullable=False,
     )
     unit_name: Mapped[str] = mapped_column(String(30), nullable=False)
+    unit_role: Mapped[str | None] = mapped_column(String(20), nullable=True)
     conversion_rate: Mapped[int] = mapped_column(nullable=False, default=1)
     barcode: Mapped[str | None] = mapped_column(String(50), nullable=True)
     selling_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
