@@ -267,7 +267,12 @@ async def product_has_inventory_batches(product_id: UUID) -> bool:
     target_url = f"{base_url.rstrip('/')}/api/v1/inventory/batches"
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
-            response = await client.get(target_url, params={"product_id": str(product_id), "size": 1})
+            response = await client.get(
+                target_url,
+                params={
+                    "drug": str(product_id),
+                },
+            )
     except httpx.RequestError:
         return False
 
@@ -278,14 +283,14 @@ async def product_has_inventory_batches(product_id: UUID) -> bool:
     if isinstance(data, dict):
         items = data.get("items")
         if isinstance(items, list):
-            return len(items) > 0
+            return any(parse_decimal(item.get("qty_remaining"), Decimal("0")) > 0 for item in items if isinstance(item, dict))
         total = data.get("total")
         if isinstance(total, int):
             return total > 0
         return False
 
     if isinstance(data, list):
-        return len(data) > 0
+        return any(parse_decimal(item.get("qty_remaining"), Decimal("0")) > 0 for item in data if isinstance(item, dict))
 
     return False
 

@@ -354,7 +354,7 @@ async def delete_product(
     if await product_has_inventory_batches(product.id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot delete product because batches exist in inventory",
+            detail="Cannot delete product because inventory still has stock for this product",
         )
 
     product.is_active = False

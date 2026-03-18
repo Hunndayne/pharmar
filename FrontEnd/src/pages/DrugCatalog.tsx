@@ -1524,6 +1524,10 @@ export function DrugCatalog() {
       await loadCatalogData()
       setAlert('Đã xóa thuốc.')
     } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        setAlert('Không thể xóa thuốc này vì tồn kho vẫn còn số lượng của thuốc này. Hãy chuyển thuốc sang trạng thái ngừng bán thay vì xóa.')
+        return
+      }
       setAlert(getApiErrorMessage(error, 'Không thể xóa thuốc.'))
     }
   }
