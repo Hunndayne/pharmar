@@ -701,6 +701,7 @@ export function DrugCatalog() {
   const [referenceLoading, setReferenceLoading] = useState(false)
   const [referenceError, setReferenceError] = useState<string | null>(null)
   const [unitSectionTouched, setUnitSectionTouched] = useState(false)
+  const [conflictUnitEditEnabled, setConflictUnitEditEnabled] = useState(false)
   const [alert, setAlert] = useState<string | null>(null)
   const [importFile, setImportFile] = useState<string | null>(null)
   const [scanOpen, setScanOpen] = useState(false)
@@ -1242,7 +1243,9 @@ export function DrugCatalog() {
     return groupTaxById[form.groupId] ?? null
   }, [form.groupId, groupTaxById])
 
-  const unitSectionLocked = Boolean(form.id && form.unitConfigStatus === 'conflict')
+  const unitSectionLocked = Boolean(
+    form.id && form.unitConfigStatus === 'conflict' && !conflictUnitEditEnabled,
+  )
 
   const selectedMakerName = useMemo(() => {
     if (!form.makerId) return ''
@@ -1358,6 +1361,7 @@ export function DrugCatalog() {
     setReferenceResults([])
     setReferenceError(null)
     setUnitSectionTouched(false)
+    setConflictUnitEditEnabled(false)
     const fallback = emptyForm('', '', '')
     const draft = loadDrugFormDraft()
     if (!draft) {
@@ -1408,6 +1412,7 @@ export function DrugCatalog() {
     setReferenceResults([])
     setReferenceError(null)
     setUnitSectionTouched(false)
+    setConflictUnitEditEnabled(false)
     const unitForm = inferFormFromDrug(drug)
     setForm({
       id: drug.id,
@@ -1543,6 +1548,7 @@ export function DrugCatalog() {
     setReferenceError(null)
     setReferenceLoading(false)
     setUnitSectionTouched(false)
+    setConflictUnitEditEnabled(false)
   }, [modalOpen])
 
   useEffect(() => {
@@ -1737,7 +1743,11 @@ export function DrugCatalog() {
         other_tax_rate: selectedGroupTax?.otherTaxRate ?? 0,
         is_active: form.active,
       }
-      const shouldSendUnitConfig = !(form.id && form.unitConfigStatus === 'conflict')
+      const shouldSendUnitConfig = !(
+        form.id &&
+        form.unitConfigStatus === 'conflict' &&
+        !conflictUnitEditEnabled
+      )
       const unitConfig = shouldSendUnitConfig ? buildUnitConfigPayload(desiredUnits) : null
 
       if (form.id) {
@@ -2900,7 +2910,26 @@ export function DrugCatalog() {
               <div className="mt-6 space-y-4">
                 {unitSectionLocked ? (
                   <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                    Thuốc này có dữ liệu đơn vị cũ chưa chuẩn hóa an toàn. Bạn vẫn sửa được thông tin chung, nhưng phần đơn vị đang bị khóa để tránh ghi đè sai dữ liệu.
+                    <p>
+                      Thuốc này có dữ liệu đơn vị cũ chưa chuẩn hóa an toàn. Bạn vẫn sửa được thông tin chung, nhưng phần đơn vị đang bị khóa để tránh ghi đè sai dữ liệu.
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConflictUnitEditEnabled(true)
+                          setUnitSectionTouched(true)
+                        }}
+                        className="rounded-full border border-amber-400 bg-white px-4 py-2 text-sm font-semibold text-amber-800"
+                      >
+                        Chuẩn hóa đơn vị
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                {!unitSectionLocked && form.id && form.unitConfigStatus === 'conflict' ? (
+                  <div className="rounded-2xl border border-brand-500/30 bg-brand-500/10 px-4 py-3 text-sm text-brand-700">
+                    Bạn đang chỉnh lại đơn vị cho thuốc này. Khi lưu, hệ thống sẽ chuẩn hóa thuốc sang mô hình đơn vị mới.
                   </div>
                 ) : null}
                 <fieldset disabled={unitSectionLocked} className="space-y-4 disabled:opacity-70">
