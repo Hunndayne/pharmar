@@ -1099,17 +1099,6 @@ export function DrugCatalog() {
       if (!baseDesired) return
 
       const baseUnit = existingUnits.find((item) => item.is_base_unit) ?? existingUnits[0]
-      if (baseUnit) {
-        await catalogApi.updateProductUnit(accessToken, productId, baseUnit.id, {
-          unit_name: baseDesired.name,
-          conversion_rate: 1,
-          selling_price: baseDesired.price,
-          barcode: null,
-          is_base_unit: true,
-          is_active: true,
-        })
-      }
-
       const desiredNonBase = desiredUnits
         .filter((item) => item.level !== 'retail')
         .sort((a, b) => a.conversion - b.conversion)
@@ -1117,31 +1106,97 @@ export function DrugCatalog() {
         .filter((item) => !item.is_base_unit && item.is_active)
         .sort((a, b) => a.conversion_rate - b.conversion_rate)
 
+      const unitsToDelete = activeNonBase.slice(desiredNonBase.length)
+      for (const unit of unitsToDelete) {
+        await catalogApi.deleteProductUnit(accessToken, productId, unit.id)
+      }
+
+      const keptUnits = baseUnit ? [baseUnit, ...activeNonBase.slice(0, desiredNonBase.length)] : activeNonBase.slice(0, desiredNonBase.length)
+      const plannedUpdates: Array<{
+        existing: ProductUnitItem
+        payload: {
+          unit_name: string
+          conversion_rate: number
+          selling_price: number
+          barcode: null
+          is_base_unit?: boolean
+          is_active: boolean
+        }
+      }> = []
+
+      if (baseUnit) {
+        plannedUpdates.push({
+          existing: baseUnit,
+          payload: {
+            unit_name: baseDesired.name,
+            conversion_rate: 1,
+            selling_price: baseDesired.price,
+            barcode: null,
+            is_base_unit: true,
+            is_active: true,
+          },
+        })
+      }
+
+      const unitsToCreate: DesiredUnit[] = []
       for (let index = 0; index < desiredNonBase.length; index += 1) {
         const desired = desiredNonBase[index]
         const existing = activeNonBase[index]
         if (existing) {
-          await catalogApi.updateProductUnit(accessToken, productId, existing.id, {
-            unit_name: desired.name,
-            conversion_rate: desired.conversion,
-            selling_price: desired.price,
-            barcode: null,
-            is_active: true,
+          plannedUpdates.push({
+            existing,
+            payload: {
+              unit_name: desired.name,
+              conversion_rate: desired.conversion,
+              selling_price: desired.price,
+              barcode: null,
+              is_active: true,
+            },
           })
         } else {
-          await catalogApi.createProductUnit(accessToken, productId, {
-            unit_name: desired.name,
-            conversion_rate: desired.conversion,
-            selling_price: desired.price,
-            barcode: null,
-            is_base_unit: false,
-            is_active: true,
-          })
+          unitsToCreate.push(desired)
         }
       }
 
-      for (let index = desiredNonBase.length; index < activeNonBase.length; index += 1) {
-        await catalogApi.deleteProductUnit(accessToken, productId, activeNonBase[index].id)
+      const normalizeUnitName = (value: string) => value.trim().toLocaleLowerCase('vi-VN')
+      const activeNameOwner = new Map(
+        keptUnits
+          .filter((item) => item.is_active)
+          .map((item) => [normalizeUnitName(item.unit_name), item.id] as const),
+      )
+
+      const buildTemporaryUnitName = (unit: ProductUnitItem) => {
+        const suffix = unit.id.replace(/-/g, '').slice(0, 8).toUpperCase()
+        return `TMP-${suffix}`.slice(0, 30)
+      }
+
+      const needsTemporaryRename = plannedUpdates.filter(({ existing, payload }) => {
+        const targetKey = normalizeUnitName(payload.unit_name)
+        const currentOwner = activeNameOwner.get(targetKey)
+        return Boolean(targetKey && currentOwner && currentOwner !== existing.id)
+      })
+
+      for (const { existing } of needsTemporaryRename) {
+        const temporaryName = buildTemporaryUnitName(existing)
+        if (normalizeUnitName(existing.unit_name) === normalizeUnitName(temporaryName)) continue
+        await catalogApi.updateProductUnit(accessToken, productId, existing.id, {
+          unit_name: temporaryName,
+        })
+      }
+
+      for (const { existing, payload } of plannedUpdates) {
+        await catalogApi.updateProductUnit(accessToken, productId, existing.id, payload)
+      }
+
+      for (const desired of unitsToCreate) {
+        await catalogApi.createProductUnit(accessToken, productId, {
+          unit_name: desired.name,
+          conversion_rate: desired.conversion,
+          selling_price: desired.price,
+          barcode: null,
+          is_base_unit: false,
+          is_active: true,
+        })
       }
     },
     [accessToken],
