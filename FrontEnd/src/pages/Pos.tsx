@@ -66,7 +66,9 @@ type PosOrder = {
   customerName: string
   customerPhone: string
   customerTier: string | null
+  customerTierDiscountPercent: number | null
   customerPoints: number | null
+  pointsToRedeem: string
   note: string
   serviceFee: string
   serviceFeeMode: ServiceFeeMode
@@ -118,7 +120,10 @@ type InvoicePreview = {
   serviceFee: number
   grandTotal: number
   serviceFeeMode: ServiceFeeMode
-  returnPolicyText: string
+  returnPolicyText: string | null
+  tierDiscountAmount?: number
+  pointsDiscountAmount?: number
+  pointsUsed?: number
   lines: InvoicePreviewLine[]
 }
 
@@ -190,8 +195,16 @@ type CheckoutOptions = {
 
 const MIN_DEBT_AMOUNT_AFTER_ROUNDING = 500
 
+const roundMoneyAmount = (value: number) =>
+  Math.round(Number.isFinite(value) ? value : 0)
+
+const coerceFiniteNumber = (value: unknown, fallback = 0) => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
 const formatCurrency = (value: number) =>
-  `${Math.round(Number.isFinite(value) ? value : 0).toLocaleString('vi-VN')}đ`
+  `${roundMoneyAmount(value).toLocaleString('vi-VN')}đ`
 
 const parseNonNegativeNumber = (value: string) => {
   const normalized = value.replace(/,/g, '').trim()
@@ -286,7 +299,9 @@ const createEmptyOrder = (): PosOrder => ({
   customerName: '',
   customerPhone: '',
   customerTier: null,
+  customerTierDiscountPercent: null,
   customerPoints: null,
+  pointsToRedeem: '',
   note: '',
   serviceFee: '0',
   serviceFeeMode: 'split',
@@ -720,6 +735,7 @@ export function Pos() {
 
   const [newMemberName, setNewMemberName] = useState('')
   const [newMemberPhone, setNewMemberPhone] = useState('')
+  const [customerPointValue, setCustomerPointValue] = useState<number>(1000)
 
   const scanContainerRef = useRef<HTMLDivElement | null>(null)
   const scanEngineRef = useRef<any>(null)
@@ -880,11 +896,12 @@ export function Pos() {
     setLoadError(null)
 
     try {
-      const [metaDrugs, stockSummary, inventorySettings, saleSettings, store] = await Promise.all([
+      const [metaDrugs, stockSummary, inventorySettings, saleSettings, customerSettings, store] = await Promise.all([
         inventoryApi.getMetaDrugs(token?.access_token),
         inventoryApi.getStockSummary(token?.access_token),
         storeApi.getSettingsByGroup('inventory'),
         storeApi.getSettingsByGroup('sale'),
+        storeApi.getSettingsByGroup('customer').catch(() => ({})),
         storeApi.getInfo().catch(() => null),
       ])
 
@@ -945,6 +962,12 @@ export function Pos() {
           normalizeSettingNumber(saleSettings['sale.customer_display_ads_transition_ms'], 650),
         ),
       )
+      const customerSettingsRecord = customerSettings as Record<string, unknown> | null
+      if (customerSettingsRecord && typeof customerSettingsRecord['customer.point_value'] === 'number') {
+        setCustomerPointValue(customerSettingsRecord['customer.point_value'])
+      } else if (customerSettingsRecord && typeof customerSettingsRecord['customer.point_value'] === 'string') {
+        setCustomerPointValue(Number(customerSettingsRecord['customer.point_value']) || 1000)
+      }
       if (store) {
         const bankOption = findBankOption(normalizeSettingString(store.bank_name, ''))
         setBankQrAccountNo(normalizeSettingString(store.bank_account, ''))
@@ -1178,6 +1201,16 @@ export function Pos() {
               ${
                 preview.serviceFeeMode === 'separate' && preview.serviceFee > 0
                   ? `<div class="summary-row"><span>Phí dịch vụ</span><strong>${formatCurrency(preview.serviceFee)}</strong></div>`
+                  : ''
+              }
+              ${
+                preview.tierDiscountAmount
+                  ? `<div class="summary-row" style="color:#059669"><span>Chiết khấu hạng thẻ</span><strong>-${formatCurrency(preview.tierDiscountAmount)}</strong></div>`
+                  : ''
+              }
+              ${
+                preview.pointsDiscountAmount
+                  ? `<div class="summary-row" style="color:#059669"><span>Điểm thưởng (-${preview.pointsUsed} điểm)</span><strong>-${formatCurrency(preview.pointsDiscountAmount)}</strong></div>`
                   : ''
               }
               ${
@@ -1724,7 +1757,7 @@ export function Pos() {
   )
 
   const applyCustomerToOrder = useCallback(
-    (orderId: string, customer: CustomerRecord) => {
+    (orderId: string, customer: CustomerRecord, customerStats?: import('../api/customerService').CustomerStatsResponse) => {
       updateOrder(orderId, (order) => ({
         ...order,
         customerMode: 'member',
@@ -1732,8 +1765,10 @@ export function Pos() {
         customerCode: customer.code,
         customerName: customer.name,
         customerPhone: customer.phone,
-        customerTier: customer.tier,
-        customerPoints: customer.current_points,
+        customerTier: customerStats?.tier ?? customer.tier,
+        customerTierDiscountPercent: customerStats?.tier_discount_percent ?? null,
+        customerPoints: customerStats?.current_points ?? customer.current_points,
+        pointsToRedeem: '',
       }))
       setShowCreateMemberForm(false)
     },
@@ -1755,7 +1790,14 @@ export function Pos() {
 
     try {
       const customer = await customerApi.getCustomerByPhone(token.access_token, phone)
-      applyCustomerToOrder(activeOrder.id, customer)
+      let stats = undefined
+      try {
+        stats = await customerApi.getCustomerStats(token.access_token, customer.id)
+      } catch (statsErr) {
+        console.warn('Failed to fetch customer stats', statsErr)
+      }
+
+      applyCustomerToOrder(activeOrder.id, customer, stats)
       setActionMessage(`Đã tìm thấy khách hàng ${customer.name}.`)
       setNewMemberPhone(customer.phone)
       setNewMemberName(customer.name)
@@ -1768,7 +1810,9 @@ export function Pos() {
           customerName: '',
           customerPhone: phone,
           customerTier: null,
+          customerTierDiscountPercent: null,
           customerPoints: null,
+          pointsToRedeem: '',
         }))
         setActionError('Không tìm thấy thành viên theo số điện thoại.')
         setNewMemberPhone(phone)
@@ -1808,7 +1852,14 @@ export function Pos() {
         is_active: true,
       })
 
-      applyCustomerToOrder(activeOrder.id, customer)
+      let stats = undefined
+      try {
+        stats = await customerApi.getCustomerStats(token.access_token, customer.id)
+      } catch (statsErr) {
+        console.warn('Failed to fetch customer stats for new member', statsErr)
+      }
+
+      applyCustomerToOrder(activeOrder.id, customer, stats)
       setActionMessage(`Da tao thanh vien ${customer.name}.`)
       setNewMemberPhone(customer.phone)
       setNewMemberName(customer.name)
@@ -1921,14 +1972,12 @@ export function Pos() {
 
     return activeOrder.items.map((item) => {
       const quantity = parsePositiveInt(item.quantity, 0)
-      const availableInUnit = Math.floor(item.batchQtyRemaining / Math.max(item.conversion, 1))
-      const isQuantityValid = quantity > 0 && quantity <= availableInUnit
       return {
         item,
         quantity,
         lineTotal: quantity * item.unitPrice,
-        availableInUnit,
-        isQuantityValid,
+        availableInUnit: Math.floor(item.batchQtyRemaining / Math.max(item.conversion, 1)),
+        isQuantityValid: quantity > 0 && quantity <= Math.floor(item.batchQtyRemaining / Math.max(item.conversion, 1)),
       }
     })
   }, [activeOrder])
@@ -1943,25 +1992,66 @@ export function Pos() {
     [activeOrder?.serviceFee],
   )
 
-  const grandTotal = subtotal + serviceFee
+  const tierDiscountPercent = activeOrder?.customerTierDiscountPercent || 0
+  const isSeparateServiceFee = activeOrder?.serviceFeeMode === 'separate'
+  const discountableSubtotal = useMemo(
+    () => Math.max(0, subtotal + (isSeparateServiceFee ? 0 : serviceFee)),
+    [isSeparateServiceFee, serviceFee, subtotal],
+  )
+  const tierDiscountAmount = useMemo(() => {
+    if (tierDiscountPercent <= 0 || discountableSubtotal <= 0) return 0
+    return Math.min(
+      discountableSubtotal,
+      roundMoneyAmount((discountableSubtotal * tierDiscountPercent) / 100),
+    )
+  }, [discountableSubtotal, tierDiscountPercent])
+  const discountableAmountAfterTier = useMemo(
+    () => Math.max(0, discountableSubtotal - tierDiscountAmount),
+    [discountableSubtotal, tierDiscountAmount],
+  )
+
+  const requestedPointsToRedeem = parsePositiveInt(activeOrder?.pointsToRedeem)
+  const availableCustomerPoints = Math.max(0, activeOrder?.customerPoints ?? 0)
+  const maxRedeemablePoints = useMemo(() => {
+    if (activeOrder?.customerMode !== 'member' || availableCustomerPoints <= 0 || customerPointValue <= 0) {
+      return 0
+    }
+    const maxPointsByAmount = Math.floor(discountableAmountAfterTier / customerPointValue)
+    return Math.max(0, Math.min(availableCustomerPoints, maxPointsByAmount))
+  }, [
+    activeOrder?.customerMode,
+    availableCustomerPoints,
+    customerPointValue,
+    discountableAmountAfterTier,
+  ])
+  const effectivePointsToRedeem = Math.min(requestedPointsToRedeem, maxRedeemablePoints)
+  const pointsToRedeem = effectivePointsToRedeem
+  const pointsDiscountAmount = effectivePointsToRedeem * customerPointValue
+
+  const unroundedTotal = useMemo(() => {
+    const discountedAmount = Math.max(0, discountableAmountAfterTier - pointsDiscountAmount)
+    return discountedAmount + (isSeparateServiceFee ? serviceFee : 0)
+  }, [discountableAmountAfterTier, isSeparateServiceFee, pointsDiscountAmount, serviceFee])
+
+  const grandTotal = useMemo(() => {
+    if (activeOrder?.paymentMode !== 'cash' || !cashRoundingEnabled) {
+      return unroundedTotal
+    }
+    return roundCashTotalByStep(unroundedTotal, cashRoundingUnit)
+  }, [activeOrder?.paymentMode, cashRoundingEnabled, cashRoundingUnit, unroundedTotal])
+  const baseRoundingAdjustment = useMemo(
+    () => grandTotal - unroundedTotal,
+    [grandTotal, unroundedTotal],
+  )
   const cashReceived = parseNonNegativeNumber(activeOrder?.cashReceived ?? '0')
-  const roundedCashGrandTotal = useMemo(() => {
-    if (activeOrder?.paymentMode !== 'cash' || !cashRoundingEnabled) return grandTotal
-    return roundCashTotalByStep(grandTotal, cashRoundingUnit)
-  }, [activeOrder?.paymentMode, cashRoundingEnabled, cashRoundingUnit, grandTotal])
-  const cashRoundingAdjustmentAmount = useMemo(() => {
-    if (activeOrder?.paymentMode !== 'cash' || !cashRoundingEnabled) return 0
-    return roundedCashGrandTotal - grandTotal
-  }, [activeOrder?.paymentMode, cashRoundingEnabled, grandTotal, roundedCashGrandTotal])
-  const baseDisplayGrandTotal = activeOrder?.paymentMode === 'cash' ? roundedCashGrandTotal : grandTotal
   const paymentSummary = useMemo(
     () =>
       applyMinimumDebtThreshold(
-        baseDisplayGrandTotal,
+        grandTotal,
         cashReceived,
-        activeOrder?.paymentMode === 'cash' ? cashRoundingAdjustmentAmount : 0,
+        baseRoundingAdjustment,
       ),
-    [activeOrder?.paymentMode, baseDisplayGrandTotal, cashReceived, cashRoundingAdjustmentAmount],
+    [grandTotal, cashReceived, baseRoundingAdjustment],
   )
   const displayGrandTotal = paymentSummary.totalAmount
   const displayRoundingAdjustmentAmount = paymentSummary.roundingAdjustmentAmount
@@ -1971,6 +2061,28 @@ export function Pos() {
     if (activeOrder?.paymentMode !== 'cash') return 0
     return paymentSummary.changeAmount
   }, [activeOrder?.paymentMode, paymentSummary.changeAmount])
+
+  useEffect(() => {
+    if (!activeOrder) return
+    if (activeOrder.customerMode !== 'member') {
+      if (activeOrder.pointsToRedeem !== '') {
+        updateOrder(activeOrder.id, (order) => ({ ...order, pointsToRedeem: '' }))
+      }
+      return
+    }
+
+    const rawPointsValue = activeOrder.pointsToRedeem.trim()
+    if (!rawPointsValue) return
+
+    const clampedValue = String(effectivePointsToRedeem)
+    if (rawPointsValue !== clampedValue) {
+      updateOrder(activeOrder.id, (order) => ({ ...order, pointsToRedeem: clampedValue }))
+    }
+  }, [
+    activeOrder,
+    effectivePointsToRedeem,
+    updateOrder,
+  ])
 
   const customerDisplayPayload = useMemo<CustomerDisplayPayload>(() => {
     const lines = activeOrderLineDetails.map((row) => ({
@@ -2197,15 +2309,8 @@ export function Pos() {
       }
 
       const checkoutPaymentMethod = options?.paymentMethod ?? 'cash'
-      const shouldRoundCashTotal =
-        checkoutPaymentMethod === 'cash' &&
-        activeOrder.paymentMode === 'cash' &&
-        cashRoundingEnabled
-
-      const checkoutTotal = shouldRoundCashTotal
-        ? roundCashTotalByStep(grandTotal, cashRoundingUnit)
-        : grandTotal
-      const baseRoundingAdjustmentAmount = shouldRoundCashTotal ? checkoutTotal - grandTotal : 0
+      const checkoutTotal = grandTotal
+      const baseRoundingAdjustmentAmount = baseRoundingAdjustment
       const amountPaid = options?.amountPaid ?? parseNonNegativeNumber(activeOrder.cashReceived)
       const paymentSummary = applyMinimumDebtThreshold(
         checkoutTotal,
@@ -2252,6 +2357,7 @@ export function Pos() {
         payment_method: checkoutPaymentMethod,
         service_fee_amount: serviceFeeValue,
         service_fee_mode: activeOrder.serviceFeeMode,
+        points_used: effectivePointsToRedeem,
         rounding_adjustment_amount: roundingAdjustmentAmount,
         amount_paid: amountPaid,
         note: noteParts.join(' | ') || null,
@@ -2299,12 +2405,23 @@ export function Pos() {
         })
       }
 
-      const invoiceAmountPaid = Number(invoice.amount_paid ?? amountPaid) || amountPaid
-      const invoiceGrandTotal = Number(invoice.total_amount ?? effectiveCheckoutTotal) || effectiveCheckoutTotal
-      const invoiceChangeAmount =
-        Number(invoice.change_amount ?? Math.max(0, invoiceAmountPaid - invoiceGrandTotal)) ||
-        Math.max(0, invoiceAmountPaid - invoiceGrandTotal)
+      const invoiceAmountPaid = coerceFiniteNumber(invoice.amount_paid, amountPaid)
+      const invoiceGrandTotal = coerceFiniteNumber(invoice.total_amount, effectiveCheckoutTotal)
+      const invoiceChangeAmount = coerceFiniteNumber(
+        invoice.change_amount,
+        Math.max(0, invoiceAmountPaid - invoiceGrandTotal),
+      )
       const invoiceDebtAmount = Math.max(0, invoiceGrandTotal - invoiceAmountPaid)
+      const invoiceRoundingAdjustmentAmount = coerceFiniteNumber(
+        invoice.rounding_adjustment_amount,
+        roundingAdjustmentAmount,
+      )
+      const invoiceTierDiscountAmount = coerceFiniteNumber(invoice.tier_discount, tierDiscountAmount)
+      const invoicePointsDiscountAmount = coerceFiniteNumber(invoice.points_discount, pointsDiscountAmount)
+      const invoicePointsUsed = Math.max(
+        0,
+        roundMoneyAmount(coerceFiniteNumber(invoice.points_used, effectivePointsToRedeem)),
+      )
       const preview: InvoicePreview = {
         id: invoice.id,
         code: invoice.code,
@@ -2323,13 +2440,15 @@ export function Pos() {
         amountPaid: invoiceAmountPaid,
         changeAmount: invoiceChangeAmount,
         debtAmount: invoiceDebtAmount,
-        roundingAdjustmentAmount:
-          Number(invoice.rounding_adjustment_amount ?? roundingAdjustmentAmount) || roundingAdjustmentAmount,
+        roundingAdjustmentAmount: invoiceRoundingAdjustmentAmount,
         medicineTotal,
         serviceFee: serviceFeeValue,
         grandTotal: invoiceGrandTotal,
         serviceFeeMode: activeOrder.serviceFeeMode,
         returnPolicyText,
+        tierDiscountAmount: invoiceTierDiscountAmount > 0 ? invoiceTierDiscountAmount : undefined,
+        pointsDiscountAmount: invoicePointsDiscountAmount > 0 ? invoicePointsDiscountAmount : undefined,
+        pointsUsed: invoicePointsUsed > 0 ? invoicePointsUsed : undefined,
         lines: previewLines,
       }
       setInvoicePreview(preview)
@@ -2344,7 +2463,9 @@ export function Pos() {
         customerName: '',
         customerPhone: '',
         customerTier: null,
+        customerTierDiscountPercent: null,
         customerPoints: null,
+        pointsToRedeem: '',
         note: '',
         serviceFee: '0',
         paymentMode: 'cash',
@@ -2363,7 +2484,7 @@ export function Pos() {
     } finally {
       setCheckingOut(false)
     }
-  }, [activeOrder, token?.access_token, user, storeInfo, returnPolicyText, buildCheckoutLines, grandTotal, cashRoundingEnabled, cashRoundingUnit, updateOrder, printInvoicePreview, sellByLot, findFirstPolicyViolation])
+  }, [activeOrder, token?.access_token, user, storeInfo, returnPolicyText, buildCheckoutLines, grandTotal, baseRoundingAdjustment, effectivePointsToRedeem, updateOrder, printInvoicePreview, sellByLot, findFirstPolicyViolation, tierDiscountAmount, pointsDiscountAmount])
 
   const handleGenerateBankQr = useCallback(async () => {
     if (!activeOrder || !token?.access_token) return
@@ -2530,7 +2651,9 @@ export function Pos() {
                           customerCode: null,
                           customerName: '',
                           customerTier: null,
+                          customerTierDiscountPercent: null,
                           customerPoints: null,
+                          pointsToRedeem: '',
                         }
                       }
 
@@ -2542,7 +2665,9 @@ export function Pos() {
                         customerName: '',
                         customerPhone: '',
                         customerTier: null,
+                        customerTierDiscountPercent: null,
                         customerPoints: null,
+                        pointsToRedeem: '',
                       }
                     })
                   }}
@@ -2581,7 +2706,9 @@ export function Pos() {
                           customerCode: null,
                           customerName: '',
                           customerTier: null,
+                          customerTierDiscountPercent: null,
                           customerPoints: null,
+                          pointsToRedeem: '',
                         }))
                         setNewMemberPhone(phone)
                       }}
@@ -2944,6 +3071,35 @@ export function Pos() {
                 />
               </label>
 
+              {activeOrder.customerMode === 'member' && activeOrder.customerPoints !== null && activeOrder.customerPoints > 0 ? (
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Sử dụng điểm (Tối đa: {activeOrder.customerPoints.toLocaleString('vi-VN')})</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max={maxRedeemablePoints}
+                    value={activeOrder.pointsToRedeem}
+                    onChange={(event) => {
+                      let nextVal = event.target.value
+                      const parsed = parseInt(nextVal, 10)
+                      if (!isNaN(parsed)) {
+                        if (parsed < 0) nextVal = '0'
+                        if (parsed > maxRedeemablePoints) {
+                          nextVal = String(maxRedeemablePoints)
+                        }
+                      }
+                      updateActiveOrder((order) => ({ ...order, pointsToRedeem: nextVal }))
+                    }}
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
+                    placeholder="0"
+                  />
+                  <p className="text-xs text-ink-500">
+                    1 diem = {customerPointValue.toLocaleString('vi-VN')}d. Co the ap toi da {maxRedeemablePoints.toLocaleString('vi-VN')} diem cho don nay.
+                  </p>
+                  <p className="text-xs text-ink-500">1 điểm = {customerPointValue.toLocaleString('vi-VN')}đ</p>
+                </label>
+              ) : null}
+
               <label className="space-y-2 text-sm text-ink-700">
                 <span>Cách tính phí dịch vụ</span>
                 <select
@@ -2970,6 +3126,20 @@ export function Pos() {
                   <span>Phi dich vu</span>
                   <span className="font-semibold text-ink-900">{formatCurrency(serviceFee)}</span>
                 </div>
+                {tierDiscountAmount > 0 ? (
+                  <div className="flex items-center justify-between py-1 text-emerald-600">
+                    <span>
+                      Chiết khấu hạng thẻ {activeOrder.customerTier ? `(${activeOrder.customerTier})` : ''}
+                    </span>
+                    <span className="font-semibold">-{formatCurrency(tierDiscountAmount)}</span>
+                  </div>
+                ) : null}
+                {pointsDiscountAmount > 0 ? (
+                  <div className="flex items-center justify-between py-1 text-emerald-600">
+                    <span>Trừ điểm ({pointsToRedeem} điểm)</span>
+                    <span className="font-semibold">-{formatCurrency(pointsDiscountAmount)}</span>
+                  </div>
+                ) : null}
                 {displayRoundingAdjustmentAmount !== 0 ? (
                   <div className="flex items-center justify-between py-1">
                     <span>Điều chỉnh làm tròn</span>
@@ -3218,6 +3388,18 @@ export function Pos() {
                   <div className="flex items-center justify-between">
                     <span>Phí dịch vụ</span>
                     <span className="font-semibold text-ink-900">{formatCurrency(invoicePreview.serviceFee)}</span>
+                  </div>
+                ) : null}
+                {invoicePreview.tierDiscountAmount ? (
+                  <div className="flex items-center justify-between text-emerald-600">
+                    <span>Chiết khấu hạng thẻ</span>
+                    <span className="font-semibold">-{formatCurrency(invoicePreview.tierDiscountAmount)}</span>
+                  </div>
+                ) : null}
+                {invoicePreview.pointsDiscountAmount ? (
+                  <div className="flex items-center justify-between text-emerald-600">
+                    <span>Điểm thưởng (-{invoicePreview.pointsUsed} điểm)</span>
+                    <span className="font-semibold">-{formatCurrency(invoicePreview.pointsDiscountAmount)}</span>
                   </div>
                 ) : null}
                 {invoicePreview.roundingAdjustmentAmount !== 0 ? (

@@ -117,17 +117,32 @@ async def earn_points(payload: PointsEarnRequest, db: DbSession) -> PointsEarnRe
 @router.post("/points/redeem", response_model=PointsRedeemResponse)
 async def redeem_points(payload: PointsRedeemRequest, db: DbSession) -> PointsRedeemResponse:
     customer = await get_customer_or_404(payload.customer_id, db)
-    if payload.points > customer.current_points:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Insufficient points")
-
     settings_map = await fetch_customer_settings()
     point_value = setting_decimal(settings_map, "customer.point_value", Decimal("1000"))
-    discount_amount = (Decimal(payload.points) * point_value).quantize(Decimal("0.01"))
+    points_to_use = min(payload.points, max(customer.current_points, 0))
+
+    if point_value <= Decimal("0.00"):
+        points_to_use = 0
+
+    if payload.max_discount_amount is not None and point_value > Decimal("0.00"):
+        max_discount_amount = max(payload.max_discount_amount, Decimal("0.00"))
+        max_points_by_amount = int(max_discount_amount // point_value)
+        points_to_use = min(points_to_use, max_points_by_amount)
+
+    discount_amount = (Decimal(points_to_use) * point_value).quantize(Decimal("0.01"))
+
+    if points_to_use <= 0:
+        return PointsRedeemResponse(
+            success=True,
+            points_used=0,
+            discount_amount=Decimal("0.00"),
+            new_balance=customer.current_points,
+        )
 
     new_balance, _, _ = await apply_points_change(
         db=db,
         customer=customer,
-        points_delta=-payload.points,
+        points_delta=-points_to_use,
         transaction_type="redeem",
         reference_type=payload.reference_type,
         reference_id=payload.reference_id,
@@ -141,7 +156,7 @@ async def redeem_points(payload: PointsRedeemRequest, db: DbSession) -> PointsRe
 
     return PointsRedeemResponse(
         success=True,
-        points_used=payload.points,
+        points_used=points_to_use,
         discount_amount=discount_amount,
         new_balance=new_balance,
     )

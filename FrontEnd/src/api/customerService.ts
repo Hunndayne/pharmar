@@ -24,6 +24,21 @@ export type CustomerRecord = {
   updated_at: string
 }
 
+export type CustomerStatsResponse = {
+  customer_id: string
+  customer_code: string
+  customer_name: string
+  tier: string
+  tier_discount_percent: number
+  total_orders: number
+  total_spent: number
+  last_purchase_at: string | null
+  current_points: number
+  total_points_earned: number
+  total_points_used: number
+  points_expire_at: string | null
+}
+
 export type CustomerCreatePayload = {
   name: string
   phone: string
@@ -219,6 +234,13 @@ export const customerApi = {
   getCustomerByPhone: (token: string, phone: string) =>
     requestCustomerJson<CustomerRecord>(
       `/customer/customers/phone/${encodeURIComponent(phone.trim())}`,
+      token,
+      { method: 'GET' },
+    ),
+
+  getCustomerStats: (token: string, customerId: string) =>
+    requestCustomerJson<CustomerStatsResponse>(
+      `/customer/customers/${encodeURIComponent(customerId)}/stats`,
       token,
       { method: 'GET' },
     ),

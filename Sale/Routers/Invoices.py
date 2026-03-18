@@ -239,22 +239,30 @@ async def _prepare_invoice_creation(
             reason = validate_result.get("reason") or "Promotion is invalid"
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
 
+    points_discount_base_amount = _normalize_decimal(promotion_base_amount - promotion_discount)
+    if points_discount_base_amount < Decimal("0.00"):
+        points_discount_base_amount = Decimal("0.00")
+
     points_discount = Decimal("0.00")
     points_used_applied = 0
     if payload.points_used > 0:
         if payload.customer_id is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="customer_id is required when using points")
-        redeem_payload = {
-            "customer_id": str(payload.customer_id),
-            "points": payload.points_used,
-            "reference_type": "invoice",
-            "reference_id": str(invoice_id),
-            "reference_code": invoice_code,
-            "note": "Invoice checkout",
-        }
-        redeem_result = await customer_internal_post("points/redeem", redeem_payload)
-        points_discount = safe_decimal(redeem_result.get("discount_amount"))
-        points_used_applied = int(redeem_result.get("points_used", payload.points_used) or 0)
+        if points_discount_base_amount > Decimal("0.00"):
+            redeem_payload = {
+                "customer_id": str(payload.customer_id),
+                "points": payload.points_used,
+                "max_discount_amount": points_discount_base_amount,
+                "reference_type": "invoice",
+                "reference_id": str(invoice_id),
+                "reference_code": invoice_code,
+                "note": "Invoice checkout",
+            }
+            redeem_result = await customer_internal_post("points/redeem", redeem_payload)
+            points_discount = _normalize_decimal(safe_decimal(redeem_result.get("discount_amount")))
+            if points_discount > points_discount_base_amount:
+                points_discount = points_discount_base_amount
+            points_used_applied = int(redeem_result.get("points_used", payload.points_used) or 0)
 
     total_discount = _normalize_decimal(line_discount_total + tier_discount + promotion_discount + points_discount)
     total_amount = _normalize_decimal(subtotal - total_discount)

@@ -15,6 +15,7 @@ PointTransactionType = Literal["earn", "redeem", "expire", "adjust", "rollback"]
 MONEY_FIELD_NAMES = (
     "total_spent",
     "max_discount",
+    "max_discount_amount",
     "min_order_amount",
     "discount_amount",
     "order_amount",
@@ -309,9 +310,10 @@ class PointsEarnResponse(BaseModel):
     new_tier: str
 
 
-class PointsRedeemRequest(BaseModel):
+class PointsRedeemRequest(MoneyInputModel):
     customer_id: UUID
     points: int = Field(gt=0)
+    max_discount_amount: Decimal | None = Field(default=None, ge=0)
     reference_type: str = Field(default="invoice", max_length=20)
     reference_id: UUID | None = None
     reference_code: str | None = Field(default=None, max_length=30)
