@@ -20,6 +20,8 @@ from Source.catalog import (
     paginate_scalars,
     parse_decimal,
     product_has_inventory_batches,
+    product_has_inventory_history,
+    product_has_sale_history,
     round_money_decimal,
     search_filter,
     to_product_detail,
@@ -28,6 +30,7 @@ from Source.catalog import (
 )
 from Source.db.models import DrugGroup, Manufacturer, Product, ProductUnit
 from Source.dependencies import (
+    AccessToken,
     DbSession,
     ROLE_MANAGER,
     ROLE_OWNER,
@@ -348,6 +351,7 @@ async def update_product(
 async def delete_product(
     product_id: UUID,
     _: OwnerOnly,
+    token: AccessToken,
     db: DbSession,
 ):
     product = await get_product_or_404(product_id, db)
@@ -356,6 +360,14 @@ async def delete_product(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot delete product because inventory still has stock for this product",
         )
+
+    inventory_has_history = await product_has_inventory_history(product.id)
+    sale_has_history = await product_has_sale_history(product.id, token)
+
+    if not inventory_has_history and not sale_has_history:
+        await db.delete(product)
+        await db.commit()
+        return {"message": "Product permanently deleted"}
 
     product.is_active = False
     for unit in product.units:

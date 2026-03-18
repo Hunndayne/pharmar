@@ -7,12 +7,12 @@ from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from Source.core.config import get_settings
-from Source.db.models import Invoice, InvoiceItem, InvoicePayment, Shift
+from Source.db.models import Invoice, InvoiceItem, InvoicePayment, ReturnItem, SCHEMA_NAME, Shift
 from Source.dependencies import (
     ROLE_MANAGER,
     ROLE_OWNER,
@@ -935,4 +935,46 @@ async def reprint_invoice(invoice_id: UUID, _: AnyUser, db: DbSession):
         "message": "Invoice marked for reprint",
         "invoice_id": str(invoice.id),
         "invoice_code": invoice.code,
+    }
+
+
+@router.get("/internal/products/{product_id}/usage")
+async def get_product_usage(product_id: str, _: AnyUser, db: DbSession) -> dict[str, Any]:
+    product_key = product_id.strip()
+    if not product_key:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="product_id is required")
+
+    invoice_item_count = int(
+        (await db.scalar(select(func.count()).select_from(InvoiceItem).where(InvoiceItem.product_id == product_key))) or 0
+    )
+    return_item_count = int(
+        (await db.scalar(select(func.count()).select_from(ReturnItem).where(ReturnItem.product_id == product_key))) or 0
+    )
+    held_order_count = int(
+        (
+            await db.execute(
+                text(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM {SCHEMA_NAME}.held_orders AS ho
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM jsonb_array_elements(ho.items) AS item
+                        WHERE item->>'product_id' = :product_id
+                    )
+                    """
+                ),
+                {"product_id": product_key},
+            )
+        ).scalar_one()
+        or 0
+    )
+
+    return {
+        "used": any((invoice_item_count, return_item_count, held_order_count)),
+        "references": {
+            "invoice_items": invoice_item_count,
+            "return_items": return_item_count,
+            "held_orders": held_order_count,
+        },
     }

@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
 
     INVENTORY_SERVICE_URL: str = "http://inventory-service:8002"
+    SALE_SERVICE_URL: str = "http://sale-service:8003"
 
     CORS_ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 

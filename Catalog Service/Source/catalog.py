@@ -1,4 +1,5 @@
 from decimal import Decimal, ROUND_HALF_UP
+import json
 from math import ceil
 from typing import Any
 from uuid import UUID
@@ -293,6 +294,69 @@ async def product_has_inventory_batches(product_id: UUID) -> bool:
         return any(parse_decimal(item.get("qty_remaining"), Decimal("0")) > 0 for item in data if isinstance(item, dict))
 
     return False
+
+
+async def product_has_inventory_history(product_id: UUID) -> bool:
+    base_url = settings.INVENTORY_SERVICE_URL.strip()
+    if not base_url:
+        return True
+
+    target_url = f"{base_url.rstrip('/')}/api/v1/inventory/batches"
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(target_url, params={"drug": str(product_id)})
+    except httpx.RequestError:
+        return True
+
+    if response.status_code == status.HTTP_404_NOT_FOUND:
+        return False
+    if response.status_code >= 400:
+        return True
+
+    data: Any = response.json()
+    if isinstance(data, dict):
+        items = data.get("items")
+        if isinstance(items, list):
+            return any(isinstance(item, dict) for item in items)
+        total = data.get("total")
+        if isinstance(total, int):
+            return total > 0
+        return False
+
+    if isinstance(data, list):
+        return any(isinstance(item, dict) for item in data)
+
+    return False
+
+
+async def product_has_sale_history(product_id: UUID, token: str) -> bool:
+    base_url = settings.SALE_SERVICE_URL.strip()
+    auth_token = token.strip()
+    if not base_url or not auth_token:
+        return True
+
+    target_url = f"{base_url.rstrip('/')}/api/v1/sale/internal/products/{product_id}/usage"
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(
+                target_url,
+                headers={"Authorization": f"Bearer {auth_token}"},
+            )
+    except httpx.RequestError:
+        return True
+
+    if response.status_code >= 400:
+        return True
+
+    try:
+        data: Any = response.json()
+    except json.JSONDecodeError:
+        return True
+
+    if not isinstance(data, dict):
+        return True
+
+    return bool(data.get("used"))
 
 
 def parse_decimal(value: Any, default: Decimal = Decimal("0.00")) -> Decimal:
