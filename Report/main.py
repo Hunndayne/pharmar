@@ -1203,6 +1203,78 @@ def _build_dashboard_priority_actions(
     return actions[:5]
 
 
+def _build_dashboard_sales_patterns(trend_dataset: dict[str, Any]) -> dict[str, Any]:
+    invoice_rows = trend_dataset.get("breakdowns", {}).get("invoice", [])
+    
+    hour_counts: dict[str, int] = defaultdict(int)
+    day_revenue: dict[str, Decimal] = defaultdict(Decimal)
+    
+    for row in invoice_rows:
+        if not isinstance(row, dict):
+            continue
+        created_at_str = str(row.get("created_at") or "")
+        dt = _local_datetime(created_at_str)
+        if not dt:
+            continue
+            
+        hour = dt.hour
+        hour_key = f"{hour:02d}:00-{hour+1:02d}:00"
+        hour_counts[hour_key] += 1
+        
+        weekday = dt.weekday()
+        weekdays = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ Nhật"]
+        day_revenue[weekdays[weekday]] += _to_decimal(row.get("net_revenue"))
+
+    sorted_hours = sorted(hour_counts.items(), key=lambda x: x[1], reverse=True)
+    peak_hours = [k for k, v in sorted_hours[:2] if v > 0]
+    
+    sorted_days = sorted(day_revenue.items(), key=lambda x: x[1], reverse=True)
+    best_selling_days = [k for k, v in sorted_days[:2] if v > 0]
+    
+    total_14d = sum(_to_decimal(row.get("net_revenue")) for row in invoice_rows if isinstance(row, dict))
+    forecast_7d = _to_money(total_14d / Decimal("2"))
+    
+    return {
+        "peak_hours": peak_hours,
+        "best_selling_days": best_selling_days,
+        "revenue_forecast_7d": forecast_7d,
+    }
+
+def _build_dashboard_inventory_insights(restock_highlights: dict[str, Any]) -> dict[str, Any]:
+    items = restock_highlights.get("items") if isinstance(restock_highlights.get("items"), list) else []
+    potential_stockouts = []
+    dead_stock = []
+    
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        avg_sold = _to_float(item.get("avg_daily_sold"))
+        current_qty = _to_non_negative_int(item.get("current_qty"))
+        name = str(item.get("drug_name") or item.get("drug_code") or "").strip()
+        days_cover = _to_float(item.get("days_cover")) if item.get("days_cover") is not None else 0.0
+        
+        if avg_sold > 0 and days_cover < 3.0:
+            potential_stockouts.append({
+                "product_name": name,
+                "current_stock": current_qty,
+                "avg_sales_per_day": round(avg_sold, 1),
+                "lead_time_days": 3,
+            })
+        elif avg_sold == 0 and current_qty > 0:
+            dead_stock.append({
+                "product_name": name,
+                "current_stock": current_qty,
+                "days_without_sales": 30,
+            })
+            
+    potential_stockouts.sort(key=lambda x: x["current_stock"] / max(x["avg_sales_per_day"], 0.1))
+    
+    return {
+        "potential_stockouts": potential_stockouts[:3],
+        "dead_stock": dead_stock[:3],
+    }
+
+
 def _build_dashboard_ai_fallback(payload: dict[str, Any]) -> dict[str, Any]:
     facts = payload.get("facts") if isinstance(payload.get("facts"), dict) else {}
     restock = facts.get("restock") if isinstance(facts.get("restock"), dict) else {}
@@ -1473,6 +1545,8 @@ async def _build_dashboard_ai_payload(authorization: str, slot_at: datetime) -> 
         debt_signal=debt_signal,
         top_product_signal=top_product_signal,
     )
+    sales_patterns = _build_dashboard_sales_patterns(trend_dataset)
+    inventory_insights = _build_dashboard_inventory_insights(restock_highlights)
 
     return {
         "slot_at": slot_at.isoformat(),
@@ -1506,6 +1580,8 @@ async def _build_dashboard_ai_payload(authorization: str, slot_at: datetime) -> 
             },
             "debt_signal": debt_signal,
             "priority_actions": priority_actions,
+            "sales_patterns": sales_patterns,
+            "inventory_insights": inventory_insights,
         },
     }
 
@@ -1663,7 +1739,9 @@ async def _load_dashboard_ai_snapshot() -> dict[str, Any]:
     status = "ready"
     last_attempt_state = str(meta.get("last_attempt_state") or "").strip().lower()
     last_attempt_slot_at = str(meta.get("last_attempt_slot_at") or "").strip()
-    if last_attempt_state == "failed" and last_attempt_slot_at and last_attempt_slot_at != snapshot["slot_at"]:
+    if last_attempt_state == "fallback":
+        status = "stale"
+    elif last_attempt_state == "failed" and last_attempt_slot_at and last_attempt_slot_at != snapshot["slot_at"]:
         status = "stale"
 
     return _dashboard_ai_response(
@@ -1691,9 +1769,9 @@ async def _refresh_dashboard_ai_snapshot_now(authorization: str) -> dict[str, An
     try:
         await _refresh_report_timezone(authorization)
         slot_at = _now_local().replace(microsecond=0)
-        snapshot, _ = await _generate_dashboard_ai_snapshot(authorization, slot_at=slot_at)
+        snapshot, attempt_state = await _generate_dashboard_ai_snapshot(authorization, slot_at=slot_at)
         return _dashboard_ai_response(
-            "ready",
+            "ready" if attempt_state == "success" else "stale",
             generated_at=snapshot["generated_at"],
             slot_at=snapshot["slot_at"],
             model=snapshot["model"],
@@ -2081,6 +2159,7 @@ async def profit_summary(
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     token = _require_authorization(authorization)
+    await _refresh_report_timezone(token)
     dataset = await _load_profit_dataset(
         token,
         _parse_optional_date(date_from, "date_from"),
@@ -2099,6 +2178,7 @@ async def profit_breakdown(
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     token = _require_authorization(authorization)
+    await _refresh_report_timezone(token)
     group_key = group_by.strip().lower()
     if group_key not in {"invoice", "day", "week", "month", "product"}:
         raise HTTPException(status_code=400, detail="group_by must be invoice, day, week, month or product")
@@ -2118,6 +2198,7 @@ async def profit_top_products(
     authorization: str | None = Header(default=None),
 ) -> list[dict[str, Any]]:
     token = _require_authorization(authorization)
+    await _refresh_report_timezone(token)
     dataset = await _load_profit_dataset(
         token,
         _parse_optional_date(date_from, "date_from"),
@@ -2132,6 +2213,7 @@ async def restock_highlights(
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     token = _require_authorization(authorization)
+    await _refresh_report_timezone(token)
     return await _load_restock_highlights(token, limit)
 
 

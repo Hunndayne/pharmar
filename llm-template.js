@@ -12,7 +12,11 @@ const DASHBOARD_SYSTEM_PROMPT = [
   "Each item must be short, factual, written in Vietnamese, and focus on risk or opportunity.",
   "Each item must explain why the situation matters to the store and what action should be taken today.",
   "Avoid insights that only restate raw totals without interpretation.",
-  "Use only these source_refs values: today_kpis, month_kpis, revenue_trend_14d, revenue_signal_14d, top_products_30d, top_product_signal, inventory_health, inventory_pressure, restock, restock_risk, debt_summary, debt_signal, priority_actions.",
+  "If sales_patterns are available, analyze peak hours and best selling days to suggest staff scheduling or marketing actions.",
+  "Compare recent revenue trends with the 7-day forecast to determine if the store is on track.",
+  "If inventory_insights.potential_stockouts are available, calculate if (current_stock / avg_sales_per_day) is less than lead_time_days. If yes, issue a HIGH severity alert.",
+  "For inventory_insights.dead_stock with no sales for over 30 days, suggest promotions to clear inventory as MEDIUM severity.",
+  "Use only these source_refs values: today_kpis, month_kpis, revenue_trend_14d, revenue_signal_14d, top_products_30d, top_product_signal, inventory_health, inventory_pressure, restock, restock_risk, debt_summary, debt_signal, priority_actions, sales_patterns, inventory_insights.",
   "Do not return markdown, code fences, explanations, chain-of-thought, or <think> tags.",
 ].join(" ");
 const CORS_HEADERS = {
@@ -35,6 +39,8 @@ const VALID_SOURCE_REFS = new Set([
   "debt_signal",
   "revenue_signal_14d",
   "priority_actions",
+  "sales_patterns",
+  "inventory_insights",
 ]);
 
 function jsonResponse(body, init = {}) {
@@ -278,6 +284,8 @@ function buildFallbackDashboardInsights(payload, model) {
   const month = facts.month_kpis && typeof facts.month_kpis === "object" ? facts.month_kpis : {};
   const topProducts = Array.isArray(facts.top_products_30d) ? facts.top_products_30d : [];
   const revenueDelta = computeRevenueDelta(facts.revenue_trend_14d);
+  const salesPatterns = facts.sales_patterns && typeof facts.sales_patterns === "object" ? facts.sales_patterns : {};
+  const inventoryInsights = facts.inventory_insights && typeof facts.inventory_insights === "object" ? facts.inventory_insights : {};
 
   const totalActionable = toNumber(restock.total_actionable);
   const criticalCount = toNumber(restock.critical_count);
@@ -359,6 +367,61 @@ function buildFallbackDashboardInsights(payload, model) {
         source_refs: ["top_products_30d", "top_product_signal"],
       });
     }
+  }
+
+  const potentialStockouts = Array.isArray(inventoryInsights.potential_stockouts) ? inventoryInsights.potential_stockouts : [];
+  if (potentialStockouts.length > 0) {
+    const item = potentialStockouts[0];
+    const productName = String(item.product_name || "").trim();
+    const currentStock = toNumber(item.current_stock);
+    const avgSales = toNumber(item.avg_sales_per_day, 1);
+    const leadTime = toNumber(item.lead_time_days, 0);
+    const daysLeft = currentStock / avgSales;
+    
+    if (productName && daysLeft < leadTime) {
+      items.push({
+        title: `Nguy cơ đứt hàng: ${productName}`,
+        summary: `Sản phẩm ${productName} còn ${formatNumber(currentStock)} đơn vị, tốc độ bán ${formatNumber(avgSales, 1)}/ngày, sẽ hết sau ~${formatNumber(daysLeft, 1)} ngày.`,
+        why_it_matters: `Thời gian nhập hàng mất ${formatNumber(leadTime)} ngày. Lượng tồn hiện tại không đủ đáp ứng tốc độ bán ra.`,
+        recommended_action: "Liên hệ nhà cung cấp ưu tiên đặt bổ sung gấp trong ngày hôm nay.",
+        severity: "high",
+        confidence: 0.95,
+        source_refs: ["inventory_insights", "restock_risk"],
+      });
+    }
+  }
+
+  const deadStock = Array.isArray(inventoryInsights.dead_stock) ? inventoryInsights.dead_stock : [];
+  if (deadStock.length > 0) {
+    const item = deadStock[0];
+    const productName = String(item.product_name || "").trim();
+    const currentStock = toNumber(item.current_stock);
+    const daysNoSales = toNumber(item.days_without_sales);
+    
+    if (productName && daysNoSales >= 30) {
+      items.push({
+        title: `Hàng tồn quá hạn luân chuyển: ${productName}`,
+        summary: `Sản phẩm ${productName} đang tồn ${formatNumber(currentStock)} đơn vị, không phát sinh doanh thu trong ${formatNumber(daysNoSales)} ngày qua.`,
+        why_it_matters: "Sản phẩm không có giao dịch dễ dẫn đến đọng vốn cục bộ và rủi ro hết hạn.",
+        recommended_action: "Kiểm tra lại vị trí trưng bày và tạo chương trình khuyến mãi/combo để đẩy hàng.",
+        severity: "medium",
+        confidence: 0.90,
+        source_refs: ["inventory_insights", "inventory_pressure"],
+      });
+    }
+  }
+
+  const peakHours = Array.isArray(salesPatterns.peak_hours) ? salesPatterns.peak_hours : [];
+  if (peakHours.length > 0) {
+    items.push({
+      title: "Luồng khách đông vào giờ cao điểm",
+      summary: `Dữ liệu gần đây cho thấy lượng khách tập trung đông nhất vào các khung giờ: ${peakHours.join(", ")}.`,
+      why_it_matters: "Giờ cao điểm làm tăng thời gian chờ của khách và áp lực lên nhân viên thu ngân/tư vấn.",
+      recommended_action: "Rà soát lại lịch phân ca, đảm bảo bố trí đủ nhân sự đứng quầy trong các khung giờ này.",
+      severity: "low",
+      confidence: 0.85,
+      source_refs: ["sales_patterns", "revenue_signal_14d"],
+    });
   }
 
   if (!items.length) {
