@@ -13,6 +13,16 @@ import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
 import { BANK_OPTIONS } from '../constants/bankList'
 import { resolveAssetUrl, setDocumentFavicon } from '../utils/assets'
+import {
+  DEFAULT_APP_TIME_ZONE,
+  TIMEZONE_SUGGESTIONS,
+  formatDateTimeInTimeZone,
+  getTimeZoneDisplayLabel,
+  isValidTimeZone,
+  normalizeTimeZone,
+  persistAppTimeZone,
+  readStoredAppTimeZone,
+} from '../utils/timezone'
 import { NotificationSettings as NotificationSettingsSection } from './NotificationSettings'
 
 type StoreInfoForm = {
@@ -94,7 +104,7 @@ const defaultStoreSettings: StoreSettingsForm = {
   fefoThresholdDays: '180',
   restockSalesWindowDays: '60',
   restockTargetCoverDays: '14',
-  timezone: 'Asia/Ho_Chi_Minh',
+  timezone: DEFAULT_APP_TIME_ZONE,
   currency: 'VND',
 }
 
@@ -102,12 +112,8 @@ const ADS_REF_TYPE = 'customer_display_ads'
 const ADS_REF_ID = 'default'
 const LOGO_REF_TYPE = 'store_logo'
 
-const formatDateTime = (value: string | null) => {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('vi-VN')
-}
+const formatDateTime = (value: string | null, timeZone = readStoredAppTimeZone()) =>
+  formatDateTimeInTimeZone(value, timeZone)
 
 const formatFileSize = (bytes: number): string => {
   if (bytes < 1024) return `${bytes} B`
@@ -249,7 +255,7 @@ const mapSettingsToForm = (settings: StoreSettingsMap): StoreSettingsForm => ({
   fefoThresholdDays: asNumberString(settings['inventory.fefo_threshold_days'], 180),
   restockSalesWindowDays: asNumberString(settings['inventory.restock_sales_window_days'], 60),
   restockTargetCoverDays: asNumberString(settings['inventory.restock_target_cover_days'], 14),
-  timezone: asString(settings['system.timezone'], 'Asia/Ho_Chi_Minh'),
+  timezone: asString(settings['system.timezone'], DEFAULT_APP_TIME_ZONE),
   currency: asString(settings['system.currency'], 'VND'),
 })
 
@@ -297,6 +303,16 @@ export function StoreSettings() {
   const [adsFiles, setAdsFiles] = useState<FileRecord[]>([])
   const [adsFilesLoading, setAdsFilesLoading] = useState(false)
   const [adsFilesUploading, setAdsFilesUploading] = useState(false)
+  const effectiveSettingsTimeZone = normalizeTimeZone(storeSettingsForm.timezone)
+  const timeZoneValid = !storeSettingsForm.timezone.trim() || isValidTimeZone(storeSettingsForm.timezone.trim())
+  const timeZonePreview = useMemo(
+    () => formatDateTimeInTimeZone(new Date(), effectiveSettingsTimeZone),
+    [effectiveSettingsTimeZone],
+  )
+  const timeZoneDisplayLabel = useMemo(
+    () => getTimeZoneDisplayLabel(effectiveSettingsTimeZone),
+    [effectiveSettingsTimeZone],
+  )
 
   const bankSuggestions = useMemo(() => {
     const keyword = normalizeText(bankPickerKeyword.trim())
@@ -339,6 +355,7 @@ export function StoreSettings() {
       setStoreInfo(info)
       setStoreInfoForm(mapStoreInfoToForm(info))
       setStoreSettingsForm(mapSettingsToForm(mergedSettings))
+      persistAppTimeZone(asString(mergedSettings['system.timezone'], DEFAULT_APP_TIME_ZONE))
       setQrAccountName(asString(saleSettings['sale.bank_account_name'], info.owner_name ?? ''))
       setAutoPrintUpdatedAt(autoPrintSetting.updated_at)
     } catch (storeLoadError) {
@@ -894,6 +911,12 @@ export function StoreSettings() {
       setSettingsError('Thoi gian transition ads khong hop le.')
       return
     }
+    if (!timeZoneValid) {
+      setSettingsError('Mui gio khong hop le. Vui long chon theo goi y IANA, vi du Asia/Ho_Chi_Minh.')
+      return
+    }
+
+    const normalizedTimeZone = normalizeTimeZone(storeSettingsForm.timezone)
 
     setSettingsSubmitting(true)
     setSettingsError(null)
@@ -924,13 +947,15 @@ export function StoreSettings() {
           'inventory.fefo_threshold_days': Math.trunc(fefoThresholdDays),
           'inventory.restock_sales_window_days': Math.trunc(restockSalesWindowDays),
           'inventory.restock_target_cover_days': Math.trunc(restockTargetCoverDays),
-          'system.timezone': storeSettingsForm.timezone.trim() || 'Asia/Ho_Chi_Minh',
+          'system.timezone': normalizedTimeZone,
           'system.currency': storeSettingsForm.currency.trim() || 'VND',
         }),
       ])
 
       const autoPrintSetting = await storeApi.getSetting('sale.auto_print')
       setAutoPrintUpdatedAt(autoPrintSetting.updated_at)
+      persistAppTimeZone(normalizedTimeZone)
+      setStoreSettingsForm((prev) => ({ ...prev, timezone: normalizedTimeZone }))
       setSettingsMessage('Đã cập nhật cấu hình cửa hàng.')
     } catch (submitStoreSettingsError) {
       if (submitStoreSettingsError instanceof ApiError) setSettingsError(submitStoreSettingsError.message)
@@ -1214,7 +1239,7 @@ export function StoreSettings() {
       <section className="glass-card rounded-3xl p-6">
         <h3 className="text-xl font-semibold text-ink-900">Cấu hình bán hàng và kho</h3>
         <p className="mt-2 text-xs text-ink-500">
-          Tự động in hóa đơn cập nhật lúc: {formatDateTime(autoPrintUpdatedAt)}
+          Tự động in hóa đơn cập nhật lúc: {formatDateTime(autoPrintUpdatedAt, effectiveSettingsTimeZone)}
         </p>
 
         <form onSubmit={onSubmitStoreSettings} className="mt-4 grid gap-4 md:grid-cols-2">
@@ -1592,13 +1617,29 @@ export function StoreSettings() {
           <label className="space-y-2 text-sm text-ink-700">
             <span>Múi giờ</span>
             <input
+              list="store-timezone-suggestions"
               value={storeSettingsForm.timezone}
               onChange={(event) =>
                 setStoreSettingsForm((prev) => ({ ...prev, timezone: event.target.value }))
               }
               className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
               disabled={!canManageStore || storeLoading}
+              placeholder={DEFAULT_APP_TIME_ZONE}
+              autoComplete="off"
             />
+            <datalist id="store-timezone-suggestions">
+              {TIMEZONE_SUGGESTIONS.map((item) => (
+                <option key={item.value} value={item.value} label={item.displayLabel} />
+              ))}
+            </datalist>
+            <p className="text-xs text-ink-500">
+              Goi y IANA: {timeZoneDisplayLabel}. Khuyen nghi dung {DEFAULT_APP_TIME_ZONE}.
+            </p>
+            <p className={`text-xs ${timeZoneValid ? 'text-brand-700' : 'text-coral-500'}`}>
+              {timeZoneValid
+                ? `Gio hien tai theo mui gio nay: ${timeZonePreview}`
+                : 'Mui gio khong hop le. Vui long chon theo goi y, vi du Asia/Ho_Chi_Minh.'}
+            </p>
           </label>
           <label className="space-y-2 text-sm text-ink-700">
             <span>Tiền tệ</span>
@@ -1752,7 +1793,7 @@ export function StoreSettings() {
                     <tr key={b.id} className="border-b border-ink-900/5">
                       <td className="py-2 pr-4 font-mono text-xs text-ink-800">{b.filename}</td>
                       <td className="py-2 pr-4 text-ink-600">{formatFileSize(b.size_bytes)}</td>
-                      <td className="py-2 pr-4 text-ink-600">{formatDateTime(b.created_at)}</td>
+                      <td className="py-2 pr-4 text-ink-600">{formatDateTime(b.created_at, effectiveSettingsTimeZone)}</td>
                       <td className="py-2 pr-4 text-ink-500">{b.note ?? '-'}</td>
                       <td className="py-2">
                         <div className="flex gap-1">

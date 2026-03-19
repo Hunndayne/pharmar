@@ -24,6 +24,8 @@ from Source.dependencies import (
 )
 from Source.events import publish_sale_event
 from Source.sale import (
+    build_utc_range_for_local_dates,
+    get_store_timezone,
     extract_item_sku,
     fetch_customer_by_id,
     fetch_customer_tier_discount_percent,
@@ -560,10 +562,11 @@ async def list_invoices(
     elif cashier_id is not None and cashier_id.strip():
         stmt = stmt.where(Invoice.created_by == cashier_id.strip())
 
-    if date_from is not None:
-        stmt = stmt.where(func.date(Invoice.created_at) >= date_from)
-    if date_to is not None:
-        stmt = stmt.where(func.date(Invoice.created_at) <= date_to)
+    range_start_at, range_end_at = build_utc_range_for_local_dates(date_from, date_to, await get_store_timezone())
+    if range_start_at is not None:
+        stmt = stmt.where(Invoice.created_at >= range_start_at)
+    if range_end_at is not None:
+        stmt = stmt.where(Invoice.created_at < range_end_at)
 
     rows, meta = await paginate_scalars(db, stmt, page, size)
     return PageResponse[InvoiceListItemResponse](
@@ -714,10 +717,11 @@ async def list_profit_source_invoices(
         .where(Invoice.status.in_(["completed", "returned"]))
         .order_by(Invoice.created_at.desc())
     )
-    if date_from is not None:
-        stmt = stmt.where(func.date(Invoice.created_at) >= date_from)
-    if date_to is not None:
-        stmt = stmt.where(func.date(Invoice.created_at) <= date_to)
+    range_start_at, range_end_at = build_utc_range_for_local_dates(date_from, date_to, await get_store_timezone())
+    if range_start_at is not None:
+        stmt = stmt.where(Invoice.created_at >= range_start_at)
+    if range_end_at is not None:
+        stmt = stmt.where(Invoice.created_at < range_end_at)
 
     rows, meta = await paginate_scalars(db, stmt, page, size)
     return PageResponse[ProfitSourceInvoiceResponse](

@@ -13,8 +13,20 @@ import {
   type SaleInvoiceListItem,
   type SaleInvoiceResponse,
 } from '../api/saleService'
+import { storeApi } from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
+import {
+  formatDateShortInTimeZone,
+  formatDateTimeInTimeZone,
+  getCurrentDateKeyInTimeZone,
+  getMonthStartDateKeyInTimeZone,
+  normalizeTimeZone,
+  persistAppTimeZone,
+  readStoredAppTimeZone,
+  shiftDateKey,
+  toDateKeyInTimeZone,
+} from '../utils/timezone'
 
 type KpiItem = {
   title: string
@@ -60,29 +72,19 @@ const formatDecimal = (value: number, maximumFractionDigits = 1) =>
     maximumFractionDigits,
   })
 
-const formatDateShort = (value: string) => {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value.slice(5)
-  return date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })
-}
+const formatDateShort = (value: string, timeZone = readStoredAppTimeZone()) =>
+  formatDateShortInTimeZone(value, timeZone)
 
-const formatDateTime = (value: string) => {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('vi-VN')
-}
+const formatDateTime = (value: string, timeZone = readStoredAppTimeZone()) =>
+  formatDateTimeInTimeZone(value, timeZone)
 
 const formatDaysCover = (value: number | null) => {
   if (value === null) return 'Chưa đủ dữ liệu'
   return `${formatDecimal(value)} ngày`
 }
 
-const toDateKey = (value: string) => {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value.slice(0, 10)
-  return date.toISOString().slice(0, 10)
-}
+const toDateKey = (value: string, timeZone = readStoredAppTimeZone()) =>
+  toDateKeyInTimeZone(value, timeZone)
 
 const addDays = (date: Date, diff: number) => {
   const next = new Date(date)
@@ -176,6 +178,15 @@ export function Dashboard() {
   const [restockData, setRestockData] = useState<RestockHighlightResponse | null>(null)
   const [aiInsights, setAiInsights] = useState<DashboardAiInsightsResponse | null>(null)
 
+  const resolveDashboardTimeZone = useCallback(async () => {
+    try {
+      const setting = await storeApi.getSetting('system.timezone')
+      return persistAppTimeZone(typeof setting.value === 'string' ? setting.value : '')
+    } catch {
+      return normalizeTimeZone(readStoredAppTimeZone())
+    }
+  }, [])
+
   const fetchInvoicesByRange = useCallback(
     async (accessToken: string, dateFrom: string, dateTo: string) => {
       const rows: SaleInvoiceListItem[] = []
@@ -241,11 +252,11 @@ export function Dashboard() {
     [],
   )
 
-  const loadDashboardCore = useCallback(async (accessToken: string) => {
+  const loadDashboardCore = useCallback(async (accessToken: string, timeZone: string) => {
     const now = new Date()
-    const today = toDateKey(now.toISOString())
-    const firstDayOfMonth = toDateKey(new Date(now.getFullYear(), now.getMonth(), 1).toISOString())
-    const trendStart = toDateKey(addDays(now, -13).toISOString())
+    const today = getCurrentDateKeyInTimeZone(timeZone, now)
+    const firstDayOfMonth = getMonthStartDateKeyInTimeZone(timeZone, now)
+    const trendStart = shiftDateKey(today, -13)
 
     const [todayStats, monthInvoices, trendInvoices, stockSummary] = await Promise.all([
       saleApi.getStatsToday(accessToken),
@@ -336,16 +347,17 @@ export function Dashboard() {
     setAiError(null)
 
     try {
+      const timeZone = await resolveDashboardTimeZone()
       const response = await reportApi.refreshDashboardAiInsights(accessToken)
       setAiInsights(response)
-      setUpdatedAt(new Date().toLocaleString('vi-VN'))
+      setUpdatedAt(formatDateTimeInTimeZone(new Date(), timeZone))
       lastLoadedAtRef.current = Date.now()
     } catch (refreshError) {
       setAiError(getErrorMessage(refreshError, 'Không thể phân tích AI Insight lúc này.'))
     } finally {
       setAiRefreshing(false)
     }
-  }, [token?.access_token])
+  }, [resolveDashboardTimeZone, token?.access_token])
 
   const loadDashboard = useCallback(async (options?: { force?: boolean }) => {
     const force = Boolean(options?.force)
@@ -372,8 +384,9 @@ export function Dashboard() {
     setAiError(null)
 
     try {
+      const timeZone = await resolveDashboardTimeZone()
       const [coreResult, restockResult, aiResult] = await Promise.allSettled([
-        loadDashboardCore(accessToken),
+        loadDashboardCore(accessToken, timeZone),
         loadRestockHighlights(accessToken),
         loadDashboardAiInsights(accessToken),
       ])
@@ -403,7 +416,7 @@ export function Dashboard() {
       }
 
       if (refreshed) {
-        setUpdatedAt(new Date().toLocaleString('vi-VN'))
+        setUpdatedAt(formatDateTimeInTimeZone(new Date(), timeZone))
         lastLoadedAtRef.current = Date.now()
       }
     } finally {
@@ -412,7 +425,7 @@ export function Dashboard() {
       setRestockLoading(false)
       setAiLoading(false)
     }
-  }, [kpis.length, loadDashboardAiInsights, loadDashboardCore, loadRestockHighlights, token?.access_token])
+  }, [kpis.length, loadDashboardAiInsights, loadDashboardCore, loadRestockHighlights, resolveDashboardTimeZone, token?.access_token])
 
   useEffect(() => {
     void loadDashboard({ force: true })
