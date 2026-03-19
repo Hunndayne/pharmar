@@ -1473,13 +1473,16 @@ async def _build_dashboard_ai_payload(authorization: str, slot_at: datetime) -> 
     trend_from = as_of - timedelta(days=13)
     top_products_from = as_of - timedelta(days=29)
 
-    today_dataset, month_dataset, trend_dataset, top_products_dataset, stock_summary, restock_highlights = await asyncio.gather(
+    today_dataset, month_dataset, trend_dataset, top_products_dataset = await asyncio.gather(
         _load_profit_dataset(authorization, today_from, as_of),
         _load_profit_dataset(authorization, month_from, as_of),
         _load_profit_dataset(authorization, trend_from, as_of),
         _load_profit_dataset(authorization, top_products_from, as_of),
+    )
+    stock_summary, restock_highlights, expenses_dataset = await asyncio.gather(
         _fetch_stock_summary(authorization),
-        _load_restock_highlights(authorization, 5),
+        _load_restock_highlights(authorization, 20),
+        _fetch_expense_summary(authorization, month_from, as_of),
     )
 
     month_invoice_rows = month_dataset.get("breakdowns", {}).get("invoice", [])
@@ -1498,7 +1501,7 @@ async def _build_dashboard_ai_payload(authorization: str, slot_at: datetime) -> 
             "gross_profit": _to_money(_to_decimal(item.get("gross_profit"))),
             "margin_percent": _to_percent(_to_decimal(item.get("margin_percent"))),
         }
-        for item in top_products_dataset.get("top_products", [])[:5]
+        for item in top_products_dataset.get("top_products", [])[:20]
         if isinstance(item, dict)
     ]
 
@@ -1513,7 +1516,7 @@ async def _build_dashboard_ai_payload(authorization: str, slot_at: datetime) -> 
             "days_cover": item.get("days_cover"),
             "urgency": str(item.get("urgency") or "").strip(),
         }
-        for item in restock_highlights.get("items", [])[:5]
+        for item in restock_highlights.get("items", [])[:20]
         if isinstance(item, dict)
     ]
 
@@ -1547,6 +1550,17 @@ async def _build_dashboard_ai_payload(authorization: str, slot_at: datetime) -> 
     )
     sales_patterns = _build_dashboard_sales_patterns(trend_dataset)
     inventory_insights = _build_dashboard_inventory_insights(restock_highlights)
+
+    gross_profit_month = _to_decimal(month_dataset.get("summary", {}).get("gross_profit"))
+    monthly_expenses = _to_decimal(expenses_dataset.get("grand_total"))
+    monthly_net_profit = gross_profit_month - monthly_expenses
+    
+    financial_performance = {
+        "monthly_gross_profit": _to_money(gross_profit_month),
+        "monthly_operating_expenses": _to_money(monthly_expenses),
+        "monthly_net_profit": _to_money(monthly_net_profit),
+        "expense_breakdown": expenses_dataset.get("items", []),
+    }
 
     return {
         "slot_at": slot_at.isoformat(),
@@ -1582,6 +1596,7 @@ async def _build_dashboard_ai_payload(authorization: str, slot_at: datetime) -> 
             "priority_actions": priority_actions,
             "sales_patterns": sales_patterns,
             "inventory_insights": inventory_insights,
+            "financial_performance": financial_performance,
         },
     }
 
@@ -2160,12 +2175,33 @@ async def profit_summary(
 ) -> dict[str, Any]:
     token = _require_authorization(authorization)
     await _refresh_report_timezone(token)
-    dataset = await _load_profit_dataset(
-        token,
-        _parse_optional_date(date_from, "date_from"),
-        _parse_optional_date(date_to, "date_to"),
+    start_date = _parse_optional_date(date_from, "date_from")
+    end_date = _parse_optional_date(date_to, "date_to")
+    
+    dataset, expenses = await asyncio.gather(
+        _load_profit_dataset(token, start_date, end_date),
+        _fetch_expense_summary(token, start_date, end_date),
     )
-    return dataset["summary"]
+    
+    summary = dataset.get("summary", {})
+    net_revenue = _to_decimal(summary.get("net_revenue"))
+    gross_profit = _to_decimal(summary.get("gross_profit"))
+    operating_expenses = _to_decimal(expenses.get("grand_total"))
+    net_profit = gross_profit - operating_expenses
+    
+    net_margin_percent = Decimal("0")
+    if net_revenue > 0:
+        net_margin_percent = (net_profit / net_revenue) * Decimal("100")
+        
+    expense_breakdown = expenses.get("items") if isinstance(expenses.get("items"), list) else []
+    
+    return {
+        **summary,
+        "operating_expenses": _to_money(operating_expenses),
+        "net_profit": _to_money(net_profit),
+        "net_margin_percent": _to_percent(net_margin_percent),
+        "expense_breakdown": expense_breakdown,
+    }
 
 
 @app.get("/api/v1/report/profit/breakdown")

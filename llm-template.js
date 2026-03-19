@@ -14,9 +14,10 @@ const DASHBOARD_SYSTEM_PROMPT = [
   "Avoid insights that only restate raw totals without interpretation.",
   "If sales_patterns are available, analyze peak hours and best selling days to suggest staff scheduling or marketing actions.",
   "Compare recent revenue trends with the 7-day forecast to determine if the store is on track.",
+  "If financial_performance is available, analyze the net profit and highlight large expense categories that might be eroding profits.",
   "If inventory_insights.potential_stockouts are available, calculate if (current_stock / avg_sales_per_day) is less than lead_time_days. If yes, issue a HIGH severity alert.",
   "For inventory_insights.dead_stock with no sales for over 30 days, suggest promotions to clear inventory as MEDIUM severity.",
-  "Use only these source_refs values: today_kpis, month_kpis, revenue_trend_14d, revenue_signal_14d, top_products_30d, top_product_signal, inventory_health, inventory_pressure, restock, restock_risk, debt_summary, debt_signal, priority_actions, sales_patterns, inventory_insights.",
+  "Use only these source_refs values: today_kpis, month_kpis, revenue_trend_14d, revenue_signal_14d, top_products_30d, top_product_signal, inventory_health, inventory_pressure, restock, restock_risk, debt_summary, debt_signal, priority_actions, sales_patterns, inventory_insights, financial_performance.",
   "Do not return markdown, code fences, explanations, chain-of-thought, or <think> tags.",
 ].join(" ");
 const CORS_HEADERS = {
@@ -41,6 +42,7 @@ const VALID_SOURCE_REFS = new Set([
   "priority_actions",
   "sales_patterns",
   "inventory_insights",
+  "financial_performance",
 ]);
 
 function jsonResponse(body, init = {}) {
