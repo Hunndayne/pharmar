@@ -378,9 +378,9 @@ async def create_product(
         vat_rate=payload.vat_rate,
         other_tax_rate=payload.other_tax_rate,
         is_active=payload.is_active,
+        units=[],
     )
     db.add(product)
-    await db.flush()
     desired_specs = _build_role_unit_specs(payload) or _build_fallback_retail_spec(payload)
     _sync_product_units_by_role(product, desired_specs)
     await db.commit()
@@ -769,22 +769,24 @@ async def import_products_from_excel(
                 vat_rate=vat_rate,
                 other_tax_rate=other_tax_rate,
                 is_active=True,
+                units=[],
             )
             db.add(product)
-            await db.flush()
-
-            unit = ProductUnit(
-                product_id=product.id,
-                unit_name=base_unit_name,
-                conversion_rate=1,
-                barcode=normalize_optional_string(
-                    str(cell_value("unit_barcode")) if cell_value("unit_barcode") is not None else None
-                ),
-                selling_price=base_unit_price,
-                is_base_unit=True,
-                is_active=True,
+            _sync_product_units_by_role(
+                product,
+                [
+                    {
+                        "role": "retail",
+                        "unit_name": base_unit_name,
+                        "conversion_rate": 1,
+                        "barcode": normalize_optional_string(
+                            str(cell_value("unit_barcode")) if cell_value("unit_barcode") is not None else None
+                        ),
+                        "selling_price": base_unit_price,
+                        "enabled": True,
+                    }
+                ],
             )
-            db.add(unit)
             await db.commit()
             imported += 1
         except Exception:
