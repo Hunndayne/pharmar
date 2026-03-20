@@ -47,7 +47,15 @@ async def lifespan(_: FastAPI):
             text(
                 f"""
                 ALTER TABLE {SCHEMA_NAME}.products
-                ADD COLUMN IF NOT EXISTS active_ingredient VARCHAR(300)
+                ADD COLUMN IF NOT EXISTS active_ingredient TEXT
+                """
+            )
+        )
+        await connection.execute(
+            text(
+                f"""
+                ALTER TABLE {SCHEMA_NAME}.products
+                ALTER COLUMN active_ingredient TYPE TEXT
                 """
             )
         )

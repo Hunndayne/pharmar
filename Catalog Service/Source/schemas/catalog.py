@@ -257,7 +257,7 @@ class ProductCreateRequest(BaseModel):
     code: str | None = Field(default=None, max_length=20)
     barcode: str | None = Field(default=None, max_length=50)
     name: str = Field(min_length=1, max_length=300)
-    active_ingredient: str | None = Field(default=None, max_length=300)
+    active_ingredient: str | None = None
     registration_number: str | None = Field(default=None, max_length=50)
     group_id: UUID | None = None
     manufacturer_id: UUID | None = None
@@ -282,7 +282,7 @@ class ProductUpdateRequest(BaseModel):
     code: str | None = Field(default=None, max_length=20)
     barcode: str | None = Field(default=None, max_length=50)
     name: str | None = Field(default=None, min_length=1, max_length=300)
-    active_ingredient: str | None = Field(default=None, max_length=300)
+    active_ingredient: str | None = None
     registration_number: str | None = Field(default=None, max_length=50)
     group_id: UUID | None = None
     manufacturer_id: UUID | None = None

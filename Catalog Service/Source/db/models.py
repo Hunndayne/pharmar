@@ -126,7 +126,7 @@ class Product(Base):
     code: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
     barcode: Mapped[str | None] = mapped_column(String(50), nullable=True)
     name: Mapped[str] = mapped_column(String(300), nullable=False)
-    active_ingredient: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    active_ingredient: Mapped[str | None] = mapped_column(Text, nullable=True)
     registration_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     group_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
