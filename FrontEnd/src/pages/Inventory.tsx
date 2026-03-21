@@ -223,6 +223,7 @@ export function Inventory() {
         : quickFilter === 'out'
           ? 'depleted'
           : undefined
+      const hideZero = quickFilter !== 'out'
 
       const [batchPage, nextSuppliers, inventorySettings] = await Promise.all([
         inventoryApi.listBatchesPaged({
@@ -232,6 +233,7 @@ export function Inventory() {
           exp_from: expFrom || undefined,
           exp_to: expTo || undefined,
           status: statusFilter,
+          hide_zero: hideZero,
         }),
         inventoryApi.getMetaSuppliers(accessToken || undefined),
         storeApi
@@ -290,7 +292,7 @@ export function Inventory() {
         }
       })
       .filter((row) => {
-        if (quickFilter === 'all') return true
+        if (quickFilter === 'all') return row.batch.qty_remaining > 0
         if (quickFilter === 'out') return row.batch.qty_remaining <= 0
         if (quickFilter === 'near') {
           return row.nearDays >= 0 && row.nearDays <= nearExpiryDays && row.batch.qty_remaining > 0

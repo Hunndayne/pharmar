@@ -1417,6 +1417,7 @@ def filter_batches(
     status_filter: BatchStatus | None = None,
     exp_from: date | None = None,
     exp_to: date | None = None,
+    hide_zero: bool = False,
 ) -> list[dict[str, Any]]:
     filtered = records
     if drug:
@@ -1439,6 +1440,8 @@ def filter_batches(
             or keyword in normalize_key(runtime_state.drugs[batch["drug_id"]]["code"])
             or keyword in normalize_key(batch.get("supplier_name", ""))
         ]
+    if hide_zero:
+        filtered = [batch for batch in filtered if int(batch.get("qty_remaining", 0)) > 0]
     if status_filter:
         filtered = [batch for batch in filtered if batch_status(batch, day) == status_filter]
 
@@ -2478,6 +2481,7 @@ async def list_batches(
     status_filter: BatchStatus | None = Query(default=None, alias="status"),
     exp_from: date | None = Query(default=None),
     exp_to: date | None = Query(default=None),
+    hide_zero: bool = Query(default=False),
 ) -> list[dict[str, Any]]:
     day = date.today()
     records = filter_batches(
@@ -2489,6 +2493,7 @@ async def list_batches(
         status_filter=status_filter,
         exp_from=exp_from,
         exp_to=exp_to,
+        hide_zero=hide_zero,
     )
     return [batch_to_view(batch, day) for batch in records]
 
@@ -2503,9 +2508,10 @@ async def list_batches_paged(
     status_filter: BatchStatus | None = Query(default=None, alias="status"),
     exp_from: date | None = Query(default=None),
     exp_to: date | None = Query(default=None),
+    hide_zero: bool = Query(default=False),
 ) -> dict[str, Any]:
     day = date.today()
-    records = filter_batches(
+    base_records = filter_batches(
         list(runtime_state.batches.values()),
         day=day,
         search=search,
@@ -2517,7 +2523,12 @@ async def list_batches_paged(
     )
     inventory_settings = await fetch_inventory_settings()
     near_date_days = _to_non_negative_int(inventory_settings.get("inventory.near_date_days"), 90)
-    summary = summarize_batches_by_drug(records, day=day, near_date_days=near_date_days)
+    summary = summarize_batches_by_drug(base_records, day=day, near_date_days=near_date_days)
+    records = (
+        [batch for batch in base_records if int(batch.get("qty_remaining", 0)) > 0]
+        if hide_zero
+        else base_records
+    )
 
     total = len(records)
     pages = max(1, (total + size - 1) // size)

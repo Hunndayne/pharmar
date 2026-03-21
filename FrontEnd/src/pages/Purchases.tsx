@@ -2828,9 +2828,11 @@ export function Purchases() {
                             Sửa
                           </button>
                           <button
+                            type="button"
                             onClick={() => removeOrder(order.id)}
+                            disabled={!canCancelOrder}
                             title={canCancelOrder ? 'Hủy phiếu nhập' : 'Phiếu này đã phát sinh giao dịch, không thể hủy'}
-                            className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500"
+                            className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500 disabled:cursor-not-allowed disabled:opacity-45"
                           >
                             Xóa
                           </button>
@@ -2965,9 +2967,11 @@ export function Purchases() {
                     Sửa
                   </button>
                   <button
+                    type="button"
                     onClick={() => removeOrder(order.id)}
+                    disabled={!canCancelOrder}
                     title={canCancelOrder ? 'Hủy phiếu nhập' : 'Phiếu này đã phát sinh giao dịch, không thể hủy'}
-                    className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500"
+                    className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500 disabled:cursor-not-allowed disabled:opacity-45"
                   >
                     Xóa
                   </button>

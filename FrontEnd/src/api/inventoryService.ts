@@ -397,6 +397,7 @@ export const inventoryApi = {
     status?: InventoryBatchStatus
     exp_from?: string
     exp_to?: string
+    hide_zero?: boolean
   }) => requestInventoryJson<InventoryBatch[]>('/inventory/batches', { method: 'GET' }, undefined, params),
 
   listBatchesPaged: (params?: {
@@ -408,6 +409,7 @@ export const inventoryApi = {
     status?: InventoryBatchStatus
     exp_from?: string
     exp_to?: string
+    hide_zero?: boolean
   }) =>
     requestInventoryJson<InventoryBatchPagedResponse>(
       '/inventory/batches/paged',
