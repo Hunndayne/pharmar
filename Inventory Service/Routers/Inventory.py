@@ -1279,11 +1279,18 @@ def receipt_is_editable(
             if raise_if_not:
                 raise HTTPException(status_code=409, detail="Receipt cannot be modified because batch has sales/adjustments")
             return False
-        non_import = any(
-            m["batch_id"] == batch["id"] and m["event_type"] != MovementType.IMPORT_RECEIPT
+        irreversible_movement = any(
+            m["batch_id"] == batch["id"]
+            and (
+                m["event_type"] == MovementType.RECEIPT_CANCEL
+                or (
+                    m["event_type"] == MovementType.STOCK_ADJUSTMENT
+                    and not str(m.get("note") or "").startswith("sale_return:")
+                )
+            )
             for m in runtime_state.movements
         )
-        if non_import:
+        if irreversible_movement:
             if raise_if_not:
                 raise HTTPException(status_code=409, detail="Receipt cannot be modified because batch has sales/adjustments")
             return False
