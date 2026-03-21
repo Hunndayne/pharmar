@@ -2827,15 +2827,6 @@ export function Purchases() {
                           >
                             Sửa
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => removeOrder(order.id)}
-                            disabled={!canCancelOrder}
-                            title={canCancelOrder ? 'Hủy phiếu nhập' : 'Phiếu này đã phát sinh giao dịch, không thể hủy'}
-                            className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500 disabled:cursor-not-allowed disabled:opacity-45"
-                          >
-                            Xóa
-                          </button>
                         </div>
                       </td>
                     </tr>
@@ -2910,6 +2901,21 @@ export function Purchases() {
                                 ))}
                               </div>
                             </div>
+
+                            <div className="flex items-center justify-between gap-3 rounded-2xl border border-coral-500/15 bg-coral-500/5 px-4 py-3">
+                              <p className="text-sm text-ink-600">
+                                Hủy phiếu sẽ đưa toàn bộ lô trong phiếu này về trạng thái đã hủy nếu phiếu chưa phát sinh giao dịch.
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => removeOrder(order.id)}
+                                disabled={!canCancelOrder}
+                                title={canCancelOrder ? 'Hủy phiếu nhập' : 'Phiếu này đã phát sinh giao dịch, không thể hủy'}
+                                className="shrink-0 rounded-full border border-coral-500/30 bg-coral-500/10 px-4 py-2 text-sm font-semibold text-coral-500 disabled:cursor-not-allowed disabled:opacity-45"
+                              >
+                                Hủy phiếu
+                              </button>
+                            </div>
                           </div>
                         </td>
                       </tr>
@@ -2966,15 +2972,6 @@ export function Purchases() {
                   >
                     Sửa
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => removeOrder(order.id)}
-                    disabled={!canCancelOrder}
-                    title={canCancelOrder ? 'Hủy phiếu nhập' : 'Phiếu này đã phát sinh giao dịch, không thể hủy'}
-                    className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500 disabled:cursor-not-allowed disabled:opacity-45"
-                  >
-                    Xóa
-                  </button>
                 </div>
 
                 {isExpanded ? (
@@ -2998,6 +2995,20 @@ export function Purchases() {
                           index={lineIndex + 1}
                         />
                       ))}
+                    </div>
+                    <div className="flex flex-col gap-2 rounded-2xl border border-coral-500/15 bg-coral-500/5 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="text-sm text-ink-600">
+                        Hủy phiếu sẽ đưa toàn bộ lô trong phiếu này về trạng thái đã hủy nếu phiếu chưa phát sinh giao dịch.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => removeOrder(order.id)}
+                        disabled={!canCancelOrder}
+                        title={canCancelOrder ? 'Hủy phiếu nhập' : 'Phiếu này đã phát sinh giao dịch, không thể hủy'}
+                        className="rounded-full border border-coral-500/30 bg-coral-500/10 px-4 py-2 text-sm font-semibold text-coral-500 disabled:cursor-not-allowed disabled:opacity-45"
+                      >
+                        Hủy phiếu
+                      </button>
                     </div>
                   </div>
                 ) : null}
