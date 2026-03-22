@@ -13,7 +13,7 @@ import {
   type InventoryReceiptLineUnitPrice,
 } from '../api/inventoryService'
 import { catalogApi } from '../api/catalogService'
-import { ApiError } from '../api/usersService'
+import { ApiError, type ApiValidationDetailItem } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
 import { downloadCsv } from '../utils/csv'
@@ -248,6 +248,11 @@ const parseNumber = (value: string) => {
 }
 
 const formatCurrency = (value: number) => `${Math.round(Number(value) || 0).toLocaleString('vi-VN')}đ`
+const DATE_ORDER_RULE_TEXT = 'exp_date must be later than mfg_date'
+const DATE_ORDER_MFG_ERROR = 'Kiểm tra lại NSX'
+const DATE_ORDER_EXP_ERROR = 'HSD phải lớn hơn NSX'
+const INVALID_MFG_DATE_ERROR = 'NSX không hợp lệ'
+const INVALID_EXP_DATE_ERROR = 'HSD không hợp lệ'
 const paymentMethods: PaymentMethod[] = ['Ngân hàng', 'Ví điện tử Momo/ZaloPay', 'Thanh toán thẻ']
 const shippingCarriers: ShippingCarrier[] = ['GHN', 'J&T']
 const STORE_NAME = 'Nhà thuốc Thanh Huy'
@@ -256,6 +261,52 @@ const LABEL_HEIGHT_MM = 25.4
 
 const sanitizeDigits = (value: string) => value.replace(/\D+/g, '')
 const normalizeBatchCode = (value: string) => value.trim().toUpperCase()
+const isLineDateOrderInvalid = (mfgDate: string, expDate: string) =>
+  Boolean(mfgDate && expDate && expDate <= mfgDate)
+const applyLineDateOrderErrors = (nextErrors: Record<string, string>, index: number) => {
+  nextErrors[`line-mfg-${index}`] = DATE_ORDER_MFG_ERROR
+  nextErrors[`line-exp-${index}`] = DATE_ORDER_EXP_ERROR
+}
+const normalizeLineValidationMessage = (
+  field: 'mfg_date' | 'exp_date',
+  message: string | undefined,
+) => {
+  const fallback = field === 'mfg_date' ? INVALID_MFG_DATE_ERROR : INVALID_EXP_DATE_ERROR
+  const trimmed = String(message ?? '').trim()
+  if (!trimmed) return fallback
+  if (trimmed.includes(DATE_ORDER_RULE_TEXT)) {
+    return field === 'mfg_date' ? DATE_ORDER_MFG_ERROR : DATE_ORDER_EXP_ERROR
+  }
+  return trimmed.replace(/^Value error,\s*/i, '')
+}
+const buildLineValidationErrors = (detail: ApiValidationDetailItem[] | undefined) => {
+  const nextErrors: Record<string, string> = {}
+
+  detail?.forEach((item) => {
+    const loc = Array.isArray(item?.loc) ? item.loc : []
+    if (loc[0] !== 'body' || loc[1] !== 'lines' || typeof loc[2] !== 'number') return
+
+    const lineIndex = loc[2]
+    const field = typeof loc[3] === 'string' ? loc[3] : undefined
+    const message = String(item?.msg ?? '').trim()
+
+    if (message.includes(DATE_ORDER_RULE_TEXT)) {
+      applyLineDateOrderErrors(nextErrors, lineIndex)
+      return
+    }
+
+    if (field === 'mfg_date') {
+      nextErrors[`line-mfg-${lineIndex}`] = normalizeLineValidationMessage(field, message)
+      return
+    }
+
+    if (field === 'exp_date') {
+      nextErrors[`line-exp-${lineIndex}`] = normalizeLineValidationMessage(field, message)
+    }
+  })
+
+  return nextErrors
+}
 const escapeHtml = (value: string) =>
   value
     .replace(/&/g, '&amp;')
@@ -1554,6 +1605,20 @@ export function Purchases() {
       ...prev,
       lines: prev.lines.map((line) => (line.id === id ? { ...line, [field]: value } : line)),
     }))
+    if (field === 'mfgDate' || field === 'expDate') {
+      const lineIndex = form.lines.findIndex((line) => line.id === id)
+      if (lineIndex >= 0) {
+        setErrors((prev) => {
+          const mfgKey = `line-mfg-${lineIndex}`
+          const expKey = `line-exp-${lineIndex}`
+          if (!(mfgKey in prev) && !(expKey in prev)) return prev
+          const next = { ...prev }
+          delete next[mfgKey]
+          delete next[expKey]
+          return next
+        })
+      }
+    }
   }
   const handleLineBarcodeBlur = useCallback(
     (lineId: string, rawBarcode: string) => {
@@ -1737,6 +1802,9 @@ export function Purchases() {
       if (line.quantity.trim() && parseNumber(line.quantity) <= 0) next[`line-qty-${index}`] = 'Phải lớn hơn 0'
       if (!line.mfgDate) next[`line-mfg-${index}`] = 'Bắt buộc'
       if (!line.expDate) next[`line-exp-${index}`] = 'Bắt buộc'
+      if (isLineDateOrderInvalid(line.mfgDate, line.expDate)) {
+        applyLineDateOrderErrors(next, index)
+      }
       if (!line.price.trim()) next[`line-price-${index}`] = 'Bắt buộc'
       if (line.price.trim() && parseNumber(line.price) <= 0) next[`line-price-${index}`] = 'Phải lớn hơn 0'
       if (!line.unitRetailPrices.length) {
@@ -1878,6 +1946,15 @@ export function Purchases() {
       await loadPurchasesData(nextExtras)
       setAlert(isCreating ? 'Đã tạo phiếu nhập.' : 'Đã cập nhật phiếu nhập.')
     } catch (error) {
+      if (error instanceof ApiError && error.status === 422) {
+        const mappedValidationErrors = buildLineValidationErrors(error.validationDetail)
+        if (Object.keys(mappedValidationErrors).length > 0) {
+          setErrors(mappedValidationErrors)
+          setAlert(null)
+          focusFirstInvalidField(mappedValidationErrors)
+          return
+        }
+      }
       if (error instanceof ApiError && error.status === 409) {
         console.error('Update import receipt conflict', error)
       }
@@ -3409,7 +3486,11 @@ export function Purchases() {
                               value={line.mfgDate}
                               onChange={(event) => updateLine(line.id, 'mfgDate', event.target.value)}
                               type="date"
-                              className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
+                              className={`mt-1 w-full rounded-xl border px-3 py-2 text-sm text-ink-900 ${
+                                errors[`line-mfg-${index}`]
+                                  ? 'border-coral-500 bg-coral-50/40'
+                                  : 'border-ink-900/10 bg-white'
+                              }`}
                             />
                             {errors[`line-mfg-${index}`] ? (
                               <span className="text-xs text-coral-500">{errors[`line-mfg-${index}`]}</span>
@@ -3423,7 +3504,11 @@ export function Purchases() {
                               value={line.expDate}
                               onChange={(event) => updateLine(line.id, 'expDate', event.target.value)}
                               type="date"
-                              className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
+                              className={`mt-1 w-full rounded-xl border px-3 py-2 text-sm text-ink-900 ${
+                                errors[`line-exp-${index}`]
+                                  ? 'border-coral-500 bg-coral-50/40'
+                                  : 'border-ink-900/10 bg-white'
+                              }`}
                             />
                             {errors[`line-exp-${index}`] ? (
                               <span className="text-xs text-coral-500">{errors[`line-exp-${index}`]}</span>

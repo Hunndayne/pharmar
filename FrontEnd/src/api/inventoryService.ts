@@ -1,4 +1,4 @@
-import { ApiError, buildUsersApiUrl } from './usersService'
+import { ApiError, buildUsersApiUrl, type ApiValidationDetailItem } from './usersService'
 import { controlledFetch } from './fetchControl'
 
 export type InventoryMetaSupplier = {
@@ -308,8 +308,11 @@ const requestInventoryJson = async <T>(
   const payload = isJson ? await response.json() : null
 
   if (!response.ok) {
-    const detailMessage = Array.isArray(payload?.detail)
-      ? payload.detail
+    const validationDetail = Array.isArray(payload?.detail)
+      ? (payload.detail as ApiValidationDetailItem[])
+      : undefined
+    const detailMessage = validationDetail
+      ? validationDetail
           .map((item: { msg?: string; loc?: (string | number)[] }) => {
             const loc = Array.isArray(item?.loc) ? item.loc.join('.') : ''
             return loc ? `${loc}: ${item?.msg ?? 'Dữ liệu không hợp lệ'}` : (item?.msg ?? 'Dữ liệu không hợp lệ')
@@ -323,7 +326,10 @@ const requestInventoryJson = async <T>(
       payload?.message ??
       `Yêu cầu thất bại (${response.status})`
 
-    throw new ApiError(detail, response.status)
+    throw new ApiError(detail, response.status, {
+      detail: payload?.detail,
+      validationDetail,
+    })
   }
 
   return payload as T

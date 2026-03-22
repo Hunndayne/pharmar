@@ -1411,6 +1411,9 @@ def filter_import_receipts(
             )
         ]
     filtered.sort(key=lambda receipt: (receipt["receipt_date"], receipt["created_at"]), reverse=True)
+    filtered.sort(
+        key=lambda receipt: 1 if receipt.get("status") == ReceiptStatus.CANCELLED else 0
+    )
     return filtered
 
 

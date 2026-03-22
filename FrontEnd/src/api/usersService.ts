@@ -72,13 +72,33 @@ export type LoginHistoryRecord = {
   created_at: string
 }
 
+export type ApiValidationDetailItem = {
+  type?: string
+  loc?: (string | number)[]
+  msg?: string
+  input?: unknown
+  ctx?: unknown
+  url?: string
+}
+
 export class ApiError extends Error {
   status: number
+  detail?: unknown
+  validationDetail?: ApiValidationDetailItem[]
 
-  constructor(message: string, status: number) {
+  constructor(
+    message: string,
+    status: number,
+    options?: {
+      detail?: unknown
+      validationDetail?: ApiValidationDetailItem[]
+    },
+  ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.detail = options?.detail
+    this.validationDetail = options?.validationDetail
   }
 }
 
@@ -158,8 +178,11 @@ const requestJson = async <T>(
   const payload = isJson ? await response.json() : null
 
   if (!response.ok) {
-    const detailMessage = Array.isArray(payload?.detail)
-      ? payload.detail
+    const validationDetail = Array.isArray(payload?.detail)
+      ? (payload.detail as ApiValidationDetailItem[])
+      : undefined
+    const detailMessage = validationDetail
+      ? validationDetail
           .map((item: { msg?: string; loc?: (string | number)[] }) => {
             const loc = Array.isArray(item?.loc) ? item.loc.join('.') : ''
             return loc ? `${loc}: ${item?.msg ?? 'Dữ liệu không hợp lệ'}` : (item?.msg ?? 'Dữ liệu không hợp lệ')
@@ -171,7 +194,10 @@ const requestJson = async <T>(
       payload?.detail ??
       payload?.message ??
       `Yeu cau that bai (${response.status})`
-    throw new ApiError(detail, response.status)
+    throw new ApiError(detail, response.status, {
+      detail: payload?.detail,
+      validationDetail,
+    })
   }
 
   return payload as T
