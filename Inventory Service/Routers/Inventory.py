@@ -1495,6 +1495,84 @@ def summarize_batches_by_drug(
     }
 
 
+def stock_drug_item_to_view(
+    drug: dict[str, Any],
+    *,
+    day: date,
+    low_stock_threshold: int,
+    expiry_warning_days: int,
+    near_date_days: int,
+) -> dict[str, Any]:
+    drug_id = str(drug.get("id") or "")
+    non_cancelled_batches = [
+        batch
+        for batch in runtime_state.batches.values()
+        if batch.get("drug_id") == drug_id and not batch.get("cancelled")
+    ]
+    active_batches = [
+        batch
+        for batch in non_cancelled_batches
+        if int(batch.get("qty_remaining", 0) or 0) > 0
+    ]
+    nearest_expiry = min((batch["exp_date"] for batch in active_batches), default=None)
+
+    return {
+        "drug_id": drug_id,
+        "drug_code": str(drug.get("code") or ""),
+        "drug_name": str(drug.get("name") or ""),
+        "drug_group": str(drug.get("group") or ""),
+        "base_unit": str(drug.get("base_unit") or ""),
+        "reorder_level": _to_positive_int(drug.get("reorder_level"), default=0),
+        "total_qty": stock_total_for_drug(drug_id),
+        "nearest_expiry": nearest_expiry,
+        "days_to_nearest_expiry": (nearest_expiry - day).days if nearest_expiry else None,
+        "active_batch_count": len(active_batches),
+        "status": stock_status_for_drug(
+            drug_id,
+            day,
+            low_stock_threshold=low_stock_threshold,
+            expiry_warning_days=expiry_warning_days,
+            near_date_days=near_date_days,
+        ),
+        "units": [
+            {
+                "id": str(unit.get("id") or ""),
+                "name": str(unit.get("name") or ""),
+                "conversion": max(1, int(unit.get("conversion") or 1)),
+                "barcode": str(unit.get("barcode") or ""),
+            }
+            for unit in drug.get("units", [])
+            if str(unit.get("name") or "").strip()
+        ],
+    }
+
+
+def summarize_stock_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "total_drugs": len(rows),
+        "out_of_stock": sum(1 for row in rows if row.get("total_qty", 0) <= 0),
+        "near_date": sum(
+            1
+            for row in rows
+            if row.get("status") in {"near_date", "expiring_soon"}
+        ),
+        "expired": sum(1 for row in rows if row.get("status") == "expired"),
+    }
+
+
+def matches_stock_quick_filter(row: dict[str, Any], quick_filter: str) -> bool:
+    total_qty = int(row.get("total_qty", 0) or 0)
+    status = str(row.get("status") or "")
+
+    if quick_filter == "out":
+        return total_qty <= 0
+    if quick_filter == "near":
+        return status in {"near_date", "expiring_soon"}
+    if quick_filter == "expired":
+        return status == "expired"
+    return total_qty > 0
+
+
 def issue_sort_key(
     batch: dict[str, Any],
     as_of: date,
@@ -1840,6 +1918,81 @@ async def get_stock_summary(token: str | None = Depends(optional_oauth2_scheme))
         )
     rows.sort(key=lambda row: row["drug_code"])
     return rows
+
+
+@router.get("/stock/drugs/paged")
+async def list_stock_drugs_paged(
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None),
+    drug: str | None = Query(default=None),
+    supplier_id: str | None = Query(default=None),
+    exp_from: date | None = Query(default=None),
+    exp_to: date | None = Query(default=None),
+    quick_filter: str = Query(default="all"),
+    token: str | None = Depends(optional_oauth2_scheme),
+) -> dict[str, Any]:
+    await maybe_sync_catalog_drugs(token)
+    inventory_settings = await fetch_inventory_settings()
+    day = date.today()
+    low_stock_threshold = _to_non_negative_int(inventory_settings.get("inventory.low_stock_threshold"), 10)
+    expiry_warning_days = _to_non_negative_int(inventory_settings.get("inventory.expiry_warning_days"), 30)
+    near_date_days = _to_non_negative_int(inventory_settings.get("inventory.near_date_days"), 90)
+
+    base_records = filter_batches(
+        list(runtime_state.batches.values()),
+        day=day,
+        search=search,
+        drug=drug,
+        supplier_id=supplier_id,
+        exp_from=exp_from,
+        exp_to=exp_to,
+    )
+
+    matched_drug_ids: set[str] = set()
+    for batch in base_records:
+        if batch.get("cancelled"):
+            continue
+        drug_id = str(batch.get("drug_id") or "")
+        if drug_id and drug_id in runtime_state.drugs:
+            matched_drug_ids.add(drug_id)
+
+    rows = [
+        stock_drug_item_to_view(
+            runtime_state.drugs[drug_id],
+            day=day,
+            low_stock_threshold=low_stock_threshold,
+            expiry_warning_days=expiry_warning_days,
+            near_date_days=near_date_days,
+        )
+        for drug_id in matched_drug_ids
+    ]
+    rows.sort(
+        key=lambda row: (
+            row.get("nearest_expiry") is None,
+            row.get("nearest_expiry") or date.max,
+            str(row.get("drug_code") or ""),
+        )
+    )
+
+    summary = summarize_stock_rows(rows)
+    records = [row for row in rows if matches_stock_quick_filter(row, quick_filter)]
+
+    total = len(records)
+    pages = max(1, (total + size - 1) // size)
+    current_page = min(page, pages)
+    start = (current_page - 1) * size
+    end = start + size
+    items = records[start:end]
+
+    return {
+        "items": items,
+        "total": total,
+        "page": current_page,
+        "size": size,
+        "pages": pages,
+        "summary": summary,
+    }
 
 
 @router.get("/stock/drugs/{drug_id}")

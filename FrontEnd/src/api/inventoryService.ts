@@ -165,6 +165,30 @@ export type InventoryBatchPagedResponse = PaginatedResponse<InventoryBatch> & {
   }
 }
 
+export type InventoryStockListItem = {
+  drug_id: string
+  drug_code: string
+  drug_name: string
+  drug_group: string
+  base_unit: string
+  reorder_level: number
+  total_qty: number
+  nearest_expiry: string | null
+  days_to_nearest_expiry: number | null
+  active_batch_count: number
+  status: InventoryStockStatus
+  units: InventoryMetaUnit[]
+}
+
+export type InventoryStockDrugPagedResponse = PaginatedResponse<InventoryStockListItem> & {
+  summary: {
+    total_drugs: number
+    out_of_stock: number
+    near_date: number
+    expired: number
+  }
+}
+
 export type InventoryMovement = {
   id: string
   event_type: string
@@ -454,6 +478,23 @@ export const inventoryApi = {
       token,
       undefined,
       { getCacheMs: 4000, max429Retries: 2 },
+    ),
+
+  listStockDrugsPaged: (params?: {
+    page?: number
+    size?: number
+    search?: string
+    drug?: string
+    supplier_id?: string
+    exp_from?: string
+    exp_to?: string
+    quick_filter?: 'all' | 'out' | 'near' | 'expired'
+  }) =>
+    requestInventoryJson<InventoryStockDrugPagedResponse>(
+      '/inventory/stock/drugs/paged',
+      { method: 'GET' },
+      undefined,
+      params,
     ),
 
   getStockDrugDetail: (drugId: string, token?: string) =>
