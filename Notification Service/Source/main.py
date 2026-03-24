@@ -47,6 +47,12 @@ async def lifespan(_: FastAPI):
         await connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA_NAME}"))
         await connection.run_sync(Base.metadata.create_all)
 
+        # Auto-migrate: add columns that create_all won't add to existing tables
+        await connection.execute(text(
+            f"ALTER TABLE {SCHEMA_NAME}.smtp_config "
+            f"ADD COLUMN IF NOT EXISTS to_email VARCHAR(255) NOT NULL DEFAULT ''"
+        ))
+
     await _ensure_default_alert_rules()
 
     # Start RabbitMQ consumer in background
