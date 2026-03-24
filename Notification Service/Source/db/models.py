@@ -25,6 +25,7 @@ class SmtpConfig(Base):
     use_tls: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     from_email: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     from_name: Mapped[str] = mapped_column(String(255), nullable=False, default="Pharmar")
+    to_email: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -29,6 +29,7 @@ class SmtpConfigResponse(BaseModel):
     use_tls: bool
     from_email: str
     from_name: str
+    to_email: str
     is_active: bool
     updated_at: datetime
 
@@ -41,6 +42,7 @@ class SmtpConfigUpdateRequest(BaseModel):
     use_tls: bool = True
     from_email: str = Field(max_length=255)
     from_name: str = Field(max_length=255, default="Pharmar")
+    to_email: str = Field(max_length=255, default="")
     is_active: bool = True
 
 

@@ -16,6 +16,7 @@ const emptySmtpForm: SmtpForm = {
   use_tls: true,
   from_email: '',
   from_name: 'Pharmar',
+  to_email: '',
   is_active: false,
 }
 
@@ -46,6 +47,7 @@ export function NotificationSettings() {
         use_tls: config.use_tls,
         from_email: config.from_email,
         from_name: config.from_name,
+        to_email: config.to_email,
         is_active: config.is_active,
       })
     } catch (err) {
@@ -252,6 +254,19 @@ export function NotificationSettings() {
                 placeholder="Pharmar"
                 value={smtpForm.from_name}
                 onChange={(e) => setSmtpForm((f) => ({ ...f, from_name: e.target.value }))}
+                className="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm focus:border-sky-400 focus:outline-none"
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="mb-1 block text-sm font-medium text-ink-700">
+                Email nhận thông báo
+                <span className="ml-1 text-xs text-ink-400">(địa chỉ nhận tất cả email tự động)</span>
+              </label>
+              <input
+                type="email"
+                placeholder="admin@pharmar.vn"
+                value={smtpForm.to_email}
+                onChange={(e) => setSmtpForm((f) => ({ ...f, to_email: e.target.value }))}
                 className="w-full rounded-lg border border-ink-200 px-3 py-2 text-sm focus:border-sky-400 focus:outline-none"
               />
             </div>

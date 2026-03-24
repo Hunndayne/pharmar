@@ -18,6 +18,7 @@ export type SmtpConfigRecord = {
   use_tls: boolean
   from_email: string
   from_name: string
+  to_email: string
   is_active: boolean
   updated_at: string
 }
@@ -30,6 +31,7 @@ export type SmtpConfigPayload = {
   use_tls: boolean
   from_email: string
   from_name: string
+  to_email: string
   is_active: boolean
 }
 

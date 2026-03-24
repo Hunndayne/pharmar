@@ -52,7 +52,8 @@ async def _on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
                 if rule is None:
                     return
 
-                if not rule.send_web:
+                # Skip only when both channels are disabled
+                if not rule.send_web and not rule.send_email:
                     return
 
                 notification = Notification(
@@ -64,8 +65,12 @@ async def _on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
                 if rule.send_email:
                     from .email_sender import send_email
 
-                    sent = await send_email(db, "", title, f"<p>{body_text}</p>")
+                    sent = await send_email(db, subject=title, body_html=f"<p>{body_text}</p>")
                     notification.email_sent = sent
+
+                # Only persist a web notification when send_web is enabled
+                if not rule.send_web:
+                    return
 
                 db.add(notification)
                 await db.commit()

@@ -18,20 +18,34 @@ async def _get_smtp_config(db: AsyncSession) -> SmtpConfig | None:
 
 async def send_email(
     db: AsyncSession,
-    to_email: str,
-    subject: str,
-    body_html: str,
+    to_email: str = "",
+    subject: str = "",
+    body_html: str = "",
 ) -> bool:
-    """Send an email using the SMTP config stored in DB. Returns True on success."""
+    """Send an email using the SMTP config stored in DB. Returns True on success.
+
+    If *to_email* is empty the value stored in SmtpConfig.to_email is used as
+    the fallback recipient.
+    """
     config = await _get_smtp_config(db)
     if config is None or not config.is_active or not config.host:
         logger.info("SMTP not configured or disabled — skipping email to %s", to_email)
         return False
 
+    # Resolve recipient: caller-supplied value takes priority, fall back to stored config
+    resolved_to = to_email or config.to_email
+    if not resolved_to:
+        logger.warning(
+            "No recipient email configured — cannot send email (subject=%s). "
+            "Set a 'To Email' in SMTP settings.",
+            subject,
+        )
+        return False
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = f"{config.from_name} <{config.from_email}>"
-    msg["To"] = to_email
+    msg["To"] = resolved_to
     msg.attach(MIMEText(body_html, "html", "utf-8"))
 
     try:
@@ -52,10 +66,10 @@ async def send_email(
             start_tls=start_tls,
             timeout=15,
         )
-        logger.info("Email sent to %s (subject=%s)", to_email, subject)
+        logger.info("Email sent to %s (subject=%s)", resolved_to, subject)
         return True
     except Exception:
-        logger.exception("Failed to send email to %s", to_email)
+        logger.exception("Failed to send email to %s", resolved_to)
         return False
 
 
