@@ -1265,6 +1265,11 @@ export function StoreSettings() {
             />
             Bán hàng theo lô (áp dụng FIFO/FEFO khi tạo hóa đơn)
           </label>
+          <p className="text-xs text-ink-500 md:col-span-2">
+            {storeSettingsForm.sellByLot
+              ? 'Khi bật, mỗi dòng bán hàng phải bám theo lô được chọn và kiểm chính sách FIFO/FEFO như hiện tại.'
+              : 'Khi tắt, hệ thống có thể tự phân bổ qua nhiều lô cho đơn vị lẻ. Nếu quét hoặc chọn một lô cụ thể thì vẫn giữ chặt theo lô đó.'}
+          </p>
           <label className="flex items-center gap-2 text-sm text-ink-700 md:col-span-2">
             <input
               type="checkbox"

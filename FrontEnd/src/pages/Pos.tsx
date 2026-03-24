@@ -4,6 +4,7 @@ import {
   type InventoryBatch,
   type InventoryBatchDetail,
   type InventoryMetaDrug,
+  type InventoryStockDrugDetail,
 } from '../api/inventoryService'
 import { customerApi, type CustomerRecord } from '../api/customerService'
 import { paymentQrApi } from '../api/paymentQrService'
@@ -39,6 +40,16 @@ type PosDrug = {
   totalQty: number
 }
 
+type PosItemAllocationMode = 'explicit_lot' | 'auto_fill'
+
+type PosOrderItemAllocation = {
+  batchId: string
+  batchCode: string
+  lotNumber: string
+  expDate: string
+  baseQuantity: number
+}
+
 type PosOrderItem = {
   id: string
   drugId: string
@@ -54,6 +65,10 @@ type PosOrderItem = {
   conversion: number
   unitPrice: number
   quantity: string
+  allocationMode: PosItemAllocationMode
+  plannedAllocations: PosOrderItemAllocation[]
+  availableBaseQty: number | null
+  allocationWarning: string | null
   lotPolicyWarning: string | null
   lotPolicyAcknowledged: boolean
 }
@@ -85,6 +100,19 @@ type CheckoutLine = {
   adjustedUnitPrice: number
 }
 
+type ExpandedCheckoutLine = {
+  item: PosOrderItem
+  batchId: string
+  batchCode: string
+  lotNumber: string
+  expDate: string
+  quantity: number
+  conversion: number
+  unitId: string
+  unitName: string
+  adjustedUnitPrice: number
+}
+
 type ScannerCamera = {
   id: string
   label: string
@@ -96,6 +124,7 @@ type InvoicePreviewLine = {
   quantity: number
   unitPrice: number
   amount: number
+  lotNumber?: string | null
   isService?: boolean
 }
 
@@ -260,6 +289,24 @@ const unitRoleLabel = (role: UnitRole) => {
   if (role === 'retail') return 'Đơn vị bán lẻ'
   return 'Đơn vị'
 }
+
+const isAutoFillAllocationMode = (mode: PosItemAllocationMode) => mode === 'auto_fill'
+
+const sumPlannedAllocationBaseQty = (item: PosOrderItem) =>
+  item.plannedAllocations.reduce((sum, allocation) => sum + Math.max(0, allocation.baseQuantity), 0)
+
+const getItemAvailableBaseQty = (item: PosOrderItem) =>
+  Math.max(
+    0,
+    isAutoFillAllocationMode(item.allocationMode)
+      ? item.availableBaseQty ?? item.batchQtyRemaining
+      : item.batchQtyRemaining,
+  )
+
+const buildAutoFillPolicyLabel = (fefoEnabled: boolean, fefoThresholdDays: number) =>
+  fefoEnabled
+    ? `Xuất kho tự động theo FEFO/FIFO (ngưỡng ${fefoThresholdDays} ngày)`
+    : 'Xuất kho tự động theo FIFO'
 
 const mapMetaDrugToPosDrug = (drug: InventoryMetaDrug): PosDrug => {
   const priceByUnitId = new Map(drug.unit_prices.map((item) => [item.unit_id, Number(item.price || 0)]))
@@ -732,6 +779,7 @@ export function Pos() {
   const [invoicePreview, setInvoicePreview] = useState<InvoicePreview | null>(null)
   const [invoicePreviewOpen, setInvoicePreviewOpen] = useState(false)
   const [lotPolicyConfirm, setLotPolicyConfirm] = useState<LotPolicyConfirmState | null>(null)
+  const [stockDetailsByDrugId, setStockDetailsByDrugId] = useState<Record<string, InventoryStockDrugDetail>>({})
 
   const [newMemberName, setNewMemberName] = useState('')
   const [newMemberPhone, setNewMemberPhone] = useState('')
@@ -743,11 +791,16 @@ export function Pos() {
   const scanProcessingRef = useRef(false)
   const customerDisplayChannelRef = useRef<BroadcastChannel | null>(null)
   const customerDisplaySyncTimerRef = useRef<number | null>(null)
+  const ordersRef = useRef<PosOrder[]>(orders)
 
   const activeOrder = useMemo(
     () => orders.find((order) => order.id === activeOrderId) ?? orders[0] ?? null,
     [orders, activeOrderId],
   )
+
+  useEffect(() => {
+    ordersRef.current = orders
+  }, [orders])
 
   const drugsById = useMemo(() => new Map(drugs.map((drug) => [drug.id, drug])), [drugs])
   const availableDrugs = useMemo(
@@ -1007,21 +1060,199 @@ export function Pos() {
   }, [])
 
   const updateOrder = useCallback((orderId: string, updater: (order: PosOrder) => PosOrder) => {
-    setOrders((prev) => prev.map((order) => (order.id === orderId ? updater(order) : order)))
+    setOrders((prev) => {
+      const next = prev.map((order) => (order.id === orderId ? updater(order) : order))
+      ordersRef.current = next
+      return next
+    })
   }, [])
 
   const addOrder = useCallback(() => {
     const nextOrder = createEmptyOrder()
-    setOrders((prev) => [...prev, nextOrder])
+    setOrders((prev) => {
+      const next = [...prev, nextOrder]
+      ordersRef.current = next
+      return next
+    })
     setActiveOrderId(nextOrder.id)
   }, [])
 
   const removeOrder = useCallback((orderId: string) => {
     setOrders((prev) => {
       if (prev.length <= 1) return prev
-      return prev.filter((order) => order.id !== orderId)
+      const next = prev.filter((order) => order.id !== orderId)
+      ordersRef.current = next
+      return next
     })
   }, [])
+
+  const getStockDrugDetailCached = useCallback(
+    async (drugId: string, forceRefresh = false) => {
+      if (!forceRefresh && stockDetailsByDrugId[drugId]) {
+        return stockDetailsByDrugId[drugId]
+      }
+
+      const detail = await inventoryApi.getStockDrugDetail(drugId, token?.access_token)
+      setStockDetailsByDrugId((prev) => ({ ...prev, [drugId]: detail }))
+      return detail
+    },
+    [stockDetailsByDrugId, token?.access_token],
+  )
+
+  const recalculateAutoFillOrder = useCallback(
+    async (orderId: string, forceRefresh = false) => {
+      const currentOrder = ordersRef.current.find((order) => order.id === orderId)
+      if (!currentOrder) return null
+
+      const autoFillItems = currentOrder.items.filter((item) => isAutoFillAllocationMode(item.allocationMode))
+      if (!autoFillItems.length) return currentOrder
+
+      const uniqueDrugIds = Array.from(new Set(autoFillItems.map((item) => item.drugId)))
+      const detailEntries = await Promise.all(
+        uniqueDrugIds.map(async (drugId) => [drugId, await getStockDrugDetailCached(drugId, forceRefresh)] as const),
+      )
+
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+
+      const sortedBatchesByDrugId = new Map<string, InventoryBatch[]>()
+      const remainingByDrugId = new Map<string, Map<string, number>>()
+
+      detailEntries.forEach(([drugId, detail]) => {
+        const sorted = detail.batches
+          .filter((batch) => batch.status === 'active' && batch.qty_remaining > 0)
+          .slice()
+          .sort((left, right) =>
+            compareByLotIssuePolicy(left, right, today, fefoEnabled, fefoThresholdDays),
+          )
+
+        sortedBatchesByDrugId.set(drugId, sorted)
+        remainingByDrugId.set(
+          drugId,
+          new Map(sorted.map((batch) => [batch.id, batch.qty_remaining])),
+        )
+      })
+
+      currentOrder.items.forEach((item) => {
+        if (isAutoFillAllocationMode(item.allocationMode)) return
+        const requestedBaseQty =
+          parsePositiveInt(item.quantity, 0) * Math.max(item.conversion, 1)
+        if (requestedBaseQty <= 0) return
+
+        const remaining = remainingByDrugId.get(item.drugId)
+        if (!remaining) return
+
+        const available = remaining.get(item.batchId) ?? 0
+        remaining.set(item.batchId, Math.max(0, available - Math.min(available, requestedBaseQty)))
+      })
+
+      const recalculatedItems = currentOrder.items.map((item) => {
+        if (!isAutoFillAllocationMode(item.allocationMode)) {
+          return {
+            ...item,
+            availableBaseQty: item.batchQtyRemaining,
+            allocationWarning: null,
+          }
+        }
+
+        const drug = drugsById.get(item.drugId)
+        const retailUnit = drug ? getRetailUnit(drug) : null
+        const sortedBatches = sortedBatchesByDrugId.get(item.drugId) ?? []
+        const remaining = remainingByDrugId.get(item.drugId) ?? new Map<string, number>()
+        const totalAvailableBaseQty = Array.from(remaining.values()).reduce((sum, value) => sum + Math.max(0, value), 0)
+
+        if (!drug || !retailUnit || item.conversion !== 1 || item.unitId !== retailUnit.id) {
+          return {
+            ...item,
+            batchQtyRemaining: totalAvailableBaseQty,
+            availableBaseQty: totalAvailableBaseQty,
+            plannedAllocations: [],
+            allocationWarning: `Tự phân bổ nhiều lô chỉ hỗ trợ ở đơn vị lẻ ${retailUnit?.name ?? 'đơn vị gốc'}. Vui lòng đổi về đơn vị lẻ hoặc chọn lô cụ thể.`,
+          }
+        }
+
+        const requestedBaseQty = parsePositiveInt(item.quantity, 0)
+        let remainingNeed = requestedBaseQty
+        const plannedAllocations: PosOrderItemAllocation[] = []
+
+        sortedBatches.forEach((batch) => {
+          if (remainingNeed <= 0) return
+          const available = remaining.get(batch.id) ?? 0
+          if (available <= 0) return
+
+          const allocated = Math.min(available, remainingNeed)
+          if (allocated <= 0) return
+
+          plannedAllocations.push({
+            batchId: batch.id,
+            batchCode: batch.batch_code,
+            lotNumber: batch.lot_number,
+            expDate: toIsoDate(batch.exp_date),
+            baseQuantity: allocated,
+          })
+          remaining.set(batch.id, available - allocated)
+          remainingNeed -= allocated
+        })
+
+        const firstAllocation = plannedAllocations[0]
+        return {
+          ...item,
+          batchId: firstAllocation?.batchId ?? item.batchId,
+          batchCode: 'Tự động',
+          lotNumber: '',
+          expDate: '',
+          batchQtyRemaining: totalAvailableBaseQty,
+          availableBaseQty: totalAvailableBaseQty,
+          plannedAllocations,
+          allocationWarning:
+            remainingNeed > 0
+              ? `Không đủ tồn kho khả dụng khi cộng các lô. Có ${totalAvailableBaseQty.toLocaleString('vi-VN')} ${retailUnit.name}, cần ${requestedBaseQty.toLocaleString('vi-VN')} ${retailUnit.name}.`
+              : null,
+        }
+      })
+
+      const nextOrder = {
+        ...currentOrder,
+        items: recalculatedItems,
+      }
+
+      updateOrder(orderId, () => nextOrder)
+      return nextOrder
+    },
+    [drugsById, fefoEnabled, fefoThresholdDays, getStockDrugDetailCached, updateOrder],
+  )
+
+  const validateOrderItemQuantityMessage = useCallback(
+    (item: PosOrderItem, quantity: number) => {
+      if (quantity <= 0) {
+        return 'Số lượng phải lớn hơn 0.'
+      }
+
+      if (isAutoFillAllocationMode(item.allocationMode)) {
+        if (item.conversion !== 1) {
+          return item.allocationWarning || 'Đơn vị này chưa hỗ trợ tự phân bổ nhiều lô.'
+        }
+
+        const availableBaseQty = getItemAvailableBaseQty(item)
+        if (quantity > availableBaseQty) {
+          return item.allocationWarning || 'Số lượng vượt tồn kho khả dụng khi cộng các lô.'
+        }
+
+        if (sumPlannedAllocationBaseQty(item) < quantity) {
+          return item.allocationWarning || 'Chưa phân bổ đủ số lượng qua các lô khả dụng.'
+        }
+
+        return null
+      }
+
+      const availableBaseQty = getItemAvailableBaseQty(item)
+      if (quantity * Math.max(item.conversion, 1) > availableBaseQty) {
+        return `Số lượng vượt tồn kho của lô ${item.batchCode}.`
+      }
+      return null
+    },
+    [],
+  )
 
   const printInvoicePreview = useCallback((preview: InvoicePreview) => {
     const printWindow = window.open('', '_blank', 'width=900,height=680')
@@ -1035,7 +1266,10 @@ export function Pos() {
         (line, index) => `
           <tr>
             <td>${index + 1}</td>
-            <td>${escapeHtml(line.name)}${line.isService ? ' <span class="service">(DV)</span>' : ''}</td>
+            <td>
+              ${escapeHtml(line.name)}${line.isService ? ' <span class="service">(DV)</span>' : ''}
+              ${line.lotNumber ? `<div class="service">Lô: ${escapeHtml(line.lotNumber)}</div>` : ''}
+            </td>
             <td class="center">${escapeHtml(line.unit)}</td>
             <td class="right">${line.quantity.toLocaleString('vi-VN')}</td>
             <td class="right">${formatCurrency(line.unitPrice)}</td>
@@ -1319,66 +1553,124 @@ export function Pos() {
         baseQuantity: params.quantity * Math.max(params.conversion, 1),
       })
 
-      setOrders((prev) =>
-        prev.map((order) => {
-          if (order.id !== orderId) return order
-          return {
-            ...order,
-            items: order.items.map((item) =>
-              item.id === itemId
-                ? {
-                    ...item,
-                    lotPolicyWarning: warning,
-                    lotPolicyAcknowledged:
-                      !!warning &&
-                      item.lotPolicyAcknowledged &&
-                      item.lotPolicyWarning === warning,
-                  }
-                : item,
-            ),
-          }
-        }),
-      )
+      updateOrder(orderId, (order) => ({
+        ...order,
+        items: order.items.map((item) =>
+          item.id === itemId
+            ? {
+                ...item,
+                lotPolicyWarning: warning,
+                lotPolicyAcknowledged:
+                  !!warning &&
+                  item.lotPolicyAcknowledged &&
+                  item.lotPolicyWarning === warning,
+              }
+            : item,
+        ),
+      }))
     },
-    [evaluateLotPolicy],
+    [evaluateLotPolicy, updateOrder],
   )
 
   const addItemToOrder = useCallback((orderId: string, item: PosOrderItem) => {
-    setOrders((prev) =>
-      prev.map((order) => {
-        if (order.id !== orderId) return order
-
-        const existing = order.items.find(
-          (current) =>
-            current.batchId === item.batchId &&
-            current.drugId === item.drugId &&
-            current.unitId === item.unitId,
-        )
-
-        if (existing) {
-          const nextQuantity = parsePositiveInt(existing.quantity, 0) + parsePositiveInt(item.quantity, 1)
-          return {
-            ...order,
-            items: order.items.map((current) =>
-              current.id === existing.id
-                ? {
-                    ...current,
-                    quantity: String(nextQuantity),
-                    lotPolicyWarning: item.lotPolicyWarning,
-                    lotPolicyAcknowledged: item.lotPolicyAcknowledged,
-                  }
-                : current,
-            ),
-          }
+    updateOrder(orderId, (order) => {
+      const existing = order.items.find((current) => {
+        if (
+          isAutoFillAllocationMode(current.allocationMode) &&
+          isAutoFillAllocationMode(item.allocationMode)
+        ) {
+          return current.drugId === item.drugId && current.unitId === item.unitId
         }
 
+        return (
+          current.batchId === item.batchId &&
+          current.drugId === item.drugId &&
+          current.unitId === item.unitId
+        )
+      })
+
+      if (existing) {
+        const nextQuantity =
+          parsePositiveInt(existing.quantity, 0) + parsePositiveInt(item.quantity, 1)
         return {
           ...order,
-          items: [item, ...order.items],
+          items: order.items.map((current) =>
+            current.id === existing.id
+              ? {
+                  ...current,
+                  quantity: String(nextQuantity),
+                  lotPolicyWarning: item.lotPolicyWarning,
+                  lotPolicyAcknowledged: item.lotPolicyAcknowledged,
+                  allocationWarning: item.allocationWarning,
+                }
+              : current,
+          ),
         }
-      }),
-    )
-  }, [])
+      }
+
+      return {
+        ...order,
+        items: [item, ...order.items],
+      }
+    })
+  }, [updateOrder])
+
+  const buildAutoFillItem = useCallback(
+    async (
+      orderId: string,
+      drug: PosDrug,
+      preferredUnit: PosDrugUnit,
+      defaultQuantity = 1,
+    ) => {
+      const retailUnit = getRetailUnit(drug)
+      if (preferredUnit.conversion !== 1 || preferredUnit.id !== retailUnit.id) {
+        throw new ApiError(
+          `Tự phân bổ nhiều lô chỉ hỗ trợ ở đơn vị lẻ ${retailUnit.name}. Vui lòng đổi về đơn vị lẻ hoặc chọn lô cụ thể.`,
+          400,
+        )
+      }
+
+      const detail = await getStockDrugDetailCached(drug.id)
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+      const firstBatch = detail.batches
+        .filter((batch) => batch.status === 'active' && batch.qty_remaining > 0)
+        .slice()
+        .sort((left, right) =>
+          compareByLotIssuePolicy(left, right, today, fefoEnabled, fefoThresholdDays),
+        )[0]
+
+      if (!firstBatch) {
+        throw new ApiError(`Không còn lô khả dụng cho ${drug.name}.`, 409)
+      }
+
+      addItemToOrder(orderId, {
+        id: createItemId(),
+        drugId: drug.id,
+        drugCode: drug.code,
+        drugName: drug.name,
+        batchId: firstBatch.id,
+        batchCode: 'Tự động',
+        lotNumber: '',
+        expDate: '',
+        batchQtyRemaining: 0,
+        unitId: retailUnit.id,
+        unitName: retailUnit.name,
+        conversion: retailUnit.conversion,
+        unitPrice: retailUnit.price,
+        quantity: String(Math.max(1, defaultQuantity)),
+        allocationMode: 'auto_fill',
+        plannedAllocations: [],
+        availableBaseQty: 0,
+        allocationWarning: null,
+        lotPolicyWarning: null,
+        lotPolicyAcknowledged: false,
+      })
+
+      return recalculateAutoFillOrder(orderId)
+    },
+    [addItemToOrder, fefoEnabled, fefoThresholdDays, getStockDrugDetailCached, recalculateAutoFillOrder],
+  )
 
   const buildItemFromBatch = useCallback(
     async (
@@ -1427,6 +1719,18 @@ export function Pos() {
         conversion: defaultUnit.conversion,
         unitPrice: defaultUnit.price,
         quantity: String(quantity),
+        allocationMode: 'explicit_lot',
+        plannedAllocations: [
+          {
+            batchId: batch.id,
+            batchCode: batch.batch_code,
+            lotNumber: batch.lot_number,
+            expDate: toIsoDate(batch.exp_date),
+            baseQuantity: quantity * Math.max(defaultUnit.conversion, 1),
+          },
+        ],
+        availableBaseQty: batch.qty_remaining,
+        allocationWarning: null,
         lotPolicyWarning: warning,
         lotPolicyAcknowledged: false,
       }
@@ -1446,10 +1750,13 @@ export function Pos() {
       }
 
       addItemToOrder(orderId, item)
+      if (!sellByLot) {
+        await recalculateAutoFillOrder(orderId)
+      }
       setActionMessage(`Đã thêm ${drug.name} từ lô ${batch.batch_code}.`)
       setActionError(null)
     },
-    [addItemToOrder, drugsById, evaluateLotPolicy, sellByLot],
+    [addItemToOrder, drugsById, evaluateLotPolicy, recalculateAutoFillOrder, sellByLot],
   )
 
   const addByLotQrValue = useCallback(
@@ -1501,6 +1808,27 @@ export function Pos() {
                 throw new ApiError(`Không đủ tồn kho cho ${barcodeLookup.drug.name}.`, 409)
               }
 
+              if (barcodeLookup.unit.conversion === 1) {
+                await buildAutoFillItem(
+                  activeOrder.id,
+                  barcodeLookup.drug,
+                  barcodeLookup.unit,
+                  quantity,
+                )
+                setActionMessage(
+                  `Đã thêm ${barcodeLookup.drug.name}; hệ thống sẽ tự phân bổ lô khi thanh toán.`,
+                )
+                setLotScanInput('')
+                return
+              }
+
+              if (suggestion.allocations.length > 1 || suggestedBatch.allocated < baseQuantity) {
+                throw new ApiError(
+                  `Đơn vị ${barcodeLookup.unit.name} chỉ bán được khi một lô đủ tồn. Vui lòng đổi về đơn vị lẻ hoặc quét lô cụ thể.`,
+                  409,
+                )
+              }
+
               const byBarcodeDetail = await inventoryApi.getBatchDetail(suggestedBatch.batch_id)
               await buildItemFromBatch(
                 byBarcodeDetail,
@@ -1532,7 +1860,7 @@ export function Pos() {
         setAddingByQr(false)
       }
     },
-    [activeOrder, barcodeIndex, buildItemFromBatch, sellByLot, selectedQuantity, token?.access_token],
+    [activeOrder, barcodeIndex, buildAutoFillItem, buildItemFromBatch, sellByLot, selectedQuantity, token?.access_token],
   )
 
   const handleAddByLotQr = useCallback(async () => {
@@ -1738,6 +2066,21 @@ export function Pos() {
         throw new ApiError(`Không đủ tồn kho cho ${selectedDrug.name}.`, 409)
       }
 
+      if (!sellByLot && selectedUnit.conversion === 1) {
+        await buildAutoFillItem(activeOrder.id, selectedDrug, selectedUnit, quantity)
+        setActionMessage(
+          `Đã thêm ${selectedDrug.name}; hệ thống sẽ tự phân bổ lô khi thanh toán.`,
+        )
+        return
+      }
+
+      if (!sellByLot && (suggestion.allocations.length > 1 || suggestedBatch.allocated < baseQuantity)) {
+        throw new ApiError(
+          `Đơn vị ${selectedUnit.name} chỉ bán được khi một lô đủ tồn. Vui lòng đổi về đơn vị lẻ hoặc chọn lô cụ thể.`,
+          409,
+        )
+      }
+
       const batchDetail = await inventoryApi.getBatchDetail(suggestedBatch.batch_id)
       await buildItemFromBatch(batchDetail, activeOrder.id, quantity, selectedDrug, selectedUnit)
     } catch (error) {
@@ -1746,7 +2089,7 @@ export function Pos() {
     } finally {
       setAddingByDrug(false)
     }
-  }, [activeOrder, selectedDrug, selectedUnit, selectedQuantity, buildItemFromBatch, token?.access_token])
+  }, [activeOrder, selectedDrug, selectedUnit, selectedQuantity, buildAutoFillItem, buildItemFromBatch, sellByLot, token?.access_token])
 
   const updateActiveOrder = useCallback(
     (updater: (order: PosOrder) => PosOrder) => {
@@ -1889,8 +2232,11 @@ export function Pos() {
         ...order,
         items: order.items.filter((item) => item.id !== itemId),
       }))
+      if (!sellByLot) {
+        void recalculateAutoFillOrder(activeOrder.id)
+      }
     },
-    [activeOrder, updateOrder],
+    [activeOrder, recalculateAutoFillOrder, sellByLot, updateOrder],
   )
 
   const handleItemQuantityChange = useCallback(
@@ -1899,7 +2245,9 @@ export function Pos() {
       const item = activeOrder.items.find((row) => row.id === itemId)
       if (!item) return
 
-      const availableInSelectedUnit = Math.floor(item.batchQtyRemaining / Math.max(item.conversion, 1))
+      const availableInSelectedUnit = Math.floor(
+        getItemAvailableBaseQty(item) / Math.max(item.conversion, 1),
+      )
       const nextQuantity = parsePositiveInt(rawValue, 0)
       const safeQuantity = Math.min(nextQuantity, Math.max(0, availableInSelectedUnit))
 
@@ -1908,7 +2256,11 @@ export function Pos() {
         quantity: rawValue.trim() === '' ? '' : String(safeQuantity),
       }))
 
-      if (safeQuantity > 0) {
+      if (!sellByLot) {
+        void recalculateAutoFillOrder(activeOrder.id)
+      }
+
+      if (!isAutoFillAllocationMode(item.allocationMode) && safeQuantity > 0) {
         void applyItemPolicyCheck(activeOrder.id, itemId, {
           drugId: item.drugId,
           drugCode: item.drugCode,
@@ -1920,7 +2272,13 @@ export function Pos() {
         })
       }
     },
-    [activeOrder, updateItemField, applyItemPolicyCheck],
+    [
+      activeOrder,
+      applyItemPolicyCheck,
+      recalculateAutoFillOrder,
+      sellByLot,
+      updateItemField,
+    ],
   )
 
   const handleItemUnitChange = useCallback(
@@ -1934,7 +2292,9 @@ export function Pos() {
       if (!nextUnit) return
 
       const currentQty = parsePositiveInt(item.quantity, 0)
-      const maxQuantity = Math.floor(item.batchQtyRemaining / Math.max(nextUnit.conversion, 1))
+      const maxQuantity = Math.floor(
+        getItemAvailableBaseQty(item) / Math.max(nextUnit.conversion, 1),
+      )
       const safeQuantity = Math.min(currentQty, Math.max(0, maxQuantity))
 
       updateItemField(itemId, (current) => ({
@@ -1946,7 +2306,11 @@ export function Pos() {
         quantity: String(safeQuantity),
       }))
 
-      if (safeQuantity > 0) {
+      if (!sellByLot) {
+        void recalculateAutoFillOrder(activeOrder.id)
+      }
+
+      if (!isAutoFillAllocationMode(item.allocationMode) && safeQuantity > 0) {
         void applyItemPolicyCheck(activeOrder.id, itemId, {
           drugId: item.drugId,
           drugCode: item.drugCode,
@@ -1958,7 +2322,14 @@ export function Pos() {
         })
       }
     },
-    [activeOrder, drugsById, updateItemField, applyItemPolicyCheck],
+    [
+      activeOrder,
+      applyItemPolicyCheck,
+      drugsById,
+      recalculateAutoFillOrder,
+      sellByLot,
+      updateItemField,
+    ],
   )
 
   const activeOrderLineDetails = useMemo(() => {
@@ -1968,19 +2339,25 @@ export function Pos() {
       lineTotal: number
       availableInUnit: number
       isQuantityValid: boolean
+      validationMessage: string | null
     }>
 
     return activeOrder.items.map((item) => {
       const quantity = parsePositiveInt(item.quantity, 0)
+      const availableInUnit = Math.floor(
+        getItemAvailableBaseQty(item) / Math.max(item.conversion, 1),
+      )
+      const validationMessage = validateOrderItemQuantityMessage(item, quantity)
       return {
         item,
         quantity,
         lineTotal: quantity * item.unitPrice,
-        availableInUnit: Math.floor(item.batchQtyRemaining / Math.max(item.conversion, 1)),
-        isQuantityValid: quantity > 0 && quantity <= Math.floor(item.batchQtyRemaining / Math.max(item.conversion, 1)),
+        availableInUnit,
+        isQuantityValid: !validationMessage,
+        validationMessage,
       }
     })
-  }, [activeOrder])
+  }, [activeOrder, validateOrderItemQuantityMessage])
 
   const subtotal = useMemo(
     () => activeOrderLineDetails.reduce((sum, row) => sum + row.lineTotal, 0),
@@ -2224,6 +2601,44 @@ export function Pos() {
     [],
   )
 
+  const expandCheckoutLines = useCallback(
+    (lines: CheckoutLine[]): ExpandedCheckoutLine[] =>
+      lines.flatMap((line) => {
+        if (!isAutoFillAllocationMode(line.item.allocationMode)) {
+          return [
+            {
+              item: line.item,
+              batchId: line.item.batchId,
+              batchCode: line.item.batchCode,
+              lotNumber: line.item.lotNumber,
+              expDate: line.item.expDate,
+              quantity: line.quantity,
+              conversion: Math.max(1, line.item.conversion),
+              unitId: line.item.unitId,
+              unitName: line.item.unitName,
+              adjustedUnitPrice: line.adjustedUnitPrice,
+            },
+          ]
+        }
+
+        return line.item.plannedAllocations
+          .filter((allocation) => allocation.baseQuantity > 0)
+          .map((allocation) => ({
+            item: line.item,
+            batchId: allocation.batchId,
+            batchCode: allocation.batchCode,
+            lotNumber: allocation.lotNumber,
+            expDate: allocation.expDate,
+            quantity: allocation.baseQuantity,
+            conversion: 1,
+            unitId: line.item.unitId,
+            unitName: line.item.unitName,
+            adjustedUnitPrice: line.adjustedUnitPrice,
+          }))
+      }),
+    [],
+  )
+
   const findFirstPolicyViolation = useCallback(
     async (order: PosOrder) => {
       for (const item of order.items) {
@@ -2261,17 +2676,32 @@ export function Pos() {
     setActionMessage(null)
 
     try {
-      const lines = buildCheckoutLines(activeOrder)
+      let checkoutOrder = activeOrder
+      if (!sellByLot && activeOrder.items.some((item) => isAutoFillAllocationMode(item.allocationMode))) {
+        const recalculatedOrder = await recalculateAutoFillOrder(activeOrder.id, true)
+        checkoutOrder =
+          recalculatedOrder ??
+          ordersRef.current.find((order) => order.id === activeOrder.id) ??
+          activeOrder
+      }
+
+      const lines = buildCheckoutLines(checkoutOrder)
       if (!lines.length) {
         throw new ApiError('Don hang chua co thuoc hop le de thanh toan.', 400)
       }
 
-      const invalidStock = lines.find(
-        (line) => line.quantity * Math.max(line.item.conversion, 1) > line.item.batchQtyRemaining,
+      const invalidStock = lines.find((line) =>
+        Boolean(validateOrderItemQuantityMessage(line.item, line.quantity)),
       )
       if (invalidStock) {
-        throw new ApiError(`So luong vuot ton kho cua lo ${invalidStock.item.batchCode}.`, 409)
+        throw new ApiError(
+          validateOrderItemQuantityMessage(invalidStock.item, invalidStock.quantity) ||
+            `So luong vuot ton kho cua lo ${invalidStock.item.batchCode}.`,
+          409,
+        )
       }
+
+      const expandedLines = expandCheckoutLines(lines)
 
       if (sellByLot && !skipPolicyCheck) {
         const violatingFromCache = lines.find((line) => !!line.item.lotPolicyWarning)
@@ -2281,16 +2711,16 @@ export function Pos() {
         ) {
           setLotPolicyConfirm({
             mode: 'checkout',
-            orderId: activeOrder.id,
+            orderId: checkoutOrder.id,
             item: violatingFromCache.item,
             message: violatingFromCache.item.lotPolicyWarning,
           })
           return false
         }
 
-        const freshViolation = await findFirstPolicyViolation(activeOrder)
+        const freshViolation = await findFirstPolicyViolation(checkoutOrder)
         if (freshViolation) {
-          updateOrder(activeOrder.id, (order) => ({
+          updateOrder(checkoutOrder.id, (order) => ({
             ...order,
             items: order.items.map((row) =>
               row.id === freshViolation.item.id
@@ -2300,7 +2730,7 @@ export function Pos() {
           }))
           setLotPolicyConfirm({
             mode: 'checkout',
-            orderId: activeOrder.id,
+            orderId: checkoutOrder.id,
             item: freshViolation.item,
             message: freshViolation.warning,
           })
@@ -2311,7 +2741,7 @@ export function Pos() {
       const checkoutPaymentMethod = options?.paymentMethod ?? 'cash'
       const checkoutTotal = grandTotal
       const baseRoundingAdjustmentAmount = baseRoundingAdjustment
-      const amountPaid = options?.amountPaid ?? parseNonNegativeNumber(activeOrder.cashReceived)
+      const amountPaid = options?.amountPaid ?? parseNonNegativeNumber(checkoutOrder.cashReceived)
       const paymentSummary = applyMinimumDebtThreshold(
         checkoutTotal,
         amountPaid,
@@ -2321,28 +2751,28 @@ export function Pos() {
       const roundingAdjustmentAmount = paymentSummary.roundingAdjustmentAmount
       const debtAmount = paymentSummary.debtAmount
 
-      if (activeOrder.paymentMode === 'cash' && amountPaid < effectiveCheckoutTotal) {
+      if (checkoutOrder.paymentMode === 'cash' && amountPaid < effectiveCheckoutTotal) {
         throw new ApiError('Tiền khách đưa chưa đủ để thanh toán.', 400)
       }
-      if (activeOrder.customerMode === 'member' && !activeOrder.customerId) {
+      if (checkoutOrder.customerMode === 'member' && !checkoutOrder.customerId) {
         throw new ApiError('Vui lòng tìm hoặc tạo thành viên trước khi thanh toán.', 400)
       }
 
-      const serviceFeeValue = parseNonNegativeNumber(activeOrder.serviceFee)
-      const noteParts = [activeOrder.note.trim()].filter(Boolean)
-      if (serviceFeeValue > 0 && activeOrder.serviceFeeMode === 'separate') {
+      const serviceFeeValue = parseNonNegativeNumber(checkoutOrder.serviceFee)
+      const noteParts = [checkoutOrder.note.trim()].filter(Boolean)
+      if (serviceFeeValue > 0 && checkoutOrder.serviceFeeMode === 'separate') {
         noteParts.push(`Phí dịch vụ: ${formatCurrency(serviceFeeValue)} (mục riêng)`)
       }
       if (debtAmount > 0) {
         noteParts.push(`Cong no: ${formatCurrency(debtAmount)}`)
       }
-      if (activeOrder.customerName.trim()) {
-        if (activeOrder.customerMode === 'member') {
+      if (checkoutOrder.customerName.trim()) {
+        if (checkoutOrder.customerMode === 'member') {
           noteParts.push(
-            `Khách thành viên: ${activeOrder.customerName.trim()}${activeOrder.customerCode ? ` (${activeOrder.customerCode})` : ''}${activeOrder.customerPhone ? ` - ${activeOrder.customerPhone}` : ''}`,
+            `Khách thành viên: ${checkoutOrder.customerName.trim()}${checkoutOrder.customerCode ? ` (${checkoutOrder.customerCode})` : ''}${checkoutOrder.customerPhone ? ` - ${checkoutOrder.customerPhone}` : ''}`,
           )
         } else {
-          noteParts.push(`Khách vãng lai: ${activeOrder.customerName.trim()}`)
+          noteParts.push(`Khách vãng lai: ${checkoutOrder.customerName.trim()}`)
         }
       }
       if (options?.noteSuffix?.trim()) {
@@ -2351,28 +2781,28 @@ export function Pos() {
 
       const invoice = await saleApi.createInvoice(token.access_token, {
         customer_id:
-          activeOrder.customerMode === 'member' && activeOrder.customerId
-            ? activeOrder.customerId
+          checkoutOrder.customerMode === 'member' && checkoutOrder.customerId
+            ? checkoutOrder.customerId
             : null,
         payment_method: checkoutPaymentMethod,
         service_fee_amount: serviceFeeValue,
-        service_fee_mode: activeOrder.serviceFeeMode,
+        service_fee_mode: checkoutOrder.serviceFeeMode,
         points_used: effectivePointsToRedeem,
         rounding_adjustment_amount: roundingAdjustmentAmount,
         amount_paid: amountPaid,
         note: noteParts.join(' | ') || null,
-        items: lines.map((line) => ({
+        items: expandedLines.map((line) => ({
           // Use product_id as SKU for reserve API to avoid ambiguity when drug codes are duplicated.
           sku: line.item.drugId,
           product_id: line.item.drugId,
           product_code: line.item.drugCode,
           product_name: line.item.drugName,
-          unit_id: line.item.unitId,
-          unit_name: line.item.unitName,
-          conversion_rate: Math.max(1, line.item.conversion),
-          batch_id: line.item.batchId,
-          lot_number: line.item.lotNumber,
-          expiry_date: line.item.expDate || null,
+          unit_id: line.unitId,
+          unit_name: line.unitName,
+          conversion_rate: Math.max(1, line.conversion),
+          batch_id: line.batchId,
+          lot_number: line.lotNumber,
+          expiry_date: line.expDate || null,
           quantity: line.quantity,
           unit_price: line.adjustedUnitPrice,
           discount_amount: 0,
@@ -2380,21 +2810,19 @@ export function Pos() {
       })
 
       const medicineTotal = lines.reduce((sum, line) => sum + line.lineTotal, 0)
-      const previewLines: InvoicePreviewLine[] = lines.map((line) => {
-        const lineAmount =
-          activeOrder.serviceFeeMode === 'split'
-            ? line.lineTotal + line.surcharge
-            : line.lineTotal
+      const previewLines: InvoicePreviewLine[] = expandedLines.map((line) => {
+        const lineAmount = line.quantity * line.adjustedUnitPrice
         return {
           name: line.item.drugName,
-          unit: line.item.unitName,
+          unit: line.unitName,
           quantity: line.quantity,
           unitPrice: line.quantity > 0 ? lineAmount / line.quantity : line.item.unitPrice,
           amount: lineAmount,
+          lotNumber: line.lotNumber || null,
         }
       })
 
-      if (activeOrder.serviceFeeMode === 'separate' && serviceFeeValue > 0) {
+      if (checkoutOrder.serviceFeeMode === 'separate' && serviceFeeValue > 0) {
         previewLines.push({
           name: 'Phi dich vu',
           unit: 'Lan',
@@ -2433,9 +2861,9 @@ export function Pos() {
         storePhone: storeInfo?.phone?.trim() || '',
         storeAddress: storeInfo?.address?.trim() || '',
         cashier: user?.full_name?.trim() || user?.username || 'Nhan vien',
-        customerName: activeOrder.customerName.trim() || 'Khach vang lai',
-        customerPhone: activeOrder.customerPhone.trim(),
-        note: activeOrder.note.trim(),
+        customerName: checkoutOrder.customerName.trim() || 'Khach vang lai',
+        customerPhone: checkoutOrder.customerPhone.trim(),
+        note: checkoutOrder.note.trim(),
         paymentMethod: invoice.payment_method === 'debt' ? 'Mua no' : (options?.paymentLabel ?? 'Tien mat'),
         amountPaid: invoiceAmountPaid,
         changeAmount: invoiceChangeAmount,
@@ -2444,7 +2872,7 @@ export function Pos() {
         medicineTotal,
         serviceFee: serviceFeeValue,
         grandTotal: invoiceGrandTotal,
-        serviceFeeMode: activeOrder.serviceFeeMode,
+        serviceFeeMode: checkoutOrder.serviceFeeMode,
         returnPolicyText,
         tierDiscountAmount: invoiceTierDiscountAmount > 0 ? invoiceTierDiscountAmount : undefined,
         pointsDiscountAmount: invoicePointsDiscountAmount > 0 ? invoicePointsDiscountAmount : undefined,
@@ -2455,7 +2883,7 @@ export function Pos() {
       setInvoicePreviewOpen(true)
       printInvoicePreview(preview)
 
-      updateOrder(activeOrder.id, (order) => ({
+      updateOrder(checkoutOrder.id, (order) => ({
         ...order,
         customerMode: 'walk_in',
         customerId: null,
@@ -2484,7 +2912,26 @@ export function Pos() {
     } finally {
       setCheckingOut(false)
     }
-  }, [activeOrder, token?.access_token, user, storeInfo, returnPolicyText, buildCheckoutLines, grandTotal, baseRoundingAdjustment, effectivePointsToRedeem, updateOrder, printInvoicePreview, sellByLot, findFirstPolicyViolation, tierDiscountAmount, pointsDiscountAmount])
+  }, [
+    activeOrder,
+    token?.access_token,
+    user,
+    storeInfo,
+    returnPolicyText,
+    buildCheckoutLines,
+    expandCheckoutLines,
+    grandTotal,
+    baseRoundingAdjustment,
+    effectivePointsToRedeem,
+    updateOrder,
+    printInvoicePreview,
+    recalculateAutoFillOrder,
+    sellByLot,
+    findFirstPolicyViolation,
+    tierDiscountAmount,
+    pointsDiscountAmount,
+    validateOrderItemQuantityMessage,
+  ])
 
   const handleGenerateBankQr = useCallback(async () => {
     if (!activeOrder || !token?.access_token) return
@@ -2950,12 +3397,19 @@ export function Pos() {
 
             {activeOrder?.items.map((item) => {
               const drug = drugsById.get(item.drugId)
-              const availableInUnit = Math.floor(item.batchQtyRemaining / Math.max(item.conversion, 1))
+              const availableInUnit = Math.floor(
+                getItemAvailableBaseQty(item) / Math.max(item.conversion, 1),
+              )
               const unitRefPrice =
                 drug?.units.find((unit) => unit.id === item.unitId)?.price ?? item.unitPrice
               const quantity = parsePositiveInt(item.quantity, 0)
               const lineTotal = quantity * item.unitPrice
-              const quantityInvalid = quantity <= 0 || quantity > availableInUnit
+              const quantityValidationMessage = validateOrderItemQuantityMessage(item, quantity)
+              const quantityInvalid = Boolean(quantityValidationMessage)
+              const autoFillDescription = buildAutoFillPolicyLabel(fefoEnabled, fefoThresholdDays)
+              const allocationSummary = item.plannedAllocations
+                .map((allocation) => `${allocation.batchCode} (${allocation.baseQuantity.toLocaleString('vi-VN')})`)
+                .join(' · ')
 
               return (
                 <div key={item.id} className="rounded-xl border border-ink-900/10 bg-white p-2.5 sm:rounded-2xl sm:p-4">
@@ -2963,8 +3417,13 @@ export function Pos() {
                     <div>
                       <p className="font-semibold text-ink-900">{item.drugName}</p>
                       <p className="text-xs text-ink-600">
-                        {item.drugCode} · Lô {item.batchCode} · HSD {item.expDate || '-'}
+                        {isAutoFillAllocationMode(item.allocationMode)
+                          ? `${item.drugCode} · ${autoFillDescription}`
+                          : `${item.drugCode} · Lô ${item.batchCode} · HSD ${item.expDate || '-'}`}
                       </p>
+                      {isAutoFillAllocationMode(item.allocationMode) && allocationSummary ? (
+                        <p className="mt-1 text-xs text-ink-500">Dự kiến xuất: {allocationSummary}</p>
+                      ) : null}
                       {drug?.instructions ? (
                         <p className="mt-1 text-xs text-ink-600">
                           <span className="font-semibold text-ink-800">HDSD:</span> {drug.instructions}
@@ -3035,14 +3494,18 @@ export function Pos() {
                   </div>
 
                   <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-ink-600 sm:mt-2 sm:gap-3">
-                    <span>Tồn: {availableInUnit.toLocaleString('vi-VN')} {item.unitName}</span>
-                    <span>({item.batchQtyRemaining.toLocaleString('vi-VN')} đơn vị gốc)</span>
+                    <span>
+                      {isAutoFillAllocationMode(item.allocationMode) ? 'Tồn khả dụng' : 'Tồn'}:{' '}
+                      {availableInUnit.toLocaleString('vi-VN')} {item.unitName}
+                    </span>
+                    <span>({getItemAvailableBaseQty(item).toLocaleString('vi-VN')} đơn vị gốc)</span>
                   </div>
 
                   {quantityInvalid ? (
-                    <p className="mt-2 text-xs text-coral-500">
-                      Số lượng không hợp lệ hoặc vượt tồn kho lô hiện tại.
-                    </p>
+                    <p className="mt-2 text-xs text-coral-500">{quantityValidationMessage}</p>
+                  ) : null}
+                  {!quantityInvalid && isAutoFillAllocationMode(item.allocationMode) && item.allocationWarning ? (
+                    <p className="mt-2 text-xs text-amber-700">{item.allocationWarning}</p>
                   ) : null}
                   {sellByLot && item.lotPolicyWarning ? (
                     <p className="mt-2 text-xs text-amber-700">{item.lotPolicyWarning}</p>
@@ -3371,6 +3834,7 @@ export function Pos() {
                       <tr key={`${line.name}-${index}`}>
                         <td className="px-4 py-3">
                           <p className="font-semibold text-ink-900">{line.name}</p>
+                          {line.lotNumber ? <p className="text-xs text-ink-500">Lô: {line.lotNumber}</p> : null}
                           {line.isService ? <p className="text-xs text-ink-500">Mục dịch vụ riêng</p> : null}
                         </td>
                         <td className="px-4 py-3 text-ink-700">{line.unit}</td>
