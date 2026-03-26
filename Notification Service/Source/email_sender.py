@@ -21,15 +21,20 @@ async def send_email(
     to_email: str = "",
     subject: str = "",
     body_html: str = "",
+    force: bool = False,
 ) -> bool:
     """Send an email using the SMTP config stored in DB. Returns True on success.
 
     If *to_email* is empty the value stored in SmtpConfig.to_email is used as
-    the fallback recipient.
+    the fallback recipient.  When *force* is True the is_active check is skipped
+    (used for test emails).
     """
     config = await _get_smtp_config(db)
-    if config is None or not config.is_active or not config.host:
-        logger.info("SMTP not configured or disabled — skipping email to %s", to_email)
+    if config is None or not config.host:
+        logger.info("SMTP not configured — skipping email to %s", to_email)
+        return False
+    if not force and not config.is_active:
+        logger.info("SMTP disabled — skipping email to %s", to_email)
         return False
 
     # Resolve recipient: caller-supplied value takes priority, fall back to stored config
@@ -74,11 +79,12 @@ async def send_email(
 
 
 async def send_test_email(db: AsyncSession, to_email: str) -> bool:
-    """Send a test email to verify SMTP settings."""
+    """Send a test email to verify SMTP settings (bypasses is_active check)."""
     return await send_email(
         db,
         to_email=to_email,
         subject="[Pharmar] Test email - Kiểm tra cấu hình SMTP",
+        force=True,
         body_html="""
         <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
             <h2 style="color:#1a1a1a">Kiểm tra SMTP thành công!</h2>

@@ -1059,32 +1059,63 @@ export function Pos() {
     }
   }, [])
 
-  const updateOrder = useCallback((orderId: string, updater: (order: PosOrder) => PosOrder) => {
-    setOrders((prev) => {
-      const next = prev.map((order) => (order.id === orderId ? updater(order) : order))
-      ordersRef.current = next
-      return next
-    })
+  const commitOrders = useCallback((nextOrders: PosOrder[]) => {
+    ordersRef.current = nextOrders
+    setOrders(nextOrders)
+    return nextOrders
   }, [])
+
+  const mutateOrder = useCallback(
+    (orderId: string, updater: (order: PosOrder) => PosOrder) => {
+      let nextOrder: PosOrder | null = null
+      const nextOrders = ordersRef.current.map((order) => {
+        if (order.id !== orderId) return order
+        nextOrder = updater(order)
+        return nextOrder
+      })
+
+      if (!nextOrder) return null
+      commitOrders(nextOrders)
+      return nextOrder
+    },
+    [commitOrders],
+  )
+
+  const replaceOrderSnapshot = useCallback(
+    (orderSnapshot: PosOrder) => {
+      if (!ordersRef.current.some((order) => order.id === orderSnapshot.id)) {
+        return null
+      }
+      commitOrders(
+        ordersRef.current.map((order) =>
+          order.id === orderSnapshot.id ? orderSnapshot : order,
+        ),
+      )
+      return orderSnapshot
+    },
+    [commitOrders],
+  )
+
+  const updateOrder = useCallback(
+    (orderId: string, updater: (order: PosOrder) => PosOrder) => {
+      void mutateOrder(orderId, updater)
+    },
+    [mutateOrder],
+  )
 
   const addOrder = useCallback(() => {
     const nextOrder = createEmptyOrder()
-    setOrders((prev) => {
-      const next = [...prev, nextOrder]
-      ordersRef.current = next
-      return next
-    })
+    commitOrders([...ordersRef.current, nextOrder])
     setActiveOrderId(nextOrder.id)
-  }, [])
+  }, [commitOrders])
 
-  const removeOrder = useCallback((orderId: string) => {
-    setOrders((prev) => {
-      if (prev.length <= 1) return prev
-      const next = prev.filter((order) => order.id !== orderId)
-      ordersRef.current = next
-      return next
-    })
-  }, [])
+  const removeOrder = useCallback(
+    (orderId: string) => {
+      if (ordersRef.current.length <= 1) return
+      commitOrders(ordersRef.current.filter((order) => order.id !== orderId))
+    },
+    [commitOrders],
+  )
 
   const getStockDrugDetailCached = useCallback(
     async (drugId: string, forceRefresh = false) => {
@@ -1100,12 +1131,13 @@ export function Pos() {
   )
 
   const recalculateAutoFillOrder = useCallback(
-    async (orderId: string, forceRefresh = false) => {
-      const currentOrder = ordersRef.current.find((order) => order.id === orderId)
-      if (!currentOrder) return null
-
-      const autoFillItems = currentOrder.items.filter((item) => isAutoFillAllocationMode(item.allocationMode))
-      if (!autoFillItems.length) return currentOrder
+    async (orderSnapshot: PosOrder, forceRefresh = false) => {
+      const autoFillItems = orderSnapshot.items.filter((item) =>
+        isAutoFillAllocationMode(item.allocationMode),
+      )
+      if (!autoFillItems.length) {
+        return replaceOrderSnapshot(orderSnapshot) ?? orderSnapshot
+      }
 
       const uniqueDrugIds = Array.from(new Set(autoFillItems.map((item) => item.drugId)))
       const detailEntries = await Promise.all(
@@ -1133,7 +1165,7 @@ export function Pos() {
         )
       })
 
-      currentOrder.items.forEach((item) => {
+      orderSnapshot.items.forEach((item) => {
         if (isAutoFillAllocationMode(item.allocationMode)) return
         const requestedBaseQty =
           parsePositiveInt(item.quantity, 0) * Math.max(item.conversion, 1)
@@ -1146,7 +1178,7 @@ export function Pos() {
         remaining.set(item.batchId, Math.max(0, available - Math.min(available, requestedBaseQty)))
       })
 
-      const recalculatedItems = currentOrder.items.map((item) => {
+      const recalculatedItems = orderSnapshot.items.map((item) => {
         if (!isAutoFillAllocationMode(item.allocationMode)) {
           return {
             ...item,
@@ -1212,14 +1244,13 @@ export function Pos() {
       })
 
       const nextOrder = {
-        ...currentOrder,
+        ...orderSnapshot,
         items: recalculatedItems,
       }
 
-      updateOrder(orderId, () => nextOrder)
-      return nextOrder
+      return replaceOrderSnapshot(nextOrder) ?? nextOrder
     },
-    [drugsById, fefoEnabled, fefoThresholdDays, getStockDrugDetailCached, updateOrder],
+    [drugsById, fefoEnabled, fefoThresholdDays, getStockDrugDetailCached, replaceOrderSnapshot],
   )
 
   const validateOrderItemQuantityMessage = useCallback(
@@ -1573,7 +1604,7 @@ export function Pos() {
   )
 
   const addItemToOrder = useCallback((orderId: string, item: PosOrderItem) => {
-    updateOrder(orderId, (order) => {
+    return mutateOrder(orderId, (order) => {
       const existing = order.items.find((current) => {
         if (
           isAutoFillAllocationMode(current.allocationMode) &&
@@ -1613,7 +1644,7 @@ export function Pos() {
         items: [item, ...order.items],
       }
     })
-  }, [updateOrder])
+  }, [mutateOrder])
 
   const buildAutoFillItem = useCallback(
     async (
@@ -1644,7 +1675,7 @@ export function Pos() {
         throw new ApiError(`Không còn lô khả dụng cho ${drug.name}.`, 409)
       }
 
-      addItemToOrder(orderId, {
+      const nextOrder = addItemToOrder(orderId, {
         id: createItemId(),
         drugId: drug.id,
         drugCode: drug.code,
@@ -1667,7 +1698,7 @@ export function Pos() {
         lotPolicyAcknowledged: false,
       })
 
-      return recalculateAutoFillOrder(orderId)
+      return nextOrder ? recalculateAutoFillOrder(nextOrder) : null
     },
     [addItemToOrder, fefoEnabled, fefoThresholdDays, getStockDrugDetailCached, recalculateAutoFillOrder],
   )
@@ -1749,9 +1780,9 @@ export function Pos() {
         return
       }
 
-      addItemToOrder(orderId, item)
-      if (!sellByLot) {
-        await recalculateAutoFillOrder(orderId)
+      const nextOrder = addItemToOrder(orderId, item)
+      if (!sellByLot && nextOrder) {
+        await recalculateAutoFillOrder(nextOrder)
       }
       setActionMessage(`Đã thêm ${drug.name} từ lô ${batch.batch_code}.`)
       setActionError(null)
@@ -2217,26 +2248,26 @@ export function Pos() {
   const updateItemField = useCallback(
     (itemId: string, updater: (item: PosOrderItem) => PosOrderItem) => {
       if (!activeOrder) return
-      updateOrder(activeOrder.id, (order) => ({
+      return mutateOrder(activeOrder.id, (order) => ({
         ...order,
         items: order.items.map((item) => (item.id === itemId ? updater(item) : item)),
       }))
     },
-    [activeOrder, updateOrder],
+    [activeOrder, mutateOrder],
   )
 
   const removeItem = useCallback(
     (itemId: string) => {
       if (!activeOrder) return
-      updateOrder(activeOrder.id, (order) => ({
+      const nextOrder = mutateOrder(activeOrder.id, (order) => ({
         ...order,
         items: order.items.filter((item) => item.id !== itemId),
       }))
-      if (!sellByLot) {
-        void recalculateAutoFillOrder(activeOrder.id)
+      if (!sellByLot && nextOrder) {
+        void recalculateAutoFillOrder(nextOrder)
       }
     },
-    [activeOrder, recalculateAutoFillOrder, sellByLot, updateOrder],
+    [activeOrder, mutateOrder, recalculateAutoFillOrder, sellByLot],
   )
 
   const handleItemQuantityChange = useCallback(
@@ -2251,13 +2282,13 @@ export function Pos() {
       const nextQuantity = parsePositiveInt(rawValue, 0)
       const safeQuantity = Math.min(nextQuantity, Math.max(0, availableInSelectedUnit))
 
-      updateItemField(itemId, (current) => ({
+      const nextOrder = updateItemField(itemId, (current) => ({
         ...current,
         quantity: rawValue.trim() === '' ? '' : String(safeQuantity),
       }))
 
-      if (!sellByLot) {
-        void recalculateAutoFillOrder(activeOrder.id)
+      if (!sellByLot && nextOrder) {
+        void recalculateAutoFillOrder(nextOrder)
       }
 
       if (!isAutoFillAllocationMode(item.allocationMode) && safeQuantity > 0) {
@@ -2297,7 +2328,7 @@ export function Pos() {
       )
       const safeQuantity = Math.min(currentQty, Math.max(0, maxQuantity))
 
-      updateItemField(itemId, (current) => ({
+      const nextOrder = updateItemField(itemId, (current) => ({
         ...current,
         unitId: nextUnit.id,
         unitName: nextUnit.name,
@@ -2306,8 +2337,8 @@ export function Pos() {
         quantity: String(safeQuantity),
       }))
 
-      if (!sellByLot) {
-        void recalculateAutoFillOrder(activeOrder.id)
+      if (!sellByLot && nextOrder) {
+        void recalculateAutoFillOrder(nextOrder)
       }
 
       if (!isAutoFillAllocationMode(item.allocationMode) && safeQuantity > 0) {
@@ -2676,13 +2707,11 @@ export function Pos() {
     setActionMessage(null)
 
     try {
-      let checkoutOrder = activeOrder
-      if (!sellByLot && activeOrder.items.some((item) => isAutoFillAllocationMode(item.allocationMode))) {
-        const recalculatedOrder = await recalculateAutoFillOrder(activeOrder.id, true)
-        checkoutOrder =
-          recalculatedOrder ??
-          ordersRef.current.find((order) => order.id === activeOrder.id) ??
-          activeOrder
+      let checkoutOrder =
+        ordersRef.current.find((order) => order.id === activeOrder.id) ?? activeOrder
+      if (!sellByLot && checkoutOrder.items.some((item) => isAutoFillAllocationMode(item.allocationMode))) {
+        const recalculatedOrder = await recalculateAutoFillOrder(checkoutOrder, true)
+        checkoutOrder = recalculatedOrder ?? checkoutOrder
       }
 
       const lines = buildCheckoutLines(checkoutOrder)
