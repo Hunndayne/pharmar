@@ -130,13 +130,13 @@ async def list_prescription_templates(
     if is_active is not None:
         stmt = stmt.where(PrescriptionTemplate.is_active == is_active)
 
-    rows, (safe_page, safe_size, pages, total) = await paginate_scalars(db, stmt, page, size)
+    rows, meta = await paginate_scalars(db, stmt, page, size)
     return PageResponse[PrescriptionTemplateResponse](
         items=[_build_response(r) for r in rows],
-        total=total,
-        page=safe_page,
-        size=safe_size,
-        pages=pages,
+        total=meta.total,
+        page=meta.page,
+        size=meta.size,
+        pages=meta.pages,
     )
 
 
