@@ -27,6 +27,7 @@ const StoreDrugGroups = lazy(() => import('./pages/StoreDrugGroups').then((modul
 const SystemHealth = lazy(() => import('./pages/SystemHealth').then((module) => ({ default: module.SystemHealth })))
 const Notifications = lazy(() => import('./pages/Notifications').then((module) => ({ default: module.Notifications })))
 const PublicInvoiceLookup = lazy(() => import('./pages/PublicInvoiceLookup').then((module) => ({ default: module.PublicInvoiceLookup })))
+const PrescriptionTemplates = lazy(() => import('./pages/PrescriptionTemplates').then((module) => ({ default: module.PrescriptionTemplates })))
 const NotFound = lazy(() => import('./pages/NotFound').then((module) => ({ default: module.NotFound })))
 
 function App() {
@@ -78,6 +79,7 @@ function App() {
           <Route path="/nhap-hang" element={<Purchases />} />
           <Route path="/ton-kho" element={<Inventory />} />
           <Route path="/ban-hang" element={<Pos />} />
+          <Route path="/don-thuoc-mau" element={<PrescriptionTemplates />} />
           <Route path="/lich-su-ban-hang" element={<SalesHistory />} />
           <Route path="/khach-hang" element={<Customers />} />
           <Route path="/khuyen-mai" element={<Promotions />} />

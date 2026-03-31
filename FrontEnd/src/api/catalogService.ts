@@ -8,6 +8,43 @@ export type CatalogPageResponse<T> = {
   pages: number
 }
 
+export type PrescriptionTemplateItem = {
+  id: string
+  product_unit_id: string
+  product_id: string
+  product_code: string
+  product_name: string
+  unit_name: string
+  unit_conversion: number
+  quantity: number
+  sort_order: number
+}
+
+export type PrescriptionTemplate = {
+  id: string
+  code: string
+  name: string
+  description: string | null
+  is_active: boolean
+  items: PrescriptionTemplateItem[]
+  created_at: string
+  updated_at: string
+}
+
+export type PrescriptionTemplateItemPayload = {
+  product_unit_id: string
+  quantity: number
+  sort_order: number
+}
+
+export type PrescriptionTemplatePayload = {
+  code?: string
+  name: string
+  description?: string | null
+  is_active?: boolean
+  items: PrescriptionTemplateItemPayload[]
+}
+
 export type DrugGroupItem = {
   id: string
   code: string
@@ -722,4 +759,39 @@ export const catalogApi = {
       token,
       { method: 'DELETE' },
     ),
+
+  // Prescription Templates
+  listPrescriptionTemplates: (
+    token: string,
+    params: { search?: string; is_active?: boolean; page?: number; size?: number } = {},
+  ) => {
+    const q = new URLSearchParams()
+    if (params.search) q.set('search', params.search)
+    if (params.is_active !== undefined) q.set('is_active', String(params.is_active))
+    if (params.page !== undefined) q.set('page', String(params.page))
+    if (params.size !== undefined) q.set('size', String(params.size))
+    const qs = q.toString()
+    return requestCatalogJson<CatalogPageResponse<PrescriptionTemplate>>(
+      `/catalog/prescription-templates${qs ? `?${qs}` : ''}`,
+      token,
+    )
+  },
+
+  getPrescriptionTemplate: (token: string, id: string) =>
+    requestCatalogJson<PrescriptionTemplate>(`/catalog/prescription-templates/${id}`, token),
+
+  createPrescriptionTemplate: (token: string, payload: PrescriptionTemplatePayload) =>
+    requestCatalogJson<PrescriptionTemplate>('/catalog/prescription-templates', token, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updatePrescriptionTemplate: (token: string, id: string, payload: PrescriptionTemplatePayload) =>
+    requestCatalogJson<PrescriptionTemplate>(`/catalog/prescription-templates/${id}`, token, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  deletePrescriptionTemplate: (token: string, id: string) =>
+    requestCatalogJson<void>(`/catalog/prescription-templates/${id}`, token, { method: 'DELETE' }),
 }

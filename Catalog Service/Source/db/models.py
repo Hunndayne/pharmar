@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -190,3 +190,56 @@ class ProductUnit(Base):
     )
 
     product: Mapped[Product] = relationship(back_populates="units")
+
+
+class PrescriptionTemplate(Base):
+    __tablename__ = "prescription_templates"
+    __table_args__ = (
+        Index("idx_prescription_templates_code", "code"),
+        {"schema": SCHEMA_NAME},
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    code: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    items: Mapped[list["PrescriptionTemplateItem"]] = relationship(
+        back_populates="template",
+        cascade="all, delete-orphan",
+        order_by="PrescriptionTemplateItem.sort_order",
+    )
+
+
+class PrescriptionTemplateItem(Base):
+    __tablename__ = "prescription_template_items"
+    __table_args__ = (
+        Index("idx_prescription_template_items_template", "template_id"),
+        {"schema": SCHEMA_NAME},
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    template_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA_NAME}.prescription_templates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    product_unit_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA_NAME}.product_units.id"),
+        nullable=False,
+    )
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    template: Mapped[PrescriptionTemplate] = relationship(back_populates="items")
+    unit: Mapped[ProductUnit] = relationship()

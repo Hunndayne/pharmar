@@ -18,6 +18,7 @@ export const navItems: NavItem[] = [
   { type: 'item', label: 'Nhập hàng', path: '/nhap-hang' },
   { type: 'item', label: 'Tồn kho', path: '/ton-kho' },
   { type: 'item', label: 'Bán hàng', path: '/ban-hang' },
+  { type: 'item', label: 'Đơn thuốc mẫu', path: '/don-thuoc-mau' },
   { type: 'item', label: 'Cài đặt', path: '/cua-hang/cai-dat' },
   {
     type: 'group',

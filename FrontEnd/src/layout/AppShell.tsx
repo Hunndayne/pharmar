@@ -20,6 +20,7 @@ const titleByPath: Record<string, string> = {
   '/nhap-hang': 'Nhập hàng',
   '/ton-kho': 'Tồn kho',
   '/ban-hang': 'Bán hàng',
+  '/don-thuoc-mau': 'Đơn thuốc mẫu',
   '/lich-su-ban-hang': 'Lịch sử bán hàng',
   '/khach-hang': 'Khách hàng',
   '/khuyen-mai': 'Khuyến mãi',

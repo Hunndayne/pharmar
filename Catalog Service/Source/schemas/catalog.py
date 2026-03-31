@@ -427,3 +427,82 @@ class ProductImportResult(BaseModel):
     imported: int
     failed: int
     errors: list[str]
+
+
+# ---------------------------------------------------------------------------
+# Prescription Templates
+# ---------------------------------------------------------------------------
+
+class PrescriptionTemplateItemRequest(BaseModel):
+    product_unit_id: UUID
+    quantity: int = Field(gt=0)
+    sort_order: int = Field(default=0, ge=0)
+
+
+class PrescriptionTemplateCreateRequest(BaseModel):
+    code: str | None = Field(default=None, max_length=20)
+    name: str = Field(min_length=1, max_length=100)
+    description: str | None = None
+    is_active: bool = True
+    items: list[PrescriptionTemplateItemRequest] = Field(default_factory=list)
+
+    @field_validator("code")
+    @classmethod
+    def normalize_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized = value.strip().upper()
+        return normalized or None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        return value.strip()
+
+
+class PrescriptionTemplateUpdateRequest(BaseModel):
+    code: str | None = Field(default=None, max_length=20)
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = None
+    is_active: bool | None = None
+    items: list[PrescriptionTemplateItemRequest] | None = None
+
+    @field_validator("code")
+    @classmethod
+    def normalize_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized = value.strip().upper()
+        return normalized or None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else value
+
+
+class PrescriptionTemplateItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    product_unit_id: UUID
+    product_id: UUID
+    product_code: str
+    product_name: str
+    unit_name: str
+    unit_conversion: int
+    quantity: int
+    sort_order: int
+
+
+class PrescriptionTemplateResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    code: str
+    name: str
+    description: str | None
+    is_active: bool
+    items: list[PrescriptionTemplateItemResponse]
+    created_at: datetime
+    updated_at: datetime

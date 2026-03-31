@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from Routers.MasterData import router as master_data_router
 from Routers.Products import router as products_router
+from Routers.PrescriptionTemplates import router as prescription_templates_router
 from Routers.ReferenceDrugs import router as reference_drugs_router
 
 from .catalog import backfill_product_unit_roles
@@ -128,6 +129,7 @@ app.add_middleware(
 
 app.include_router(master_data_router, prefix="/api/v1")
 app.include_router(products_router, prefix="/api/v1")
+app.include_router(prescription_templates_router, prefix="/api/v1")
 app.include_router(reference_drugs_router, prefix="/api/v1")
 
 

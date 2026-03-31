@@ -100,3 +100,25 @@ ALTER TABLE catalog.products
 
 ALTER TABLE catalog.products
   ALTER COLUMN active_ingredient TYPE TEXT;
+
+CREATE TABLE IF NOT EXISTS catalog.prescription_templates (
+    id UUID PRIMARY KEY,
+    code VARCHAR(20) UNIQUE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS catalog.prescription_template_items (
+    id UUID PRIMARY KEY,
+    template_id UUID NOT NULL REFERENCES catalog.prescription_templates(id) ON DELETE CASCADE,
+    product_unit_id UUID NOT NULL REFERENCES catalog.product_units(id),
+    quantity INT NOT NULL,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_prescription_templates_code ON catalog.prescription_templates(code);
+CREATE INDEX IF NOT EXISTS idx_prescription_template_items_template ON catalog.prescription_template_items(template_id);

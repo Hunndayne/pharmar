@@ -6,6 +6,7 @@ import {
   type InventoryMetaDrug,
   type InventoryStockDrugDetail,
 } from '../api/inventoryService'
+import { catalogApi, type PrescriptionTemplate } from '../api/catalogService'
 import { customerApi, type CustomerRecord } from '../api/customerService'
 import { paymentQrApi } from '../api/paymentQrService'
 import { saleApi } from '../api/saleService'
@@ -756,6 +757,11 @@ export function Pos() {
   const [bankQrState, setBankQrState] = useState<BankQrState | null>(null)
   const [generatingBankQr, setGeneratingBankQr] = useState(false)
 
+  const [templates, setTemplates] = useState<PrescriptionTemplate[]>([])
+  const [templateDropdownOpen, setTemplateDropdownOpen] = useState(false)
+  const [applyingTemplate, setApplyingTemplate] = useState(false)
+  const templateDropdownRef = useRef<HTMLDivElement>(null)
+
   const [orders, setOrders] = useState<PosOrder[]>([createEmptyOrder()])
   const [activeOrderId, setActiveOrderId] = useState<string>('')
 
@@ -969,6 +975,18 @@ export function Pos() {
         .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN'))
 
       setDrugs(mappedDrugs)
+
+      // Load prescription templates (non-blocking — ignore errors)
+      try {
+        const tmpl = await catalogApi.listPrescriptionTemplates(token?.access_token ?? '', {
+          is_active: true,
+          size: 200,
+        })
+        setTemplates(tmpl.items)
+      } catch {
+        // templates are optional; silently ignore
+      }
+
       setFefoEnabled(normalizeSettingBoolean(inventorySettings['inventory.enable_fefo'], true))
       setFefoThresholdDays(
         normalizeSettingNumber(inventorySettings['inventory.fefo_threshold_days'], 180),
@@ -1058,6 +1076,17 @@ export function Pos() {
       channel.close()
     }
   }, [])
+
+  useEffect(() => {
+    if (!templateDropdownOpen) return
+    const handler = (e: MouseEvent) => {
+      if (templateDropdownRef.current && !templateDropdownRef.current.contains(e.target as Node)) {
+        setTemplateDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [templateDropdownOpen])
 
   const commitOrders = useCallback((nextOrders: PosOrder[]) => {
     ordersRef.current = nextOrders
@@ -2128,6 +2157,31 @@ export function Pos() {
       }
     }
   }, [activeOrder, selectedDrug, selectedUnit, selectedQuantity, buildAutoFillItem, buildItemFromBatch, sellByLot, token?.access_token, setDrugSearch, setSelectedDrugId])
+
+  const applyTemplate = useCallback(
+    async (template: PrescriptionTemplate) => {
+      if (!activeOrder || sellByLot) return
+      setApplyingTemplate(true)
+      setTemplateDropdownOpen(false)
+      setActionError(null)
+      let addedCount = 0
+      for (const item of template.items) {
+        const drug = drugsById.get(item.product_id)
+        if (!drug) continue
+        const unit = drug.units.find((u) => u.id === item.product_unit_id)
+        if (!unit || unit.conversion !== 1) continue
+        await buildAutoFillItem(activeOrder.id, drug, unit, item.quantity)
+        addedCount++
+      }
+      setActionMessage(
+        addedCount > 0
+          ? `Đã áp dụng đơn mẫu "${template.name}" (${addedCount} loại thuốc).`
+          : `Không có thuốc nào trong đơn mẫu "${template.name}" khả dụng để thêm.`,
+      )
+      setApplyingTemplate(false)
+    },
+    [activeOrder, sellByLot, drugsById, buildAutoFillItem],
+  )
 
   const updateActiveOrder = useCallback(
     (updater: (order: PosOrder) => PosOrder) => {
@@ -3398,6 +3452,35 @@ export function Pos() {
               {addingByDrug ? 'Đang thêm...' : 'Thêm theo gợi ý'}
             </button>
           </div>
+
+          {!sellByLot && templates.length > 0 && (
+            <div className="relative mt-2" ref={templateDropdownRef}>
+              <button
+                type="button"
+                onClick={() => setTemplateDropdownOpen((prev) => !prev)}
+                disabled={applyingTemplate || !activeOrder}
+                className="rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink-900 disabled:opacity-60 sm:rounded-2xl sm:px-4 sm:py-2 sm:text-sm"
+              >
+                {applyingTemplate ? 'Đang áp dụng...' : 'Đơn thuốc mẫu ▾'}
+              </button>
+              {templateDropdownOpen && (
+                <ul className="absolute left-0 top-full z-30 mt-1 min-w-[220px] rounded-2xl border border-ink-900/10 bg-white shadow-lift overflow-hidden">
+                  {templates.map((t) => (
+                    <li key={t.id}>
+                      <button
+                        type="button"
+                        className="w-full px-4 py-2.5 text-left hover:bg-fog-50"
+                        onClick={() => void applyTemplate(t)}
+                      >
+                        <span className="block text-sm font-semibold text-ink-900">{t.name}</span>
+                        <span className="block text-xs text-ink-600">{t.items.length} loại thuốc</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
 
           {loading ? <p className="mt-3 text-sm text-ink-600">Đang tải danh mục thuốc...</p> : null}
           {loadError ? <p className="mt-3 text-sm text-coral-500">{loadError}</p> : null}
