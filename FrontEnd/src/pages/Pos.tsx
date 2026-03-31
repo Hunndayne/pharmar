@@ -2087,6 +2087,7 @@ export function Pos() {
     setActionError(null)
     setActionMessage(null)
 
+    let succeeded = false
     try {
       const suggestion = await inventoryApi.suggestIssueByDrug({
         drug_id: selectedDrug.id,
@@ -2102,6 +2103,7 @@ export function Pos() {
         setActionMessage(
           `Đã thêm ${selectedDrug.name}; hệ thống sẽ tự phân bổ lô khi thanh toán.`,
         )
+        succeeded = true
         return
       }
 
@@ -2114,13 +2116,18 @@ export function Pos() {
 
       const batchDetail = await inventoryApi.getBatchDetail(suggestedBatch.batch_id)
       await buildItemFromBatch(batchDetail, activeOrder.id, quantity, selectedDrug, selectedUnit)
+      succeeded = true
     } catch (error) {
       if (error instanceof ApiError) setActionError(error.message)
       else setActionError('Không thể thêm thuốc theo gợi ý lô.')
     } finally {
       setAddingByDrug(false)
+      if (succeeded) {
+        setDrugSearch('')
+        setSelectedDrugId('')
+      }
     }
-  }, [activeOrder, selectedDrug, selectedUnit, selectedQuantity, buildAutoFillItem, buildItemFromBatch, sellByLot, token?.access_token])
+  }, [activeOrder, selectedDrug, selectedUnit, selectedQuantity, buildAutoFillItem, buildItemFromBatch, sellByLot, token?.access_token, setDrugSearch, setSelectedDrugId])
 
   const updateActiveOrder = useCallback(
     (updater: (order: PosOrder) => PosOrder) => {
