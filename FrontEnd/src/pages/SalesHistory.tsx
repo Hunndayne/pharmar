@@ -8,7 +8,7 @@ import {
 } from '../api/saleService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
-import { exportToExcel } from '../utils/exportFile'
+import { exportToExcel, exportInvoiceExcel } from '../utils/exportFile'
 
 type InvoiceStatusFilter = 'all' | 'completed' | 'cancelled' | 'returned' | 'pending'
 type ReturnCondition = 'good' | 'damaged' | 'expired'
@@ -480,30 +480,29 @@ export function SalesHistory() {
       const printData = await saleApi.getInvoicePrintData(accessToken, item.id)
       const toNum = (v: number | string | null | undefined) => Number(v ?? 0)
 
-      const headers = ['Sản phẩm', 'Đơn vị', 'Số lượng', 'Đơn giá', 'Thành tiền']
-      const rows = printData.items.map((line) => [
-        line.name ?? '',
-        line.unit ?? '',
-        toNum(line.qty),
-        toNum(line.price),
-        toNum(line.amount),
-      ])
-
-      const subtotal = toNum(printData.summary.subtotal)
-      const discount = toNum(printData.summary.tier_discount) + toNum(printData.summary.points_discount) + toNum(printData.summary.promotion?.amount)
-      const total = toNum(printData.summary.total)
-      const amountPaid = toNum(printData.payment.amount_paid)
-
-      rows.push(
-        ['', '', '', '', ''],
-        ['', '', '', 'Tạm tính', subtotal],
-        ['', '', '', 'Giảm giá', discount],
-        ['', '', '', 'Tổng cộng', total],
-        ['', '', '', 'Đã thanh toán', amountPaid],
-        ['', '', '', 'Tiền thừa', toNum(printData.payment.change)],
-      )
-
-      exportToExcel(`hoa-don-${item.code}`, `HĐ ${item.code}`, headers, rows)
+      exportInvoiceExcel({
+        storeName: printData.store.name ?? 'Nhà thuốc',
+        storeAddress: printData.store.address ?? undefined,
+        storePhone: printData.store.phone ?? undefined,
+        invoiceCode: printData.invoice.code ?? item.code,
+        createdAt: printData.invoice.date ?? formatDateTime(item.created_at),
+        cashierName: printData.invoice.cashier ?? undefined,
+        customerName: printData.customer.name ?? undefined,
+        customerPhone: printData.customer.phone ?? undefined,
+        items: printData.items.map((line) => ({
+          name: line.name ?? '',
+          unit: line.unit ?? '',
+          quantity: toNum(line.qty),
+          unitPrice: toNum(line.price),
+          lineTotal: toNum(line.amount),
+        })),
+        subtotal: toNum(printData.summary.subtotal),
+        discountTotal: toNum(printData.summary.tier_discount) + toNum(printData.summary.points_discount) + toNum(printData.summary.promotion?.amount),
+        total: toNum(printData.summary.total),
+        amountPaid: toNum(printData.payment.amount_paid),
+        changeAmount: toNum(printData.payment.change),
+        paymentMethod: printData.payment.method ?? '',
+      })
     } catch (pdfError) {
       if (pdfError instanceof ApiError) setError(pdfError.message)
       else setError('Không thể xuất PDF hóa đơn.')
