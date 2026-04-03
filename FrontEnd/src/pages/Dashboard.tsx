@@ -21,6 +21,7 @@ import {
   normalizeTimeZone,
   persistAppTimeZone,
   readStoredAppTimeZone,
+  shiftDateKey,
   toDateKeyInTimeZone,
 } from '../utils/timezone'
 
@@ -179,12 +180,20 @@ export function Dashboard() {
     const now = new Date()
     const today = getCurrentDateKeyInTimeZone(timeZone, now)
     const firstDayOfMonth = getMonthStartDateKeyInTimeZone(timeZone, now)
+    // Fetch from trendStart (13 days back) so the 14-day chart has full data.
+    // Month revenue is derived by summing daily_rows where date >= firstDayOfMonth.
+    const trendStart = shiftDateKey(today, -13)
+
     const [todayStats, revenueSummary, stockSummary, topProductsRaw] = await Promise.all([
       saleApi.getStatsToday(accessToken),
-      reportApi.getRevenueSummary(accessToken, { date_from: firstDayOfMonth, date_to: today }),
+      reportApi.getRevenueSummary(accessToken, { date_from: trendStart, date_to: today }),
       inventoryApi.getStockSummary(accessToken),
       reportApi.getProfitTopProducts(accessToken, { date_from: firstDayOfMonth, date_to: today, limit: 5 }),
     ])
+
+    const monthRows = revenueSummary.daily_rows.filter((r) => r.date >= firstDayOfMonth)
+    const monthRevenue = monthRows.reduce((sum, r) => sum + r.total_amount, 0)
+    const monthInvoiceCount = monthRows.reduce((sum, r) => sum + r.invoice_count, 0)
 
     const stockTotal = stockSummary.length
     const stockSafe = stockSummary.filter((item) => item.status === 'normal').length
@@ -203,8 +212,8 @@ export function Dashboard() {
       },
       {
         title: 'Doanh thu tháng này',
-        value: formatCurrency(revenueSummary.total_amount),
-        note: `${revenueSummary.invoice_count.toLocaleString('vi-VN')} hóa đơn hợp lệ`,
+        value: formatCurrency(monthRevenue),
+        note: `${monthInvoiceCount.toLocaleString('vi-VN')} hóa đơn hợp lệ`,
       },
       {
         title: 'Số đơn hôm nay',
