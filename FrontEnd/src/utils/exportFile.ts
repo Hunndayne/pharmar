@@ -1,4 +1,4 @@
-import * as XLSX from 'xlsx'
+import * as XLSX from 'xlsx-js-style'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
@@ -137,61 +137,160 @@ export type InvoiceExcelData = {
 }
 
 export const exportInvoiceExcel = (data: InvoiceExcelData) => {
-  const rows: ExportValue[][] = []
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type Cell = { v: any; t: string; s?: Record<string, unknown> }
+  const font = (name = 'Times New Roman', sz = 11, bold = false, italic = false) =>
+    ({ name, sz, bold, italic })
+  const alignment = (horizontal: string, vertical = 'center') =>
+    ({ horizontal, vertical, wrapText: false })
+  const border = (style = 'thin') => ({
+    top: { style }, bottom: { style }, left: { style }, right: { style },
+  })
 
-  // Row 1: Store name
-  rows.push([data.storeName, '', '', '', ''])
-  // Row 2: Address
-  rows.push([data.storeAddress ? `Địa chỉ: ${data.storeAddress}` : '', '', '', '', ''])
-  // Row 3: Phone
-  rows.push(['', '', 'SDT:', data.storePhone ?? '', ''])
-  // Row 4: Title
-  rows.push(['HÓA ĐƠN BÁN HÀNG', '', '', '', ''])
-  // Row 5: empty
-  rows.push(['', '', '', '', ''])
-  // Row 6: Invoice code + date
-  rows.push(['Mã hóa đơn:', data.invoiceCode, 'Ngày bán hàng:', data.createdAt, ''])
-  // Row 7: Customer + phone
-  rows.push(['Tên khách hàng:', data.customerName ?? '', 'Số điện thoại:', data.customerPhone ?? '', ''])
-  // Row 8: empty
-  rows.push(['', '', '', '', ''])
-  // Row 9: empty
-  rows.push(['', '', '', '', ''])
-  // Row 10: Table headers
-  rows.push(['Sản phẩm', 'Đơn vị', 'Số lượng', 'Đơn giá', 'Thành tiền'])
+  const storeNameStyle = { font: font('Times New Roman', 16, true, true), alignment: alignment('center') }
+  const addressStyle = { font: font('Times New Roman', 11, false, true), alignment: alignment('center') }
+  const titleStyle = { font: font('Times New Roman', 14, true), alignment: alignment('center') }
+  const labelStyle = { font: font('Times New Roman', 11), alignment: alignment('left') }
+  const valStyle = { font: font('Times New Roman', 11), alignment: alignment('left') }
+  const thStyle = { font: font('Times New Roman', 11, true), alignment: alignment('left'), border: border() }
+  const thRightStyle = { font: font('Times New Roman', 11, true), alignment: alignment('right'), border: border() }
+  const tdStyle = { font: font('Times New Roman', 11), alignment: alignment('left'), border: border() }
+  const tdRightStyle = { font: font('Times New Roman', 11), alignment: alignment('right'), border: border() }
+  const sumLabelStyle = { font: font('Times New Roman', 11), alignment: alignment('right') }
+  const sumValStyle = { font: font('Times New Roman', 11), alignment: alignment('right') }
+  const sigStyle = { font: font('Times New Roman', 11, true), alignment: alignment('center') }
+
+  // Build rows as styled cells
+  const wsRows: Cell[][] = []
+
+  // Row 0: Store name (merged A-E)
+  wsRows.push([
+    { v: data.storeName, t: 's', s: storeNameStyle },
+    { v: '', t: 's', s: storeNameStyle },
+    { v: '', t: 's', s: storeNameStyle },
+    { v: '', t: 's', s: storeNameStyle },
+    { v: '', t: 's', s: storeNameStyle },
+  ])
+  // Row 1: Address (merged A-E)
+  wsRows.push([
+    { v: data.storeAddress ? `Địa chỉ: ${data.storeAddress}` : '', t: 's', s: addressStyle },
+    { v: '', t: 's', s: addressStyle },
+    { v: '', t: 's', s: addressStyle },
+    { v: '', t: 's', s: addressStyle },
+    { v: '', t: 's', s: addressStyle },
+  ])
+  // Row 2: SDT
+  wsRows.push([
+    { v: '', t: 's' }, { v: '', t: 's' },
+    { v: 'SDT:', t: 's', s: { font: font('Times New Roman', 11), alignment: alignment('right') } },
+    { v: data.storePhone ?? '', t: 's', s: valStyle },
+    { v: '', t: 's' },
+  ])
+  // Row 3: Title (merged A-E)
+  wsRows.push([
+    { v: 'HÓA ĐƠN BÁN HÀNG', t: 's', s: titleStyle },
+    { v: '', t: 's', s: titleStyle },
+    { v: '', t: 's', s: titleStyle },
+    { v: '', t: 's', s: titleStyle },
+    { v: '', t: 's', s: titleStyle },
+  ])
+  // Row 4: empty
+  wsRows.push([{ v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' }])
+  // Row 5: Invoice code + date
+  wsRows.push([
+    { v: 'Mã hóa đơn:', t: 's', s: labelStyle },
+    { v: data.invoiceCode, t: 's', s: valStyle },
+    { v: 'Ngày bán hàng:', t: 's', s: labelStyle },
+    { v: data.createdAt, t: 's', s: valStyle },
+    { v: '', t: 's' },
+  ])
+  // Row 6: Customer + phone
+  wsRows.push([
+    { v: 'Tên khách hàng:', t: 's', s: labelStyle },
+    { v: data.customerName ?? '', t: 's', s: valStyle },
+    { v: 'Số điện thoại:', t: 's', s: labelStyle },
+    { v: data.customerPhone ?? '', t: 's', s: valStyle },
+    { v: '', t: 's' },
+  ])
+  // Row 7-8: empty
+  wsRows.push([{ v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' }])
+  wsRows.push([{ v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' }])
+  // Row 9: Table headers
+  wsRows.push([
+    { v: 'Sản phẩm', t: 's', s: thStyle },
+    { v: 'Đơn vị', t: 's', s: thStyle },
+    { v: 'Số lượng', t: 's', s: thRightStyle },
+    { v: 'Đơn giá', t: 's', s: thRightStyle },
+    { v: 'Thành tiền', t: 's', s: thRightStyle },
+  ])
   // Item rows
   for (const item of data.items) {
-    rows.push([item.name, item.unit, item.quantity, item.unitPrice, item.lineTotal])
+    wsRows.push([
+      { v: item.name, t: 's', s: tdStyle },
+      { v: item.unit, t: 's', s: tdStyle },
+      { v: item.quantity, t: 'n', s: tdRightStyle },
+      { v: item.unitPrice, t: 'n', s: tdRightStyle },
+      { v: item.lineTotal, t: 'n', s: tdRightStyle },
+    ])
   }
-  // Empty row after items
-  rows.push(['', '', '', '', ''])
-  // Summary
-  rows.push(['', '', '', 'Tạm tính:', data.subtotal])
-  rows.push(['', '', '', 'Giảm giá:', data.discountTotal])
-  rows.push(['', '', '', 'Tổng cộng:', data.total])
-  rows.push(['', '', '', 'Đã thanh toán:', data.amountPaid])
-  rows.push(['', '', '', 'Tiền thừa:', data.changeAmount])
-  rows.push(['', '', '', 'Phương thức thanh toán:', data.paymentMethod])
   // Empty row
-  rows.push(['', '', '', '', ''])
-  // Signature
-  rows.push(['Người mua hàng', '', '', 'Người bán hàng', ''])
+  wsRows.push([{ v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' }])
+  // Summary rows
+  const summaryLines: [string, number | string][] = [
+    ['Tạm tính:', data.subtotal],
+    ['Giảm giá:', data.discountTotal],
+    ['Tổng cộng:', data.total],
+    ['Đã thanh toán:', data.amountPaid],
+    ['Tiền thừa:', data.changeAmount],
+    ['Phương thức thanh toán:', data.paymentMethod],
+  ]
+  for (const [label, val] of summaryLines) {
+    wsRows.push([
+      { v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' },
+      { v: label, t: 's', s: sumLabelStyle },
+      typeof val === 'number'
+        ? { v: val, t: 'n', s: sumValStyle }
+        : { v: val, t: 's', s: sumValStyle },
+    ])
+  }
+  // Empty row
+  wsRows.push([{ v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' }, { v: '', t: 's' }])
+  // Signature row
+  wsRows.push([
+    { v: 'Người mua hàng', t: 's', s: sigStyle },
+    { v: '', t: 's' }, { v: '', t: 's' },
+    { v: 'Người bán hàng', t: 's', s: sigStyle },
+    { v: '', t: 's' },
+  ])
 
-  const ws = XLSX.utils.aoa_to_sheet(rows)
+  // Build worksheet from cell objects
+  const ws: XLSX.WorkSheet = {}
+  const totalRows = wsRows.length
+  const totalCols = 5
+  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: totalRows - 1, c: totalCols - 1 } })
 
-  // Merge cells: store name (row 1), address (row 2), title (row 4)
+  for (let r = 0; r < totalRows; r++) {
+    for (let c = 0; c < totalCols; c++) {
+      const cell = wsRows[r]?.[c]
+      if (cell) {
+        ws[XLSX.utils.encode_cell({ r, c })] = cell
+      }
+    }
+  }
+
+  // Merges
   ws['!merges'] = [
-    { s: { r: 0, c: 0 }, e: { r: 0, c: 4 } },
-    { s: { r: 1, c: 0 }, e: { r: 1, c: 4 } },
-    { s: { r: 3, c: 0 }, e: { r: 3, c: 4 } },
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 4 } },  // Store name
+    { s: { r: 1, c: 0 }, e: { r: 1, c: 4 } },  // Address
+    { s: { r: 3, c: 0 }, e: { r: 3, c: 4 } },  // Title
   ]
 
   // Column widths
   ws['!cols'] = [
-    { wch: 30 },
-    { wch: 12 },
-    { wch: 12 },
-    { wch: 22 },
+    { wch: 28 },
+    { wch: 10 },
+    { wch: 10 },
+    { wch: 24 },
     { wch: 15 },
   ]
 
