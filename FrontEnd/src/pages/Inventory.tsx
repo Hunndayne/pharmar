@@ -25,6 +25,16 @@ type QuickFilter = 'all' | 'out' | 'near' | 'expired'
 type AdjustModalState = { batchId: string; operation: 'add' | 'subtract'; importQty: string; middleQty: string; retailQty: string }
 type StockDrugRow = { item: InventoryStockListItem; units: UnitConfig; nearDays: number | null }
 type StockBatchContext = { batch: InventoryBatch; drugName: string; units: UnitConfig }
+type LotExportRow = {
+  drugCode: string
+  drugName: string
+  batch: InventoryBatch
+  units: UnitConfig
+  nearDays: number
+  supplierContact: string
+  supplierAddress: string
+  highestUnitPrice: number
+}
 
 const DEFAULT_EXPIRY_WARNING_DAYS = 30
 const DEFAULT_NEAR_EXPIRY_DAYS = 90
@@ -125,6 +135,24 @@ export function Inventory() {
   useEffect(() => { void loadInventory() }, [loadInventory])
 
   const stockRows = useMemo<StockDrugRow[]>(() => stockItems.map((item) => ({ item, units: toUnitConfigFromUnits(item.units), nearDays: item.days_to_nearest_expiry })), [stockItems])
+  const lotRows = useMemo<LotExportRow[]>(
+    () => Object.values(stockDetailsByDrugId).flatMap((detail) => {
+      const units = toUnitConfigFromUnits(detail.drug.units)
+      return detail.batches
+        .filter(isVisibleBatchInDrugDetail)
+        .map((batch) => ({
+          drugCode: detail.drug.code,
+          drugName: detail.drug.name,
+          batch,
+          units,
+          nearDays: daysUntil(batch.exp_date),
+          supplierContact: batch.supplier_contact || '-',
+          supplierAddress: '-',
+          highestUnitPrice: highestUnitPrice(batch),
+        }))
+    }),
+    [stockDetailsByDrugId],
+  )
 
   const loadDrugDetail = useCallback(async (drugId: string) => {
     if (stockDetailsByDrugId[drugId]) return
@@ -232,7 +260,9 @@ export function Inventory() {
     })
 
     const dateKey = new Date().toISOString().slice(0, 10)
-    exportToExcel(`ton-kho-theo-lo-${dateKey}`, 'Tồn kho', headers, rows)
+    if (rows.length > 0) {
+      exportToExcel(`ton-kho-theo-lo-${dateKey}`, 'Tồn kho theo lô', headers, rows)
+    }
     downloadCsv(`ton-kho-theo-thuoc-${new Date().toISOString().slice(0, 10)}.csv`, ['Mã thuốc', 'Tên thuốc', 'Số lô đang có', 'HSD gần nhất', 'Số ngày đến hạn', 'Tồn', 'Quy đổi tồn', 'Trạng thái'], stockRows.map((row) => [row.item.drug_code, row.item.drug_name, row.item.active_batch_count, row.item.nearest_expiry ? formatDate(row.item.nearest_expiry) : '-', row.nearDays ?? '-', `${row.item.total_qty} ${row.units.retailUnit.name}`, quantityBreakdown(row.item.total_qty, row.units).map((item) => `${item.value} ${item.label}`).join(' · '), formatStockStatusLabel(row.item.status)]))
   }
 

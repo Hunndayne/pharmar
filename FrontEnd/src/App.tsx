@@ -26,7 +26,6 @@ const StoreSettings = lazy(() => import('./pages/StoreSettings').then((module) =
 const StoreDrugGroups = lazy(() => import('./pages/StoreDrugGroups').then((module) => ({ default: module.StoreDrugGroups })))
 const SystemHealth = lazy(() => import('./pages/SystemHealth').then((module) => ({ default: module.SystemHealth })))
 const Notifications = lazy(() => import('./pages/Notifications').then((module) => ({ default: module.Notifications })))
-const NotificationSettings = lazy(() => import('./pages/NotificationSettings').then((module) => ({ default: module.NotificationSettings })))
 const StockAudit = lazy(() => import('./pages/StockAudit').then((module) => ({ default: module.StockAudit })))
 const ExpiryManagement = lazy(() => import('./pages/ExpiryManagement').then((module) => ({ default: module.ExpiryManagement })))
 const PublicInvoiceLookup = lazy(() => import('./pages/PublicInvoiceLookup').then((module) => ({ default: module.PublicInvoiceLookup })))

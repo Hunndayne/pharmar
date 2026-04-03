@@ -8,7 +8,6 @@ import {
 } from '../api/saleService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
-import { downloadCsv } from '../utils/csv'
 import { exportToExcel, exportInvoicePdf } from '../utils/exportFile'
 
 type InvoiceStatusFilter = 'all' | 'completed' | 'cancelled' | 'returned' | 'pending'
