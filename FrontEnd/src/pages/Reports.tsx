@@ -365,8 +365,11 @@ export function Reports() {
       let totalPages = 1
       const requestDateFrom = dateFrom ? shiftDateKey(dateFrom, -1) : undefined
       const requestDateTo = dateTo ? shiftDateKey(dateTo, 1) : undefined
+      // When date filters are active, the server already narrows the result set,
+      // so we fetch all pages. Without filters we keep the safety cap.
+      const pageLimit = dateFrom || dateTo ? Infinity : MAX_REPORT_PAGES
 
-      while (page <= totalPages && page <= MAX_REPORT_PAGES) {
+      while (page <= totalPages && page <= pageLimit) {
         const response = await saleApi.listInvoices(accessToken, {
           page,
           size: PAGE_SIZE,
