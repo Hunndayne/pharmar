@@ -8,7 +8,7 @@ import {
 } from '../api/saleService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
-import { exportToExcel, exportInvoicePdf } from '../utils/exportFile'
+import { exportToExcel, exportInvoiceExcel } from '../utils/exportFile'
 
 type InvoiceStatusFilter = 'all' | 'completed' | 'cancelled' | 'returned' | 'pending'
 type ReturnCondition = 'good' | 'damaged' | 'expired'
@@ -267,6 +267,7 @@ export function SalesHistory() {
 
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
 
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<InvoiceStatusFilter>('all')
@@ -472,14 +473,14 @@ export function SalesHistory() {
     }
   }
 
-  const handleExportInvoicePdf = async (item: SaleInvoiceListItem) => {
+  const handleExportInvoiceExcel = async (item: SaleInvoiceListItem) => {
     if (!accessToken) return
 
     try {
       const printData = await saleApi.getInvoicePrintData(accessToken, item.id)
       const toNum = (v: number | string | null | undefined) => Number(v ?? 0)
 
-      exportInvoicePdf({
+      exportInvoiceExcel({
         storeName: printData.store.name ?? 'Nhà thuốc',
         storeAddress: printData.store.address ?? undefined,
         storePhone: printData.store.phone ?? undefined,
@@ -493,7 +494,6 @@ export function SalesHistory() {
           unit: line.unit ?? '',
           quantity: toNum(line.qty),
           unitPrice: toNum(line.price),
-          discount: 0,
           lineTotal: toNum(line.amount),
         })),
         subtotal: toNum(printData.summary.subtotal),
@@ -702,39 +702,65 @@ export function SalesHistory() {
     setPage(1)
   }
 
-  const exportCsv = () => {
-    if (rows.length === 0) return
+  const exportAllExcel = async () => {
+    if (!accessToken || total === 0) return
+    setExporting(true)
+    try {
+      const EXPORT_PAGE_SIZE = 200
+      const filterParams = {
+        search: search.trim() || undefined,
+        status: statusFilter === 'all' ? undefined : statusFilter,
+        date_from: fromDate || undefined,
+        date_to: toDate || undefined,
+        size: EXPORT_PAGE_SIZE,
+      }
 
-    const headers = [
-      'Mã hóa đơn',
-      'Ngày giờ',
-      'Khách hàng',
-      'Số điện thoại',
-      'Thành tiền',
-      'Đã thanh toán',
-      'Còn nợ',
-      'Phương thức thanh toán',
-      'Trạng thái',
-      'Thu ngân',
-    ]
+      const firstPage = await saleApi.listInvoices(accessToken, { ...filterParams, page: 1 })
+      const allItems = [...firstPage.items]
+      const totalPages = Math.max(1, firstPage.pages || 1)
 
-    const exportRows = rows.map((item) => {
-      const debt = debtAmountOfInvoice(item.total_amount, item.amount_paid)
-      return [
-        item.code,
-        formatDateTime(item.created_at),
-        item.customer_name ?? 'Khách vãng lai',
-        item.customer_phone ?? '-',
-        toNumber(item.total_amount),
-        toNumber(item.amount_paid),
-        debt,
-        getPaymentMethodLabel(item.payment_method),
-        getStatusLabel(item.status),
-        item.cashier_name ?? '-',
+      const remaining = Array.from({ length: totalPages - 1 }, (_, i) => i + 2)
+      for (const p of remaining) {
+        const res = await saleApi.listInvoices(accessToken, { ...filterParams, page: p })
+        allItems.push(...res.items)
+      }
+
+      const headers = [
+        'Mã hóa đơn',
+        'Ngày giờ',
+        'Khách hàng',
+        'Số điện thoại',
+        'Thành tiền',
+        'Đã thanh toán',
+        'Còn nợ',
+        'Phương thức thanh toán',
+        'Trạng thái',
+        'Thu ngân',
       ]
-    })
 
-    exportToExcel(`lich-su-ban-hang-trang-${page}`, 'Lịch sử bán hàng', headers, exportRows)
+      const exportRows = allItems.map((item) => {
+        const debt = debtAmountOfInvoice(item.total_amount, item.amount_paid)
+        return [
+          item.code,
+          formatDateTime(item.created_at),
+          item.customer_name ?? 'Khách vãng lai',
+          item.customer_phone ?? '-',
+          toNumber(item.total_amount),
+          toNumber(item.amount_paid),
+          debt,
+          getPaymentMethodLabel(item.payment_method),
+          getStatusLabel(item.status),
+          item.cashier_name ?? '-',
+        ]
+      })
+
+      const dateKey = new Date().toISOString().slice(0, 10)
+      exportToExcel(`lich-su-ban-hang-${dateKey}`, 'Lịch sử bán hàng', headers, exportRows)
+    } catch {
+      setError('Không thể xuất dữ liệu. Vui lòng thử lại.')
+    } finally {
+      setExporting(false)
+    }
   }
 
   const showingFrom = rows.length === 0 ? 0 : (page - 1) * pageSize + 1
@@ -836,11 +862,11 @@ export function SalesHistory() {
 
           <button
             type="button"
-            onClick={exportCsv}
-            disabled={rows.length === 0}
+            onClick={() => void exportAllExcel()}
+            disabled={total === 0 || exporting}
             className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
           >
-            Xuất Excel
+            {exporting ? 'Đang xuất...' : `Xuất Excel (${total})`}
           </button>
         </div>
 
@@ -909,10 +935,10 @@ export function SalesHistory() {
 
                       <button
                         type="button"
-                        onClick={() => void handleExportInvoicePdf(item)}
+                        onClick={() => void handleExportInvoiceExcel(item)}
                         className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900"
                       >
-                        Xuất PDF
+                        Xuất Excel
                       </button>
 
                       {(item.status === 'completed' || item.status === 'returned') ? (
@@ -1048,10 +1074,10 @@ export function SalesHistory() {
 
                               <button
                                 type="button"
-                                onClick={() => void handleExportInvoicePdf(item)}
+                                onClick={() => void handleExportInvoiceExcel(item)}
                                 className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900"
                               >
-                                Xuất PDF
+                                Xuất Excel
                               </button>
 
                               {(item.status === 'completed' || item.status === 'returned') ? (

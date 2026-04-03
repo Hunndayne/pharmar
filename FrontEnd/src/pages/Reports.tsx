@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { type CustomerRecord } from '../api/customerService'
 import { inventoryApi, type InventoryStockSummary } from '../api/inventoryService'
 import {
   reportApi,
@@ -78,8 +79,8 @@ type CustomerReportData = {
   newCustomers: number
   totalPoints: number
   totalSpent: number
-  topSpenders: Record<string, unknown>[]
-  rows: Record<string, unknown>[]
+  topSpenders: CustomerRecord[]
+  rows: CustomerRecord[]
 }
 
 type ProfitReportData = {
@@ -100,12 +101,6 @@ const tabs: Array<{ id: ReportTab; label: string }> = [
 
 const PROFIT_PAGE_SIZE = 20
 const REPORT_TIME_ZONE = 'Asia/Ho_Chi_Minh'
-const REPORT_DATE_KEY_FORMATTER = new Intl.DateTimeFormat('en-CA', {
-  timeZone: REPORT_TIME_ZONE,
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-})
 const REPORT_DATE_DISPLAY_FORMATTER = new Intl.DateTimeFormat('vi-VN', {
   timeZone: REPORT_TIME_ZONE,
 })
@@ -118,14 +113,6 @@ const toNumber = (value: string | number | null | undefined) => {
 
 
 const formatCurrency = (value: number) => `${Math.round(value || 0).toLocaleString('vi-VN')}đ`
-
-const toDateParts = (date: Date) => {
-  const parts = REPORT_DATE_KEY_FORMATTER.formatToParts(date)
-  const year = parts.find((part) => part.type === 'year')?.value ?? ''
-  const month = parts.find((part) => part.type === 'month')?.value ?? ''
-  const day = parts.find((part) => part.type === 'day')?.value ?? ''
-  return { year, month, day }
-}
 
 const formatDateKey = (value: string) => {
   const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/)
@@ -140,17 +127,6 @@ const formatDate = (value: string) => {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value.slice(0, 10)
   return REPORT_DATE_DISPLAY_FORMATTER.format(date)
-}
-
-const toDateKey = (value: string) => {
-  if (!value) return ''
-  const normalized = value.trim()
-  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return normalized
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value.slice(0, 10)
-  const { year, month, day } = toDateParts(date)
-  if (!year || !month || !day) return value.slice(0, 10)
-  return `${year}-${month}-${day}`
 }
 
 
@@ -338,7 +314,7 @@ export function Reports() {
         totalPoints: data.total_points,
         totalSpent: data.total_spent,
         topSpenders: data.top_spenders,
-        rows: data.rows,
+      rows: data.rows,
       })
     },
     [dateFrom, dateTo],
@@ -595,39 +571,39 @@ export function Reports() {
           <p className="text-xs uppercase tracking-[0.35em] text-ink-600">Thống kê</p>
           <h2 className="mt-2 text-3xl font-semibold text-ink-900">Báo cáo</h2>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-1.5">
           <button
             type="button"
             onClick={exportCurrentTabCsv}
-            className="rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900"
+            className="rounded-full border border-ink-900/10 bg-white px-3 py-2 text-sm font-semibold text-ink-900 sm:px-4"
           >
-            Xuất CSV
+            <span className="hidden sm:inline">Xuất </span>CSV
           </button>
           <button
             type="button"
             onClick={exportCurrentTabExcel}
-            className="rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900"
+            className="rounded-full border border-ink-900/10 bg-white px-3 py-2 text-sm font-semibold text-ink-900 sm:px-4"
           >
-            Xuất Excel
+            <span className="hidden sm:inline">Xuất </span>Excel
           </button>
           <button
             type="button"
             onClick={exportCurrentTabPdf}
-            className="rounded-full bg-ink-900 px-4 py-2 text-sm font-semibold text-white"
+            className="rounded-full bg-ink-900 px-3 py-2 text-sm font-semibold text-white sm:px-4"
           >
-            Xuất PDF
+            <span className="hidden sm:inline">Xuất </span>PDF
           </button>
         </div>
       </header>
 
       <section className="glass-card rounded-3xl p-6 space-y-4">
-        <div className="flex flex-wrap gap-2">
+        <div className="flex gap-2 overflow-x-auto pb-1">
           {tabs.map((item) => (
             <button
               key={item.id}
               type="button"
               onClick={() => setTab(item.id)}
-              className={`rounded-full px-4 py-2 text-sm font-semibold ${tab === item.id
+              className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-semibold ${tab === item.id
                   ? 'bg-ink-900 text-white'
                   : 'border border-ink-900/10 bg-white text-ink-700'
                 }`}
@@ -638,7 +614,7 @@ export function Reports() {
         </div>
 
         {tab === 'profit' ? (
-          <div className="flex flex-wrap gap-2">
+          <div className="flex gap-2 overflow-x-auto pb-1">
             {([
               ['invoice', 'Theo đơn'],
               ['day', 'Theo ngày'],
@@ -650,7 +626,7 @@ export function Reports() {
                 key={groupId}
                 type="button"
                 onClick={() => setProfitGroupBy(groupId)}
-                className={`rounded-full px-4 py-2 text-sm font-semibold ${profitGroupBy === groupId
+                className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-semibold ${profitGroupBy === groupId
                     ? 'bg-sky-100 text-sky-700'
                     : 'border border-ink-900/10 bg-white text-ink-700'
                   }`}
@@ -661,7 +637,7 @@ export function Reports() {
           </div>
         ) : null}
 
-        <div className="grid gap-3 md:grid-cols-[1fr,1fr,auto,auto]">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-[1fr,1fr,auto,auto]">
           <input
             type="date"
             value={dateFrom}
@@ -727,13 +703,13 @@ export function Reports() {
             <h3 className="text-lg font-semibold text-ink-900">Doanh thu theo ngày</h3>
             <p className="mt-1 text-xs text-ink-500">Hóa đơn trung bình: {formatCurrency(revenueData.averageAmount)}</p>
             <div className="mt-4 overflow-x-auto">
-              <table className="min-w-[560px] w-full text-left text-sm">
+              <table className="w-full text-left text-sm">
                 <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
                   <tr>
                     <th className="py-2">Ngày</th>
                     <th className="py-2">Số HĐ</th>
                     <th className="py-2">Doanh thu</th>
-                    <th className="py-2">Thực thu</th>
+                    <th className="hidden py-2 sm:table-cell">Thực thu</th>
                     <th className="py-2">Còn nợ</th>
                   </tr>
                 </thead>
@@ -743,7 +719,7 @@ export function Reports() {
                       <td className="py-2">{formatDate(row.date)}</td>
                       <td className="py-2">{row.invoiceCount}</td>
                       <td className="py-2">{formatCurrency(row.totalAmount)}</td>
-                      <td className="py-2">{formatCurrency(row.paidAmount)}</td>
+                      <td className="hidden py-2 sm:table-cell">{formatCurrency(row.paidAmount)}</td>
                       <td className="py-2 text-coral-500">{formatCurrency(row.debtAmount)}</td>
                     </tr>
                   ))}
@@ -784,16 +760,16 @@ export function Reports() {
 
             <div className="mt-4 overflow-x-auto">
               {profitGroupBy === 'invoice' ? (
-                <table className="min-w-[900px] w-full text-left text-sm">
+                <table className="w-full text-left text-sm">
                   <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
                     <tr>
                       <th className="py-2">Mã HĐ</th>
                       <th className="py-2">Ngày</th>
-                      <th className="py-2">Khách hàng</th>
-                      <th className="py-2">Doanh thu thuần</th>
-                      <th className="py-2">Giá vốn</th>
+                      <th className="hidden py-2 sm:table-cell">Khách hàng</th>
+                      <th className="hidden py-2 sm:table-cell">Doanh thu thuần</th>
+                      <th className="hidden py-2 md:table-cell">Giá vốn</th>
                       <th className="py-2">Lợi nhuận</th>
-                      <th className="py-2">Lời thực thu</th>
+                      <th className="hidden py-2 md:table-cell">Lời thực thu</th>
                       <th className="py-2">Còn nợ</th>
                     </tr>
                   </thead>
@@ -802,25 +778,25 @@ export function Reports() {
                       <tr key={row.invoice_id} className="border-t border-ink-900/5">
                         <td className="py-2 font-semibold text-ink-900">{row.invoice_code}</td>
                         <td className="py-2">{formatDate(row.created_at)}</td>
-                        <td className="py-2">{row.customer_name || 'Khách vãng lai'}</td>
-                        <td className="py-2">{formatCurrency(row.net_revenue)}</td>
-                        <td className="py-2">{formatCurrency(row.cogs)}</td>
+                        <td className="hidden py-2 sm:table-cell">{row.customer_name || 'Khách vãng lai'}</td>
+                        <td className="hidden py-2 sm:table-cell">{formatCurrency(row.net_revenue)}</td>
+                        <td className="hidden py-2 md:table-cell">{formatCurrency(row.cogs)}</td>
                         <td className="py-2 font-semibold text-emerald-600">{formatCurrency(row.gross_profit)}</td>
-                        <td className="py-2">{formatCurrency(row.collected_profit)}</td>
+                        <td className="hidden py-2 md:table-cell">{formatCurrency(row.collected_profit)}</td>
                         <td className="py-2 text-coral-500">{formatCurrency(row.debt_amount)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               ) : profitGroupBy === 'product' ? (
-                <table className="min-w-[820px] w-full text-left text-sm">
+                <table className="w-full text-left text-sm">
                   <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
                     <tr>
                       <th className="py-2">Mã thuốc</th>
                       <th className="py-2">Tên thuốc</th>
                       <th className="py-2">SL bán</th>
-                      <th className="py-2">Doanh thu thuần</th>
-                      <th className="py-2">Giá vốn</th>
+                      <th className="hidden py-2 sm:table-cell">Doanh thu thuần</th>
+                      <th className="hidden py-2 sm:table-cell">Giá vốn</th>
                       <th className="py-2">Lợi nhuận</th>
                       <th className="py-2">Biên LN</th>
                     </tr>
@@ -831,8 +807,8 @@ export function Reports() {
                         <td className="py-2 font-semibold text-ink-900">{row.product_code || '-'}</td>
                         <td className="py-2">{row.product_name}</td>
                         <td className="py-2">{toNumber(row.sold_base_qty).toLocaleString('vi-VN')}</td>
-                        <td className="py-2">{formatCurrency(row.net_revenue)}</td>
-                        <td className="py-2">{formatCurrency(row.cogs)}</td>
+                        <td className="hidden py-2 sm:table-cell">{formatCurrency(row.net_revenue)}</td>
+                        <td className="hidden py-2 sm:table-cell">{formatCurrency(row.cogs)}</td>
                         <td className="py-2 font-semibold text-emerald-600">{formatCurrency(row.gross_profit)}</td>
                         <td className="py-2">{toNumber(row.margin_percent).toLocaleString('vi-VN', { maximumFractionDigits: 2 })}%</td>
                       </tr>
@@ -840,15 +816,15 @@ export function Reports() {
                   </tbody>
                 </table>
               ) : (
-                <table className="min-w-[720px] w-full text-left text-sm">
+                <table className="w-full text-left text-sm">
                   <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
                     <tr>
                       <th className="py-2">Kỳ</th>
                       <th className="py-2">Số HĐ</th>
                       <th className="py-2">Doanh thu thuần</th>
-                      <th className="py-2">Giá vốn</th>
+                      <th className="hidden py-2 sm:table-cell">Giá vốn</th>
                       <th className="py-2">Lợi nhuận</th>
-                      <th className="py-2">Lời thực thu</th>
+                      <th className="hidden py-2 sm:table-cell">Lời thực thu</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -857,9 +833,9 @@ export function Reports() {
                         <td className="py-2 font-semibold text-ink-900">{row.period_key}</td>
                         <td className="py-2">{row.invoice_count}</td>
                         <td className="py-2">{formatCurrency(row.net_revenue)}</td>
-                        <td className="py-2">{formatCurrency(row.cogs)}</td>
+                        <td className="hidden py-2 sm:table-cell">{formatCurrency(row.cogs)}</td>
                         <td className="py-2 font-semibold text-emerald-600">{formatCurrency(row.gross_profit)}</td>
-                        <td className="py-2">{formatCurrency(row.collected_profit)}</td>
+                        <td className="hidden py-2 sm:table-cell">{formatCurrency(row.collected_profit)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -939,14 +915,14 @@ export function Reports() {
 
           {expenses.length > 0 ? (
             <div className="mt-4 overflow-x-auto">
-              <table className="min-w-[700px] w-full text-left text-sm">
+              <table className="w-full text-left text-sm">
                 <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
                   <tr>
                     <th className="py-2">Loại</th>
                     <th className="py-2">Tên chi phí</th>
                     <th className="py-2">Số tiền</th>
                     <th className="py-2">Ngày</th>
-                    <th className="py-2">Ghi chú</th>
+                    <th className="hidden py-2 sm:table-cell">Ghi chú</th>
                     <th className="py-2"></th>
                   </tr>
                 </thead>
@@ -957,7 +933,7 @@ export function Reports() {
                       <td className="py-2 font-semibold text-ink-900">{item.name}</td>
                       <td className="py-2">{formatCurrency(item.amount)}</td>
                       <td className="py-2">{formatDate(item.expense_date)}</td>
-                      <td className="py-2 text-ink-500">{item.note || '-'}</td>
+                      <td className="hidden py-2 text-ink-500 sm:table-cell">{item.note || '-'}</td>
                       <td className="py-2">
                         <div className="flex gap-2">
                           <button
@@ -1107,14 +1083,14 @@ export function Reports() {
         <section className="glass-card rounded-3xl p-6">
           <h3 className="text-lg font-semibold text-ink-900">Chi tiết tồn kho</h3>
           <div className="mt-4 overflow-x-auto">
-            <table className="min-w-[880px] w-full text-left text-sm">
+            <table className="w-full text-left text-sm">
               <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
                 <tr>
                   <th className="py-2">Mã thuốc</th>
                   <th className="py-2">Tên thuốc</th>
-                  <th className="py-2">Nhóm</th>
+                  <th className="hidden py-2 sm:table-cell">Nhóm</th>
                   <th className="py-2">Tồn</th>
-                  <th className="py-2">Đơn vị</th>
+                  <th className="hidden py-2 sm:table-cell">Đơn vị</th>
                   <th className="py-2">HSD gần nhất</th>
                   <th className="py-2">Trạng thái</th>
                 </tr>
@@ -1124,9 +1100,9 @@ export function Reports() {
                   <tr key={item.drug_id} className="border-t border-ink-900/5">
                     <td className="py-2 font-semibold text-ink-900">{item.drug_code}</td>
                     <td className="py-2">{item.drug_name}</td>
-                    <td className="py-2">{item.drug_group || '-'}</td>
+                    <td className="hidden py-2 sm:table-cell">{item.drug_group || '-'}</td>
                     <td className="py-2">{item.total_qty.toLocaleString('vi-VN')}</td>
-                    <td className="py-2">{item.base_unit}</td>
+                    <td className="hidden py-2 sm:table-cell">{item.base_unit}</td>
                     <td className="py-2">{item.nearest_expiry ? formatDate(item.nearest_expiry) : '-'}</td>
                     <td className="py-2">{stockStatusLabel(item.status)}</td>
                   </tr>
@@ -1142,12 +1118,12 @@ export function Reports() {
           <article className="glass-card rounded-3xl p-6">
             <h3 className="text-lg font-semibold text-ink-900">Hóa đơn còn nợ</h3>
             <div className="mt-4 overflow-x-auto">
-              <table className="min-w-[520px] w-full text-left text-sm">
+              <table className="w-full text-left text-sm">
                 <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
                   <tr>
                     <th className="py-2">Mã HĐ</th>
                     <th className="py-2">Khách hàng</th>
-                    <th className="py-2">Ngày</th>
+                    <th className="hidden py-2 sm:table-cell">Ngày</th>
                     <th className="py-2">Còn nợ</th>
                   </tr>
                 </thead>
@@ -1156,7 +1132,7 @@ export function Reports() {
                     <tr key={item.code} className="border-t border-ink-900/5">
                       <td className="py-2 font-semibold text-ink-900">{item.code}</td>
                       <td className="py-2">{item.customerName}</td>
-                      <td className="py-2">{formatDate(item.createdAt)}</td>
+                      <td className="hidden py-2 sm:table-cell">{formatDate(item.createdAt)}</td>
                       <td className="py-2 text-coral-500">{formatCurrency(item.debtAmount)}</td>
                     </tr>
                   ))}
@@ -1168,7 +1144,7 @@ export function Reports() {
           <article className="glass-card rounded-3xl p-6">
             <h3 className="text-lg font-semibold text-ink-900">Nhà phân phối còn công nợ</h3>
             <div className="mt-4 overflow-x-auto">
-              <table className="min-w-[460px] w-full text-left text-sm">
+              <table className="w-full text-left text-sm">
                 <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
                   <tr>
                     <th className="py-2">Nhà phân phối</th>
@@ -1195,28 +1171,28 @@ export function Reports() {
         <section className="glass-card rounded-3xl p-6">
           <h3 className="text-lg font-semibold text-ink-900">Top khách hàng theo chi tiêu</h3>
           <div className="mt-4 overflow-x-auto">
-            <table className="min-w-[860px] w-full text-left text-sm">
+            <table className="w-full text-left text-sm">
               <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
                 <tr>
-                  <th className="py-2">Mã KH</th>
+                  <th className="hidden py-2 sm:table-cell">Mã KH</th>
                   <th className="py-2">Tên khách hàng</th>
-                  <th className="py-2">SĐT</th>
+                  <th className="hidden py-2 sm:table-cell">SĐT</th>
                   <th className="py-2">Hạng</th>
                   <th className="py-2">Tổng đơn</th>
                   <th className="py-2">Tổng chi</th>
-                  <th className="py-2">Điểm</th>
+                  <th className="hidden py-2 sm:table-cell">Điểm</th>
                 </tr>
               </thead>
               <tbody>
                 {customerData.topSpenders.map((item) => (
                   <tr key={item.id} className="border-t border-ink-900/5">
-                    <td className="py-2 font-semibold text-ink-900">{item.code}</td>
+                    <td className="hidden py-2 font-semibold text-ink-900 sm:table-cell">{item.code}</td>
                     <td className="py-2">{item.name}</td>
-                    <td className="py-2">{item.phone}</td>
+                    <td className="hidden py-2 sm:table-cell">{item.phone}</td>
                     <td className="py-2">{item.tier}</td>
                     <td className="py-2">{item.total_orders.toLocaleString('vi-VN')}</td>
                     <td className="py-2">{formatCurrency(toNumber(item.total_spent))}</td>
-                    <td className="py-2">{item.current_points.toLocaleString('vi-VN')}</td>
+                    <td className="hidden py-2 sm:table-cell">{item.current_points.toLocaleString('vi-VN')}</td>
                   </tr>
                 ))}
               </tbody>

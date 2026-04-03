@@ -1,3 +1,4 @@
+import { type CustomerRecord } from './customerService'
 import { ApiError, buildUsersApiUrl } from './usersService'
 
 export type ReportSummaryResponse = {
@@ -181,8 +182,8 @@ export type CustomerSummaryResponse = {
   new_customers: number
   total_points: number
   total_spent: number
-  top_spenders: Record<string, unknown>[]
-  rows: Record<string, unknown>[]
+  top_spenders: CustomerRecord[]
+  rows: CustomerRecord[]
 }
 
 const toNumberSafe = (value: unknown) => {
@@ -467,8 +468,8 @@ export const reportApi = {
       new_customers: Math.max(0, Math.round(toNumberSafe(row.new_customers))),
       total_points: Math.max(0, Math.round(toNumberSafe(row.total_points))),
       total_spent: Math.max(0, toNumberSafe(row.total_spent)),
-      top_spenders: Array.isArray(row.top_spenders) ? row.top_spenders as Record<string, unknown>[] : [],
-      rows: Array.isArray(row.rows) ? row.rows as Record<string, unknown>[] : [],
+      top_spenders: Array.isArray(row.top_spenders) ? row.top_spenders as CustomerRecord[] : [],
+      rows: Array.isArray(row.rows) ? row.rows as CustomerRecord[] : [],
     } satisfies CustomerSummaryResponse
   },
 

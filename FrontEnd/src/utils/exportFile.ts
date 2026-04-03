@@ -112,6 +112,94 @@ export type InvoicePdfData = {
   paymentMethod: string
 }
 
+export type InvoiceExcelData = {
+  storeName: string
+  storeAddress?: string
+  storePhone?: string
+  invoiceCode: string
+  createdAt: string
+  cashierName?: string
+  customerName?: string
+  customerPhone?: string
+  items: Array<{
+    name: string
+    unit: string
+    quantity: number
+    unitPrice: number
+    lineTotal: number
+  }>
+  subtotal: number
+  discountTotal: number
+  total: number
+  amountPaid: number
+  changeAmount: number
+  paymentMethod: string
+}
+
+export const exportInvoiceExcel = (data: InvoiceExcelData) => {
+  const rows: ExportValue[][] = []
+
+  // Row 1: Store name
+  rows.push([data.storeName, '', '', '', ''])
+  // Row 2: Address
+  rows.push([data.storeAddress ? `Địa chỉ: ${data.storeAddress}` : '', '', '', '', ''])
+  // Row 3: Phone
+  rows.push(['', '', 'SDT:', data.storePhone ?? '', ''])
+  // Row 4: Title
+  rows.push(['HÓA ĐƠN BÁN HÀNG', '', '', '', ''])
+  // Row 5: empty
+  rows.push(['', '', '', '', ''])
+  // Row 6: Invoice code + date
+  rows.push(['Mã hóa đơn:', data.invoiceCode, 'Ngày bán hàng:', data.createdAt, ''])
+  // Row 7: Customer + phone
+  rows.push(['Tên khách hàng:', data.customerName ?? '', 'Số điện thoại:', data.customerPhone ?? '', ''])
+  // Row 8: empty
+  rows.push(['', '', '', '', ''])
+  // Row 9: empty
+  rows.push(['', '', '', '', ''])
+  // Row 10: Table headers
+  rows.push(['Sản phẩm', 'Đơn vị', 'Số lượng', 'Đơn giá', 'Thành tiền'])
+  // Item rows
+  for (const item of data.items) {
+    rows.push([item.name, item.unit, item.quantity, item.unitPrice, item.lineTotal])
+  }
+  // Empty row after items
+  rows.push(['', '', '', '', ''])
+  // Summary
+  rows.push(['', '', '', 'Tạm tính:', data.subtotal])
+  rows.push(['', '', '', 'Giảm giá:', data.discountTotal])
+  rows.push(['', '', '', 'Tổng cộng:', data.total])
+  rows.push(['', '', '', 'Đã thanh toán:', data.amountPaid])
+  rows.push(['', '', '', 'Tiền thừa:', data.changeAmount])
+  rows.push(['', '', '', 'Phương thức thanh toán:', data.paymentMethod])
+  // Empty row
+  rows.push(['', '', '', '', ''])
+  // Signature
+  rows.push(['Người mua hàng', '', '', 'Người bán hàng', ''])
+
+  const ws = XLSX.utils.aoa_to_sheet(rows)
+
+  // Merge cells: store name (row 1), address (row 2), title (row 4)
+  ws['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 4 } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: 4 } },
+    { s: { r: 3, c: 0 }, e: { r: 3, c: 4 } },
+  ]
+
+  // Column widths
+  ws['!cols'] = [
+    { wch: 30 },
+    { wch: 12 },
+    { wch: 12 },
+    { wch: 22 },
+    { wch: 15 },
+  ]
+
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, `HĐ ${data.invoiceCode}`)
+  XLSX.writeFile(wb, `hoa-don-${data.invoiceCode}.xlsx`)
+}
+
 export const exportInvoicePdf = (data: InvoicePdfData) => {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [80, 200] })
 

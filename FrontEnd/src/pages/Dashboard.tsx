@@ -8,11 +8,8 @@ import {
   type RestockHighlightResponse,
   type RestockUrgency,
 } from '../api/reportService'
-import {
-  saleApi,
-  type SaleInvoiceListItem,
-  type SaleInvoiceResponse,
-} from '../api/saleService'
+import { type ProfitProductBreakdownRow } from '../api/reportService'
+import { saleApi } from '../api/saleService'
 import { storeApi } from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
@@ -46,10 +43,6 @@ type TopProductRow = {
   revenue: number
 }
 
-const MAX_REPORT_PAGES = 5
-const PAGE_SIZE = 50
-const MAX_INVOICES_FOR_TOP = 30
-const DETAIL_CHUNK_SIZE = 6
 const DASHBOARD_AUTO_REFRESH_GAP_MS = 15000
 const RESTOCK_LIMIT = 8
 
@@ -92,10 +85,6 @@ const addDays = (date: Date, diff: number) => {
   return next
 }
 
-const isValidSaleStatus = (status: string) => {
-  const normalized = status.trim().toLowerCase()
-  return normalized === 'completed' || normalized === 'returned'
-}
 
 const getErrorMessage = (error: unknown, fallback: string) => {
   if (error instanceof ApiError) return error.message
@@ -187,89 +176,24 @@ export function Dashboard() {
     }
   }, [])
 
-  const fetchInvoicesByRange = useCallback(
-    async (accessToken: string, dateFrom: string, dateTo: string) => {
-      const rows: SaleInvoiceListItem[] = []
-      let page = 1
-      let pages = 1
-
-      while (page <= pages && page <= MAX_REPORT_PAGES) {
-        const response = await saleApi.listInvoices(accessToken, {
-          page,
-          size: PAGE_SIZE,
-          date_from: dateFrom,
-          date_to: dateTo,
-        })
-        rows.push(...response.items)
-        pages = Math.max(1, response.pages || 1)
-        page += 1
-      }
-
-      return rows
-    },
-    [],
-  )
-
-  const buildTopProducts = useCallback(
-    async (accessToken: string, invoices: SaleInvoiceListItem[]) => {
-      const candidates = invoices
-        .filter((invoice) => isValidSaleStatus(invoice.status))
-        .sort((left, right) => right.created_at.localeCompare(left.created_at))
-        .slice(0, MAX_INVOICES_FOR_TOP)
-
-      if (!candidates.length) return [] as TopProductRow[]
-
-      const details: SaleInvoiceResponse[] = []
-      for (let index = 0; index < candidates.length; index += DETAIL_CHUNK_SIZE) {
-        const chunk = candidates.slice(index, index + DETAIL_CHUNK_SIZE)
-        const chunkDetails = await Promise.all(
-          chunk.map(async (invoice) => {
-            try {
-              return await saleApi.getInvoiceById(accessToken, invoice.id)
-            } catch {
-              return null
-            }
-          }),
-        )
-        details.push(...chunkDetails.filter((item): item is SaleInvoiceResponse => item !== null))
-      }
-
-      const aggregate = new Map<string, TopProductRow>()
-      details.forEach((invoice) => {
-        invoice.items.forEach((item) => {
-          const name = item.product_name?.trim() || 'Sản phẩm không tên'
-          const current = aggregate.get(name) ?? { name, count: 0, revenue: 0 }
-          current.count += Math.max(0, item.quantity)
-          current.revenue += Math.max(0, toNumber(item.line_total))
-          aggregate.set(name, current)
-        })
-      })
-
-      return Array.from(aggregate.values())
-        .sort((left, right) => right.revenue - left.revenue)
-        .slice(0, 5)
-    },
-    [],
-  )
-
   const loadDashboardCore = useCallback(async (accessToken: string, timeZone: string) => {
     const now = new Date()
     const today = getCurrentDateKeyInTimeZone(timeZone, now)
     const firstDayOfMonth = getMonthStartDateKeyInTimeZone(timeZone, now)
+    // Fetch from trendStart (13 days back) so the 14-day chart has full data.
+    // Month revenue is derived by summing daily_rows where date >= firstDayOfMonth.
     const trendStart = shiftDateKey(today, -13)
 
-    const [todayStats, monthInvoices, trendInvoices, stockSummary] = await Promise.all([
+    const [todayStats, revenueSummary, stockSummary, topProductsRaw] = await Promise.all([
       saleApi.getStatsToday(accessToken),
-      fetchInvoicesByRange(accessToken, firstDayOfMonth, today),
-      fetchInvoicesByRange(accessToken, trendStart, today),
+      reportApi.getRevenueSummary(accessToken, { date_from: trendStart, date_to: today }),
       inventoryApi.getStockSummary(accessToken),
+      reportApi.getProfitTopProducts(accessToken, { date_from: firstDayOfMonth, date_to: today, limit: 5 }),
     ])
 
-    const monthlyValid = monthInvoices.filter((invoice) => isValidSaleStatus(invoice.status))
-    const monthRevenue = monthlyValid.reduce(
-      (sum, invoice) => sum + Math.max(0, toNumber(invoice.total_amount)),
-      0,
-    )
+    const monthRows = revenueSummary.daily_rows.filter((r) => r.date >= firstDayOfMonth)
+    const monthRevenue = monthRows.reduce((sum, r) => sum + r.total_amount, 0)
+    const monthInvoiceCount = monthRows.reduce((sum, r) => sum + r.invoice_count, 0)
 
     const stockTotal = stockSummary.length
     const stockSafe = stockSummary.filter((item) => item.status === 'normal').length
@@ -289,7 +213,7 @@ export function Dashboard() {
       {
         title: 'Doanh thu tháng này',
         value: formatCurrency(monthRevenue),
-        note: `${monthlyValid.length.toLocaleString('vi-VN')} hóa đơn hợp lệ`,
+        note: `${monthInvoiceCount.toLocaleString('vi-VN')} hóa đơn hợp lệ`,
       },
       {
         title: 'Số đơn hôm nay',
@@ -303,18 +227,9 @@ export function Dashboard() {
       },
     ])
 
-    const trendMap = new Map<string, TrendRow>()
-    trendInvoices.forEach((invoice) => {
-      if (!isValidSaleStatus(invoice.status)) return
-      const key = toDateKey(invoice.created_at)
-      if (!key) return
-
-      const current = trendMap.get(key) ?? { date: key, amount: 0, invoices: 0 }
-      current.amount += Math.max(0, toNumber(invoice.total_amount))
-      current.invoices += 1
-      trendMap.set(key, current)
-    })
-
+    const trendMap = new Map<string, TrendRow>(
+      revenueSummary.daily_rows.map((r) => [r.date, { date: r.date, amount: r.total_amount, invoices: r.invoice_count }]),
+    )
     const trend: TrendRow[] = []
     for (let diff = 13; diff >= 0; diff -= 1) {
       const dateKey = toDateKey(addDays(now, -diff).toISOString())
@@ -322,9 +237,14 @@ export function Dashboard() {
     }
     setTrendRows(trend)
 
-    const top = await buildTopProducts(accessToken, monthInvoices)
-    setTopProducts(top)
-  }, [buildTopProducts, fetchInvoicesByRange])
+    setTopProducts(
+      topProductsRaw.map((p: ProfitProductBreakdownRow) => ({
+        name: p.product_name || 'Sản phẩm không tên',
+        count: p.sold_base_qty,
+        revenue: p.net_revenue,
+      })),
+    )
+  }, [])
 
   const loadRestockHighlights = useCallback(async (accessToken: string) => {
     const response = await reportApi.getRestockHighlights(accessToken, { limit: RESTOCK_LIMIT })
