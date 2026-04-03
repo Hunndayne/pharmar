@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str = ""
     SMTP_FROM_NAME: str = "Pharmar"
 
+    # Expiry checker
+    INVENTORY_SERVICE_URL: str = "http://inventory-service:8002"
+    EXPIRY_CHECK_INTERVAL_HOURS: int = 24
+    ENABLE_EXPIRY_CHECK_JOB: bool = True
+
     CORS_ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
     def validate_secrets(self) -> None:

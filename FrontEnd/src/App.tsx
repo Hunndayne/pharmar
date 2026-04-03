@@ -26,6 +26,9 @@ const StoreSettings = lazy(() => import('./pages/StoreSettings').then((module) =
 const StoreDrugGroups = lazy(() => import('./pages/StoreDrugGroups').then((module) => ({ default: module.StoreDrugGroups })))
 const SystemHealth = lazy(() => import('./pages/SystemHealth').then((module) => ({ default: module.SystemHealth })))
 const Notifications = lazy(() => import('./pages/Notifications').then((module) => ({ default: module.Notifications })))
+const NotificationSettings = lazy(() => import('./pages/NotificationSettings').then((module) => ({ default: module.NotificationSettings })))
+const StockAudit = lazy(() => import('./pages/StockAudit').then((module) => ({ default: module.StockAudit })))
+const ExpiryManagement = lazy(() => import('./pages/ExpiryManagement').then((module) => ({ default: module.ExpiryManagement })))
 const PublicInvoiceLookup = lazy(() => import('./pages/PublicInvoiceLookup').then((module) => ({ default: module.PublicInvoiceLookup })))
 const PrescriptionTemplates = lazy(() => import('./pages/PrescriptionTemplates').then((module) => ({ default: module.PrescriptionTemplates })))
 const NotFound = lazy(() => import('./pages/NotFound').then((module) => ({ default: module.NotFound })))
@@ -83,6 +86,8 @@ function App() {
           <Route path="/lich-su-ban-hang" element={<SalesHistory />} />
           <Route path="/khach-hang" element={<Customers />} />
           <Route path="/khuyen-mai" element={<Promotions />} />
+          <Route path="/kiem-ke-kho" element={<StockAudit />} />
+          <Route path="/han-su-dung" element={<ExpiryManagement />} />
           <Route path="/bao-cao" element={<Reports />} />
           <Route path="/thong-bao" element={<Notifications />} />
           <Route path="/cai-dat-thong-bao" element={<Navigate to="/cua-hang/cai-dat" replace />} />

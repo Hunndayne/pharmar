@@ -96,5 +96,15 @@ class StockAdjustmentRequest(BaseModel):
         return self
 
 
-class BatchCostLookupRequest(BaseModel):
-    batch_ids: list[str] = Field(min_length=1, max_length=1000)
+class StockAuditCreateRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=500)
+
+
+class StockAuditUpdateItemRequest(BaseModel):
+    batch_id: str = Field(min_length=1, max_length=64)
+    actual_qty: int = Field(ge=0)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class StockAuditUpdateRequest(BaseModel):
+    items: list[StockAuditUpdateItemRequest] = Field(min_length=1)

@@ -13,6 +13,7 @@ import { storeApi } from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { downloadCsv } from '../utils/csv'
+import { exportToExcel } from '../utils/exportFile'
 
 type UnitConfig = {
   importUnit: { name: string; ratio: number } | null
@@ -180,6 +181,58 @@ export function Inventory() {
   }
 
   const exportInventoryExcel = () => {
+    const headers = [
+      'Mã thuốc',
+      'Tên thuốc',
+      'Mã lô',
+      'Số lô NCC',
+      'HSD',
+      'Số ngày đến hạn',
+      'Tồn (đơn vị bán lẻ)',
+      'Quy đổi tồn',
+      'Nhà phân phối',
+      'Liên hệ NPP',
+      'Địa chỉ NPP',
+      'Giá đơn vị cao nhất',
+      'Trạng thái',
+    ]
+
+    const rows = lotRows.map((row) => {
+      const isExpired = row.nearDays < 0
+      const isNearDate = row.nearDays >= 0 && row.nearDays <= nearExpiryDays && row.batch.qty_remaining > 0
+      const isExpiringSoon =
+        row.nearDays >= 0 && row.nearDays < expiryWarningDays && row.batch.qty_remaining > 0
+      const status = row.batch.qty_remaining <= 0
+        ? 'Hết hàng'
+        : isExpired
+          ? 'Hết hạn'
+          : isExpiringSoon
+            ? 'Sắp hết hạn'
+            : isNearDate
+              ? 'Cận date'
+              : 'Bình thường'
+
+      return [
+        row.drugCode,
+        row.drugName,
+        row.batch.batch_code,
+        row.batch.lot_number,
+        formatDate(row.batch.exp_date),
+        row.nearDays,
+        `${row.batch.qty_remaining} ${row.units.retailUnit.name}`,
+        quantityBreakdown(row.batch.qty_remaining, row.units)
+          .map((item) => `${item.value} ${item.label}`)
+          .join(' · '),
+        row.batch.supplier_name,
+        row.supplierContact,
+        row.supplierAddress,
+        row.highestUnitPrice,
+        status,
+      ]
+    })
+
+    const dateKey = new Date().toISOString().slice(0, 10)
+    exportToExcel(`ton-kho-theo-lo-${dateKey}`, 'Tồn kho', headers, rows)
     downloadCsv(`ton-kho-theo-thuoc-${new Date().toISOString().slice(0, 10)}.csv`, ['Mã thuốc', 'Tên thuốc', 'Số lô đang có', 'HSD gần nhất', 'Số ngày đến hạn', 'Tồn', 'Quy đổi tồn', 'Trạng thái'], stockRows.map((row) => [row.item.drug_code, row.item.drug_name, row.item.active_batch_count, row.item.nearest_expiry ? formatDate(row.item.nearest_expiry) : '-', row.nearDays ?? '-', `${row.item.total_qty} ${row.units.retailUnit.name}`, quantityBreakdown(row.item.total_qty, row.units).map((item) => `${item.value} ${item.label}`).join(' · '), formatStockStatusLabel(row.item.status)]))
   }
 
