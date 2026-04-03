@@ -1,15 +1,43 @@
-﻿import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { catalogApi, type SupplierItem } from '../api/catalogService'
 import { customerApi, type CustomerRecord } from '../api/customerService'
 import { inventoryApi, type InventoryStockSummary } from '../api/inventoryService'
-import { reportApi, type ReportEvent } from '../api/reportService'
+import {
+  reportApi,
+  type ProfitBreakdownGroup,
+  type ProfitInvoiceBreakdownRow,
+  type ProfitPeriodBreakdownRow,
+  type ProfitProductBreakdownRow,
+  type ProfitSummaryResponse,
+  type ReportPageResponse,
+  type ReportEvent,
+} from '../api/reportService'
 import { saleApi, type SaleInvoiceListItem } from '../api/saleService'
+import {
+  storeApi,
+  type OperatingExpense,
+  type CreateExpensePayload,
+} from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { downloadCsv } from '../utils/csv'
 import { exportToExcel, exportToPdf } from '../utils/exportFile'
 
-type ReportTab = 'revenue' | 'inventory' | 'debt' | 'customer'
+const EXPENSE_CATEGORIES = [
+  { value: 'electricity', label: 'Tiền điện' },
+  { value: 'water', label: 'Tiền nước' },
+  { value: 'internet', label: 'Internet' },
+  { value: 'rent', label: 'Mặt bằng' },
+  { value: 'salary', label: 'Lương nhân viên' },
+  { value: 'maintenance', label: 'Bảo trì' },
+  { value: 'other', label: 'Khác' },
+] as const
+
+const EXPENSE_CATEGORY_LABEL: Record<string, string> = Object.fromEntries(
+  EXPENSE_CATEGORIES.map((c) => [c.value, c.label]),
+)
+
+type ReportTab = 'revenue' | 'profit' | 'inventory' | 'debt' | 'customer'
 
 type RevenueDailyRow = {
   date: string
@@ -58,8 +86,17 @@ type CustomerReportData = {
   rows: CustomerRecord[]
 }
 
+type ProfitReportData = {
+  summary: ProfitSummaryResponse
+  breakdown: ReportPageResponse<
+    ProfitInvoiceBreakdownRow | ProfitPeriodBreakdownRow | ProfitProductBreakdownRow
+  >
+  topProducts: ProfitProductBreakdownRow[]
+}
+
 const tabs: Array<{ id: ReportTab; label: string }> = [
   { id: 'revenue', label: 'Doanh thu' },
+  { id: 'profit', label: 'Lợi nhuận' },
   { id: 'inventory', label: 'Tồn kho' },
   { id: 'debt', label: 'Công nợ' },
   { id: 'customer', label: 'Khách hàng' },
@@ -67,6 +104,17 @@ const tabs: Array<{ id: ReportTab; label: string }> = [
 
 const MAX_REPORT_PAGES = 5
 const PAGE_SIZE = 50
+const PROFIT_PAGE_SIZE = 20
+const REPORT_TIME_ZONE = 'Asia/Ho_Chi_Minh'
+const REPORT_DATE_KEY_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: REPORT_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+const REPORT_DATE_DISPLAY_FORMATTER = new Intl.DateTimeFormat('vi-VN', {
+  timeZone: REPORT_TIME_ZONE,
+})
 
 const toNumber = (value: string | number | null | undefined) => {
   const parsed = Number(value)
@@ -79,20 +127,49 @@ const toNumberLoose = (value: unknown) => {
   return 0
 }
 
-const formatCurrency = (value: number) => `${Math.round(Math.max(0, value)).toLocaleString('vi-VN')}đ`
+const formatCurrency = (value: number) => `${Math.round(value || 0).toLocaleString('vi-VN')}đ`
+
+const toDateParts = (date: Date) => {
+  const parts = REPORT_DATE_KEY_FORMATTER.formatToParts(date)
+  const year = parts.find((part) => part.type === 'year')?.value ?? ''
+  const month = parts.find((part) => part.type === 'month')?.value ?? ''
+  const day = parts.find((part) => part.type === 'day')?.value ?? ''
+  return { year, month, day }
+}
+
+const formatDateKey = (value: string) => {
+  const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return value
+  return `${match[3]}/${match[2]}/${match[1]}`
+}
 
 const formatDate = (value: string) => {
   if (!value) return '-'
+  const normalized = value.trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return formatDateKey(normalized)
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value.slice(0, 10)
-  return date.toLocaleDateString('vi-VN')
+  return REPORT_DATE_DISPLAY_FORMATTER.format(date)
 }
 
 const toDateKey = (value: string) => {
   if (!value) return ''
+  const normalized = value.trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return normalized
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value.slice(0, 10)
-  return date.toISOString().slice(0, 10)
+  const { year, month, day } = toDateParts(date)
+  if (!year || !month || !day) return value.slice(0, 10)
+  return `${year}-${month}-${day}`
+}
+
+const shiftDateKey = (value: string, days: number) => {
+  const normalized = value.trim()
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return normalized
+  const shifted = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
+  shifted.setUTCDate(shifted.getUTCDate() + days)
+  return shifted.toISOString().slice(0, 10)
 }
 
 const firstString = (...values: unknown[]) => {
@@ -164,7 +241,11 @@ const getErrorMessage = (error: unknown, fallback: string) => {
   return fallback
 }
 
-const buildRevenueFromInvoices = (invoices: SaleInvoiceListItem[]): RevenueReportData => {
+const buildRevenueFromInvoices = (
+  invoices: SaleInvoiceListItem[],
+  from = '',
+  to = '',
+): RevenueReportData => {
   const dailyMap = new Map<string, RevenueDailyRow>()
   const paymentMap = new Map<string, { method: string; invoiceCount: number; amount: number }>()
 
@@ -182,32 +263,33 @@ const buildRevenueFromInvoices = (invoices: SaleInvoiceListItem[]): RevenueRepor
     const invoiceTotal = toNumber(invoice.total_amount)
     const invoicePaid = toNumber(invoice.amount_paid)
     const invoiceDebt = Math.max(0, invoiceTotal - invoicePaid)
+    const localDateKey = toDateKey(invoice.created_at)
 
     if (isCanceled) {
       canceledCount += 1
       return
     }
+    if (!localDateKey) return
+    if (from && localDateKey < from) return
+    if (to && localDateKey > to) return
 
     validCount += 1
     totalAmount += invoiceTotal
     paidAmount += invoicePaid
     debtAmount += invoiceDebt
 
-    const dayKey = toDateKey(invoice.created_at)
-    if (dayKey) {
-      const current = dailyMap.get(dayKey) ?? {
-        date: dayKey,
-        invoiceCount: 0,
-        totalAmount: 0,
-        paidAmount: 0,
-        debtAmount: 0,
-      }
-      current.invoiceCount += 1
-      current.totalAmount += invoiceTotal
-      current.paidAmount += invoicePaid
-      current.debtAmount += invoiceDebt
-      dailyMap.set(dayKey, current)
+    const current = dailyMap.get(localDateKey) ?? {
+      date: localDateKey,
+      invoiceCount: 0,
+      totalAmount: 0,
+      paidAmount: 0,
+      debtAmount: 0,
     }
+    current.invoiceCount += 1
+    current.totalAmount += invoiceTotal
+    current.paidAmount += invoicePaid
+    current.debtAmount += invoiceDebt
+    dailyMap.set(localDateKey, current)
 
     const method = paymentLabel(invoice.payment_method)
     const payment = paymentMap.get(method) ?? { method, invoiceCount: 0, amount: 0 }
@@ -257,29 +339,46 @@ export function Reports() {
   const [error, setError] = useState<string | null>(null)
 
   const [revenueData, setRevenueData] = useState<RevenueReportData | null>(null)
+  const [profitGroupBy, setProfitGroupBy] = useState<ProfitBreakdownGroup>('invoice')
+  const [profitData, setProfitData] = useState<ProfitReportData | null>(null)
   const [inventoryData, setInventoryData] = useState<InventoryReportData | null>(null)
   const [debtData, setDebtData] = useState<DebtReportData | null>(null)
   const [customerData, setCustomerData] = useState<CustomerReportData | null>(null)
+
+  // Expense management state
+  const [expenses, setExpenses] = useState<OperatingExpense[]>([])
+  const [showExpenseForm, setShowExpenseForm] = useState(false)
+  const [editingExpense, setEditingExpense] = useState<OperatingExpense | null>(null)
+  const [expenseForm, setExpenseForm] = useState<CreateExpensePayload>({
+    category: 'electricity',
+    name: '',
+    amount: 0,
+    expense_date: '',
+    note: '',
+  })
+  const [expenseSaving, setExpenseSaving] = useState(false)
 
   const fetchInvoices = useCallback(
     async (accessToken: string) => {
       const invoices: SaleInvoiceListItem[] = []
       let page = 1
       let totalPages = 1
+      const requestDateFrom = dateFrom ? shiftDateKey(dateFrom, -1) : undefined
+      const requestDateTo = dateTo ? shiftDateKey(dateTo, 1) : undefined
 
       while (page <= totalPages && page <= MAX_REPORT_PAGES) {
         const response = await saleApi.listInvoices(accessToken, {
           page,
           size: PAGE_SIZE,
-          date_from: dateFrom || undefined,
-          date_to: dateTo || undefined,
+          date_from: requestDateFrom,
+          date_to: requestDateTo,
         })
         invoices.push(...response.items)
         totalPages = Math.max(1, response.pages || 1)
         page += 1
       }
 
-      return invoices
+      return invoices.filter((invoice) => inDateRange(invoice.created_at, dateFrom, dateTo))
     },
     [dateFrom, dateTo],
   )
@@ -324,7 +423,7 @@ export function Reports() {
     async (accessToken: string) => {
       const fallbackFromSaleInvoices = async () => {
         const invoices = await fetchInvoices(accessToken)
-        setRevenueData(buildRevenueFromInvoices(invoices))
+        setRevenueData(buildRevenueFromInvoices(invoices, dateFrom, dateTo))
       }
 
       // When date filters are set, always use Sale Service (full data with server-side filtering).
@@ -464,6 +563,45 @@ export function Reports() {
     [dateFrom, dateTo, fetchInvoices],
   )
 
+  const loadProfitReport = useCallback(
+    async (accessToken: string) => {
+      const [summary, breakdown, topProducts] = await Promise.all([
+        reportApi.getProfitSummary(accessToken, {
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+        }),
+        reportApi.getProfitBreakdown<
+          ProfitInvoiceBreakdownRow | ProfitPeriodBreakdownRow | ProfitProductBreakdownRow
+        >(accessToken, {
+          group_by: profitGroupBy,
+          page: 1,
+          size: PROFIT_PAGE_SIZE,
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+        }),
+        reportApi.getProfitTopProducts(accessToken, {
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+          limit: 10,
+        }),
+      ])
+
+      setProfitData({
+        summary,
+        breakdown,
+        topProducts,
+      })
+
+      // Load expense list (non-blocking - runs in parallel)
+      storeApi.listExpenses(accessToken, {
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+      }).then((res) => setExpenses(res.items ?? []))
+        .catch(() => setExpenses([]))
+    },
+    [dateFrom, dateTo, profitGroupBy],
+  )
+
   const loadInventoryReport = useCallback(
     async (accessToken: string) => {
       const rows = await inventoryApi.getStockSummary(accessToken)
@@ -567,6 +705,8 @@ export function Reports() {
       try {
         if (targetTab === 'revenue') {
           await loadRevenueReport(accessToken)
+        } else if (targetTab === 'profit') {
+          await loadProfitReport(accessToken)
         } else if (targetTab === 'inventory') {
           await loadInventoryReport(accessToken)
         } else if (targetTab === 'debt') {
@@ -580,7 +720,14 @@ export function Reports() {
         setLoading(false)
       }
     },
-    [loadCustomerReport, loadDebtReport, loadInventoryReport, loadRevenueReport, token?.access_token],
+    [
+      loadCustomerReport,
+      loadDebtReport,
+      loadInventoryReport,
+      loadProfitReport,
+      loadRevenueReport,
+      token?.access_token,
+    ],
   )
 
   useEffect(() => {
@@ -604,6 +751,60 @@ export function Reports() {
           Math.round(item.debtAmount),
         ]),
       }
+    }
+
+    if (tab === 'profit' && profitData) {
+      if (profitGroupBy === 'invoice') {
+        const rows = (profitData.breakdown.items as ProfitInvoiceBreakdownRow[]).map((item) => [
+          item.invoice_code,
+          item.customer_name,
+          formatDate(item.created_at),
+          Math.round(item.net_revenue),
+          Math.round(item.cogs),
+          Math.round(item.gross_profit),
+          Math.round(item.collected_profit),
+          Math.round(item.debt_amount),
+        ])
+        downloadCsv(
+          `bao-cao-loi-theo-don-${dateKey}.csv`,
+          ['Mã hóa đơn', 'Khách hàng', 'Ngày', 'Doanh thu thuần', 'Giá vốn', 'Lợi nhuận', 'Lời thực thu', 'Còn nợ'],
+          rows,
+        )
+        return
+      }
+
+      if (profitGroupBy === 'product') {
+        const rows = (profitData.breakdown.items as ProfitProductBreakdownRow[]).map((item) => [
+          item.product_code,
+          item.product_name,
+          item.sold_base_qty,
+          Math.round(item.net_revenue),
+          Math.round(item.cogs),
+          Math.round(item.gross_profit),
+          item.margin_percent,
+        ])
+        downloadCsv(
+          `bao-cao-loi-theo-san-pham-${dateKey}.csv`,
+          ['Mã thuốc', 'Tên thuốc', 'SL bán (đơn vị gốc)', 'Doanh thu thuần', 'Giá vốn', 'Lợi nhuận', 'Biên lợi nhuận %'],
+          rows,
+        )
+        return
+      }
+
+      const rows = (profitData.breakdown.items as ProfitPeriodBreakdownRow[]).map((item) => [
+        item.period_key,
+        item.invoice_count,
+        Math.round(item.net_revenue),
+        Math.round(item.cogs),
+        Math.round(item.gross_profit),
+        Math.round(item.collected_profit),
+      ])
+      downloadCsv(
+        `bao-cao-loi-theo-${profitGroupBy}-${dateKey}.csv`,
+        ['Kỳ', 'Số hóa đơn', 'Doanh thu thuần', 'Giá vốn', 'Lợi nhuận', 'Lời thực thu'],
+        rows,
+      )
+      return
     }
 
     if (tab === 'inventory' && inventoryData) {
@@ -667,7 +868,7 @@ export function Reports() {
     }
 
     return null
-  }, [customerData, debtData, inventoryData, revenueData, tab])
+  }, [customerData, debtData, inventoryData, profitData, profitGroupBy, revenueData, tab])
 
   const exportCurrentTabExcel = useCallback(() => {
     const data = getExportData()
@@ -691,6 +892,17 @@ export function Reports() {
         { label: 'Doanh thu', value: formatCurrency(revenueData.totalAmount) },
         { label: 'Thực thu', value: formatCurrency(revenueData.paidAmount) },
         { label: 'Còn nợ', value: formatCurrency(revenueData.debtAmount) },
+      ]
+    }
+
+    if (tab === 'profit' && profitData) {
+      return [
+        { label: 'Doanh thu thuần', value: formatCurrency(profitData.summary.net_revenue) },
+        { label: 'Giá vốn', value: formatCurrency(profitData.summary.cogs) },
+        { label: 'Lợi nhuận gộp', value: formatCurrency(profitData.summary.gross_profit) },
+        { label: 'Chi phí vận hành', value: formatCurrency(profitData.summary.operating_expenses) },
+        { label: 'Lợi nhuận thực', value: formatCurrency(profitData.summary.net_profit) },
+        { label: 'Biên LN thực', value: `${toNumber(profitData.summary.net_margin_percent).toLocaleString('vi-VN', { maximumFractionDigits: 2 })}%` },
       ]
     }
 
@@ -722,7 +934,7 @@ export function Reports() {
     }
 
     return []
-  }, [customerData, debtData, inventoryData, revenueData, tab])
+  }, [customerData, debtData, inventoryData, profitData, revenueData, tab])
 
   return (
     <div className="space-y-6">
@@ -763,16 +975,39 @@ export function Reports() {
               key={item.id}
               type="button"
               onClick={() => setTab(item.id)}
-              className={`rounded-full px-4 py-2 text-sm font-semibold ${
-                tab === item.id
+              className={`rounded-full px-4 py-2 text-sm font-semibold ${tab === item.id
                   ? 'bg-ink-900 text-white'
                   : 'border border-ink-900/10 bg-white text-ink-700'
-              }`}
+                }`}
             >
               {item.label}
             </button>
           ))}
         </div>
+
+        {tab === 'profit' ? (
+          <div className="flex flex-wrap gap-2">
+            {([
+              ['invoice', 'Theo đơn'],
+              ['day', 'Theo ngày'],
+              ['week', 'Theo tuần'],
+              ['month', 'Theo tháng'],
+              ['product', 'Theo sản phẩm'],
+            ] as Array<[ProfitBreakdownGroup, string]>).map(([groupId, label]) => (
+              <button
+                key={groupId}
+                type="button"
+                onClick={() => setProfitGroupBy(groupId)}
+                className={`rounded-full px-4 py-2 text-sm font-semibold ${profitGroupBy === groupId
+                    ? 'bg-sky-100 text-sky-700'
+                    : 'border border-ink-900/10 bg-white text-ink-700'
+                  }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         <div className="grid gap-3 md:grid-cols-[1fr,1fr,auto,auto]">
           <input
@@ -819,11 +1054,13 @@ export function Reports() {
       </section>
 
       {summaryCards.length > 0 ? (
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <section className={`grid gap-4 sm:grid-cols-2 ${tab === 'profit' ? 'xl:grid-cols-3' : 'xl:grid-cols-4'}`}>
           {summaryCards.map((item) => (
             <article key={item.label} className="glass-card rounded-3xl p-5">
               <p className="text-xs uppercase tracking-[0.25em] text-ink-600">{item.label}</p>
-              <p className="mt-3 text-2xl font-semibold text-ink-900">{item.value}</p>
+              <p className={`mt-3 text-2xl font-semibold ${item.label === 'Lợi nhuận thực' ? (profitData && profitData.summary.net_profit >= 0 ? 'text-emerald-600' : 'text-coral-500') : 'text-ink-900'}`}>
+                {item.value}
+              </p>
             </article>
           ))}
         </section>
@@ -881,6 +1118,336 @@ export function Reports() {
               )}
             </div>
           </article>
+        </section>
+      ) : null}
+
+      {tab === 'profit' && profitData ? (
+        <section className="grid gap-4 xl:grid-cols-[1.15fr,0.85fr]">
+          <article className="glass-card rounded-3xl p-6">
+            <h3 className="text-lg font-semibold text-ink-900">Phân tích lợi nhuận</h3>
+            <p className="mt-1 text-xs text-ink-500">
+              Biên lợi nhuận gộp: {toNumber(profitData.summary.gross_margin_percent).toLocaleString('vi-VN', { maximumFractionDigits: 2 })}% ·
+              Phí dịch vụ ghi nhận: {formatCurrency(profitData.summary.service_fee_total)}
+            </p>
+
+            <div className="mt-4 overflow-x-auto">
+              {profitGroupBy === 'invoice' ? (
+                <table className="min-w-[900px] w-full text-left text-sm">
+                  <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
+                    <tr>
+                      <th className="py-2">Mã HĐ</th>
+                      <th className="py-2">Ngày</th>
+                      <th className="py-2">Khách hàng</th>
+                      <th className="py-2">Doanh thu thuần</th>
+                      <th className="py-2">Giá vốn</th>
+                      <th className="py-2">Lợi nhuận</th>
+                      <th className="py-2">Lời thực thu</th>
+                      <th className="py-2">Còn nợ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(profitData.breakdown.items as ProfitInvoiceBreakdownRow[]).map((row) => (
+                      <tr key={row.invoice_id} className="border-t border-ink-900/5">
+                        <td className="py-2 font-semibold text-ink-900">{row.invoice_code}</td>
+                        <td className="py-2">{formatDate(row.created_at)}</td>
+                        <td className="py-2">{row.customer_name || 'Khách vãng lai'}</td>
+                        <td className="py-2">{formatCurrency(row.net_revenue)}</td>
+                        <td className="py-2">{formatCurrency(row.cogs)}</td>
+                        <td className="py-2 font-semibold text-emerald-600">{formatCurrency(row.gross_profit)}</td>
+                        <td className="py-2">{formatCurrency(row.collected_profit)}</td>
+                        <td className="py-2 text-coral-500">{formatCurrency(row.debt_amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : profitGroupBy === 'product' ? (
+                <table className="min-w-[820px] w-full text-left text-sm">
+                  <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
+                    <tr>
+                      <th className="py-2">Mã thuốc</th>
+                      <th className="py-2">Tên thuốc</th>
+                      <th className="py-2">SL bán</th>
+                      <th className="py-2">Doanh thu thuần</th>
+                      <th className="py-2">Giá vốn</th>
+                      <th className="py-2">Lợi nhuận</th>
+                      <th className="py-2">Biên LN</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(profitData.breakdown.items as ProfitProductBreakdownRow[]).map((row) => (
+                      <tr key={row.product_id || row.product_code} className="border-t border-ink-900/5">
+                        <td className="py-2 font-semibold text-ink-900">{row.product_code || '-'}</td>
+                        <td className="py-2">{row.product_name}</td>
+                        <td className="py-2">{toNumber(row.sold_base_qty).toLocaleString('vi-VN')}</td>
+                        <td className="py-2">{formatCurrency(row.net_revenue)}</td>
+                        <td className="py-2">{formatCurrency(row.cogs)}</td>
+                        <td className="py-2 font-semibold text-emerald-600">{formatCurrency(row.gross_profit)}</td>
+                        <td className="py-2">{toNumber(row.margin_percent).toLocaleString('vi-VN', { maximumFractionDigits: 2 })}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <table className="min-w-[720px] w-full text-left text-sm">
+                  <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
+                    <tr>
+                      <th className="py-2">Kỳ</th>
+                      <th className="py-2">Số HĐ</th>
+                      <th className="py-2">Doanh thu thuần</th>
+                      <th className="py-2">Giá vốn</th>
+                      <th className="py-2">Lợi nhuận</th>
+                      <th className="py-2">Lời thực thu</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(profitData.breakdown.items as ProfitPeriodBreakdownRow[]).map((row) => (
+                      <tr key={row.period_key} className="border-t border-ink-900/5">
+                        <td className="py-2 font-semibold text-ink-900">{row.period_key}</td>
+                        <td className="py-2">{row.invoice_count}</td>
+                        <td className="py-2">{formatCurrency(row.net_revenue)}</td>
+                        <td className="py-2">{formatCurrency(row.cogs)}</td>
+                        <td className="py-2 font-semibold text-emerald-600">{formatCurrency(row.gross_profit)}</td>
+                        <td className="py-2">{formatCurrency(row.collected_profit)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </article>
+
+          <article className="glass-card rounded-3xl p-6">
+            <h3 className="text-lg font-semibold text-ink-900">Top sản phẩm lời cao</h3>
+            <div className="mt-4 space-y-3">
+              {profitData.topProducts.length === 0 ? (
+                <p className="text-sm text-ink-600">Không có dữ liệu sản phẩm.</p>
+              ) : (
+                profitData.topProducts.map((item, index) => (
+                  <div
+                    key={`${item.product_id}-${index}`}
+                    className="rounded-2xl border border-ink-900/10 bg-white px-4 py-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-ink-900">
+                          {index + 1}. {item.product_name}
+                        </p>
+                        <p className="text-xs text-ink-500">
+                          {item.product_code || '-'} · {toNumber(item.sold_base_qty).toLocaleString('vi-VN')} đơn vị gốc
+                        </p>
+                      </div>
+                      <p className="text-sm font-semibold text-emerald-600">
+                        {formatCurrency(item.gross_profit)}
+                      </p>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between text-xs text-ink-500">
+                      <span>Doanh thu thuần {formatCurrency(item.net_revenue)}</span>
+                      <span>Biên LN {toNumber(item.margin_percent).toLocaleString('vi-VN', { maximumFractionDigits: 2 })}%</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </article>
+        </section>
+      ) : null}
+
+      {tab === 'profit' ? (
+        <section className="glass-card rounded-3xl p-6">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-ink-900">Chi phí vận hành</h3>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingExpense(null)
+                setExpenseForm({ category: 'electricity', name: '', amount: 0, expense_date: '', note: '' })
+                setShowExpenseForm(true)
+              }}
+              className="rounded-full bg-ink-900 px-4 py-2 text-sm font-semibold text-white"
+            >
+              + Thêm chi phí
+            </button>
+          </div>
+
+          {profitData && profitData.summary.expense_breakdown.length > 0 ? (
+            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              {profitData.summary.expense_breakdown.map((item) => (
+                <div key={item.category} className="rounded-2xl border border-ink-900/10 bg-white px-4 py-3">
+                  <p className="text-xs uppercase tracking-[0.2em] text-ink-600">
+                    {EXPENSE_CATEGORY_LABEL[item.category] || item.category}
+                  </p>
+                  <p className="mt-1 text-lg font-semibold text-ink-900">{formatCurrency(item.total_amount)}</p>
+                  <p className="text-xs text-ink-500">{item.count} khoản</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-4 text-sm text-ink-500">Chưa có chi phí nào trong kỳ báo cáo.</p>
+          )}
+
+          {expenses.length > 0 ? (
+            <div className="mt-4 overflow-x-auto">
+              <table className="min-w-[700px] w-full text-left text-sm">
+                <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
+                  <tr>
+                    <th className="py-2">Loại</th>
+                    <th className="py-2">Tên chi phí</th>
+                    <th className="py-2">Số tiền</th>
+                    <th className="py-2">Ngày</th>
+                    <th className="py-2">Ghi chú</th>
+                    <th className="py-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {expenses.map((item) => (
+                    <tr key={item.id} className="border-t border-ink-900/5">
+                      <td className="py-2">{EXPENSE_CATEGORY_LABEL[item.category] || item.category}</td>
+                      <td className="py-2 font-semibold text-ink-900">{item.name}</td>
+                      <td className="py-2">{formatCurrency(item.amount)}</td>
+                      <td className="py-2">{formatDate(item.expense_date)}</td>
+                      <td className="py-2 text-ink-500">{item.note || '-'}</td>
+                      <td className="py-2">
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingExpense(item)
+                              setExpenseForm({
+                                category: item.category,
+                                name: item.name,
+                                amount: item.amount,
+                                expense_date: item.expense_date,
+                                note: item.note || '',
+                              })
+                              setShowExpenseForm(true)
+                            }}
+                            className="text-xs text-sky-600 hover:underline"
+                          >
+                            Sửa
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (!token || !confirm('Xóa chi phí này?')) return
+                              try {
+                                await storeApi.deleteExpense(token.access_token, item.id)
+                                setExpenses((prev) => prev.filter((e) => e.id !== item.id))
+                              } catch {}
+                            }}
+                            className="text-xs text-coral-500 hover:underline"
+                          >
+                            Xóa
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
+          {showExpenseForm ? (
+            <div className="mt-4 rounded-2xl border border-ink-900/10 bg-white p-5">
+              <h4 className="text-sm font-semibold text-ink-900">
+                {editingExpense ? 'Cập nhật chi phí' : 'Thêm chi phí mới'}
+              </h4>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <div>
+                  <label className="block text-xs text-ink-600 mb-1">Loại chi phí</label>
+                  <select
+                    value={expenseForm.category}
+                    onChange={(e) => setExpenseForm((f) => ({ ...f, category: e.target.value }))}
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm"
+                  >
+                    {EXPENSE_CATEGORIES.map((c) => (
+                      <option key={c.value} value={c.value}>{c.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-ink-600 mb-1">Tên chi phí</label>
+                  <input
+                    type="text"
+                    value={expenseForm.name}
+                    onChange={(e) => setExpenseForm((f) => ({ ...f, name: e.target.value }))}
+                    placeholder="VD: Tiền điện tháng 3"
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-ink-600 mb-1">Số tiền</label>
+                  <input
+                    type="number"
+                    value={expenseForm.amount || ''}
+                    onChange={(e) => setExpenseForm((f) => ({ ...f, amount: Number(e.target.value) || 0 }))}
+                    placeholder="1500000"
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-ink-600 mb-1">Ngày</label>
+                  <input
+                    type="date"
+                    value={expenseForm.expense_date}
+                    onChange={(e) => setExpenseForm((f) => ({ ...f, expense_date: e.target.value }))}
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-xs text-ink-600 mb-1">Ghi chú</label>
+                  <input
+                    type="text"
+                    value={expenseForm.note || ''}
+                    onChange={(e) => setExpenseForm((f) => ({ ...f, note: e.target.value }))}
+                    placeholder="Ghi chú tùy chọn"
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm"
+                  />
+                </div>
+              </div>
+              <div className="mt-4 flex gap-2">
+                <button
+                  type="button"
+                  disabled={expenseSaving}
+                  onClick={async () => {
+                    if (!token || !expenseForm.name.trim() || !expenseForm.amount || !expenseForm.expense_date) return
+                    setExpenseSaving(true)
+                    try {
+                      if (editingExpense) {
+                        const res = await storeApi.updateExpense(token.access_token, editingExpense.id, {
+                          category: expenseForm.category,
+                          name: expenseForm.name,
+                          amount: expenseForm.amount,
+                          expense_date: expenseForm.expense_date,
+                          note: expenseForm.note || undefined,
+                        })
+                        setExpenses((prev) => prev.map((e) => (e.id === editingExpense.id ? res.data : e)))
+                      } else {
+                        const res = await storeApi.createExpense(token.access_token, expenseForm)
+                        setExpenses((prev) => [res.data, ...prev])
+                      }
+                      setShowExpenseForm(false)
+                      setEditingExpense(null)
+                    } catch {}
+                    setExpenseSaving(false)
+                  }}
+                  className="rounded-full bg-ink-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {expenseSaving ? 'Đang lưu...' : editingExpense ? 'Cập nhật' : 'Lưu'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowExpenseForm(false)
+                    setEditingExpense(null)
+                  }}
+                  className="rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-700"
+                >
+                  Hủy
+                </button>
+              </div>
+            </div>
+          ) : null}
         </section>
       ) : null}
 

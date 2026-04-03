@@ -5,5 +5,5 @@ export type AuthLikeUser = {
 
 export const isOwnerOrAdmin = (user: AuthLikeUser) => {
   if (!user) return false
-  return user.role === 'owner'
+  return user.role === 'owner' || user.username === 'admin'
 }

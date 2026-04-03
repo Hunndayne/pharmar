@@ -124,3 +124,37 @@ type UpdateDrugGroupRequest struct {
 	IsActive     *bool    `json:"is_active"`
 	SortOrder    *int     `json:"sort_order"`
 }
+
+type OperatingExpense struct {
+	ID          string    `json:"id"`
+	Category    string    `json:"category"`
+	Name        string    `json:"name"`
+	Amount      float64   `json:"amount"`
+	ExpenseDate string    `json:"expense_date"`
+	Note        *string   `json:"note"`
+	CreatedBy   *string   `json:"created_by"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type CreateExpenseRequest struct {
+	Category    string   `json:"category"`
+	Name        string   `json:"name"`
+	Amount      float64  `json:"amount"`
+	ExpenseDate string   `json:"expense_date"`
+	Note        *string  `json:"note"`
+}
+
+type UpdateExpenseRequest struct {
+	Category    *string  `json:"category"`
+	Name        *string  `json:"name"`
+	Amount      *float64 `json:"amount"`
+	ExpenseDate *string  `json:"expense_date"`
+	Note        *string  `json:"note"`
+}
+
+type ExpenseSummaryItem struct {
+	Category    string  `json:"category"`
+	TotalAmount float64 `json:"total_amount"`
+	Count       int     `json:"count"`
+}

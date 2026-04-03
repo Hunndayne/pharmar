@@ -54,6 +54,7 @@ async def update_smtp_config(
     config.use_tls = payload.use_tls
     config.from_email = payload.from_email
     config.from_name = payload.from_name
+    config.to_email = payload.to_email
     config.is_active = payload.is_active
 
     await db.commit()

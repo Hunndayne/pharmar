@@ -206,6 +206,19 @@ func (s *Service) migrate(ctx context.Context) error {
 			created_by UUID
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_backups_created_at ON store.backups (created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS store.operating_expenses (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			category VARCHAR(50) NOT NULL,
+			name VARCHAR(200) NOT NULL,
+			amount NUMERIC(15,2) NOT NULL DEFAULT 0,
+			expense_date DATE NOT NULL,
+			note TEXT,
+			created_by UUID,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_operating_expenses_date ON store.operating_expenses (expense_date DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_operating_expenses_category ON store.operating_expenses (category)`,
 	}
 
 	for _, query := range queries {
@@ -1548,4 +1561,258 @@ func scanSetting(row pgx.Row) (domain.Setting, error) {
 	}
 	setting.Value = value
 	return setting, nil
+}
+
+// --- Operating Expenses ---
+
+var validExpenseCategories = map[string]bool{
+	"electricity": true,
+	"water":       true,
+	"internet":    true,
+	"rent":        true,
+	"salary":      true,
+	"maintenance": true,
+	"other":       true,
+}
+
+func scanExpense(row pgx.Row) (domain.OperatingExpense, error) {
+	var item domain.OperatingExpense
+	if err := row.Scan(
+		&item.ID,
+		&item.Category,
+		&item.Name,
+		&item.Amount,
+		&item.ExpenseDate,
+		&item.Note,
+		&item.CreatedBy,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		return domain.OperatingExpense{}, err
+	}
+	return item, nil
+}
+
+func (s *Service) ListExpenses(ctx context.Context, dateFrom, dateTo, category string) ([]domain.OperatingExpense, error) {
+	cat := strings.TrimSpace(strings.ToLower(category))
+	rows, err := s.pool.Query(
+		ctx,
+		`SELECT id::text, category, name, amount, expense_date::text, note, created_by::text, created_at, updated_at
+		   FROM store.operating_expenses
+		  WHERE ($1 = '' OR expense_date >= $1::date)
+		    AND ($2 = '' OR expense_date <= $2::date)
+		    AND ($3 = '' OR category = $3)
+		  ORDER BY expense_date DESC, created_at DESC`,
+		strings.TrimSpace(dateFrom),
+		strings.TrimSpace(dateTo),
+		cat,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]domain.OperatingExpense, 0)
+	for rows.Next() {
+		item, scanErr := scanExpense(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s *Service) GetExpense(ctx context.Context, expenseID string) (domain.OperatingExpense, error) {
+	expenseID = strings.TrimSpace(expenseID)
+	if expenseID == "" {
+		return domain.OperatingExpense{}, fmt.Errorf("%w: expense id is required", ErrBadRequest)
+	}
+	if _, err := uuid.Parse(expenseID); err != nil {
+		return domain.OperatingExpense{}, fmt.Errorf("%w: invalid expense id", ErrBadRequest)
+	}
+
+	row := s.pool.QueryRow(
+		ctx,
+		`SELECT id::text, category, name, amount, expense_date::text, note, created_by::text, created_at, updated_at
+		   FROM store.operating_expenses
+		  WHERE id = $1`,
+		expenseID,
+	)
+	item, err := scanExpense(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.OperatingExpense{}, fmt.Errorf("%w: expense not found", ErrNotFound)
+		}
+		return domain.OperatingExpense{}, err
+	}
+	return item, nil
+}
+
+func (s *Service) CreateExpense(ctx context.Context, payload domain.CreateExpenseRequest, actor string) (domain.OperatingExpense, error) {
+	cat := strings.TrimSpace(strings.ToLower(payload.Category))
+	if cat == "" {
+		return domain.OperatingExpense{}, fmt.Errorf("%w: category is required", ErrBadRequest)
+	}
+	if !validExpenseCategories[cat] {
+		return domain.OperatingExpense{}, fmt.Errorf("%w: invalid category, must be one of: electricity, water, internet, rent, salary, maintenance, other", ErrBadRequest)
+	}
+
+	name := strings.TrimSpace(payload.Name)
+	if name == "" {
+		return domain.OperatingExpense{}, fmt.Errorf("%w: name is required", ErrBadRequest)
+	}
+
+	if payload.Amount <= 0 {
+		return domain.OperatingExpense{}, fmt.Errorf("%w: amount must be greater than 0", ErrBadRequest)
+	}
+
+	expenseDate := strings.TrimSpace(payload.ExpenseDate)
+	if expenseDate == "" {
+		return domain.OperatingExpense{}, fmt.Errorf("%w: expense_date is required (YYYY-MM-DD)", ErrBadRequest)
+	}
+
+	row := s.pool.QueryRow(
+		ctx,
+		`INSERT INTO store.operating_expenses (category, name, amount, expense_date, note, created_by)
+		 VALUES ($1, $2, $3, $4::date, $5, $6)
+		 RETURNING id::text, category, name, amount, expense_date::text, note, created_by::text, created_at, updated_at`,
+		cat,
+		name,
+		payload.Amount,
+		expenseDate,
+		normalizeOptionalText(payload.Note),
+		normalizeActor(actor),
+	)
+
+	item, err := scanExpense(row)
+	if err != nil {
+		return domain.OperatingExpense{}, err
+	}
+	return item, nil
+}
+
+func (s *Service) UpdateExpense(ctx context.Context, expenseID string, payload domain.UpdateExpenseRequest, actor string) (domain.OperatingExpense, error) {
+	item, err := s.GetExpense(ctx, expenseID)
+	if err != nil {
+		return domain.OperatingExpense{}, err
+	}
+
+	if payload.Category != nil {
+		cat := strings.TrimSpace(strings.ToLower(*payload.Category))
+		if cat == "" {
+			return domain.OperatingExpense{}, fmt.Errorf("%w: category cannot be empty", ErrBadRequest)
+		}
+		if !validExpenseCategories[cat] {
+			return domain.OperatingExpense{}, fmt.Errorf("%w: invalid category", ErrBadRequest)
+		}
+		item.Category = cat
+	}
+
+	if payload.Name != nil {
+		name := strings.TrimSpace(*payload.Name)
+		if name == "" {
+			return domain.OperatingExpense{}, fmt.Errorf("%w: name cannot be empty", ErrBadRequest)
+		}
+		item.Name = name
+	}
+
+	if payload.Amount != nil {
+		if *payload.Amount <= 0 {
+			return domain.OperatingExpense{}, fmt.Errorf("%w: amount must be greater than 0", ErrBadRequest)
+		}
+		item.Amount = *payload.Amount
+	}
+
+	if payload.ExpenseDate != nil {
+		expenseDate := strings.TrimSpace(*payload.ExpenseDate)
+		if expenseDate == "" {
+			return domain.OperatingExpense{}, fmt.Errorf("%w: expense_date cannot be empty", ErrBadRequest)
+		}
+		item.ExpenseDate = expenseDate
+	}
+
+	if payload.Note != nil {
+		item.Note = normalizeOptionalText(payload.Note)
+	}
+
+	row := s.pool.QueryRow(
+		ctx,
+		`UPDATE store.operating_expenses
+		    SET category = $2,
+		        name = $3,
+		        amount = $4,
+		        expense_date = $5::date,
+		        note = $6,
+		        updated_at = NOW()
+		  WHERE id = $1
+		  RETURNING id::text, category, name, amount, expense_date::text, note, created_by::text, created_at, updated_at`,
+		expenseID,
+		item.Category,
+		item.Name,
+		item.Amount,
+		item.ExpenseDate,
+		item.Note,
+	)
+
+	updated, err := scanExpense(row)
+	if err != nil {
+		return domain.OperatingExpense{}, err
+	}
+	return updated, nil
+}
+
+func (s *Service) DeleteExpense(ctx context.Context, expenseID string) error {
+	expenseID = strings.TrimSpace(expenseID)
+	if expenseID == "" {
+		return fmt.Errorf("%w: expense id is required", ErrBadRequest)
+	}
+	if _, err := uuid.Parse(expenseID); err != nil {
+		return fmt.Errorf("%w: invalid expense id", ErrBadRequest)
+	}
+
+	commandTag, err := s.pool.Exec(ctx, `DELETE FROM store.operating_expenses WHERE id = $1`, expenseID)
+	if err != nil {
+		return err
+	}
+	if commandTag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: expense not found", ErrNotFound)
+	}
+	return nil
+}
+
+func (s *Service) SumExpenses(ctx context.Context, dateFrom, dateTo string) ([]domain.ExpenseSummaryItem, float64, error) {
+	rows, err := s.pool.Query(
+		ctx,
+		`SELECT category, COALESCE(SUM(amount), 0) AS total_amount, COUNT(*) AS count
+		   FROM store.operating_expenses
+		  WHERE ($1 = '' OR expense_date >= $1::date)
+		    AND ($2 = '' OR expense_date <= $2::date)
+		  GROUP BY category
+		  ORDER BY total_amount DESC`,
+		strings.TrimSpace(dateFrom),
+		strings.TrimSpace(dateTo),
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	items := make([]domain.ExpenseSummaryItem, 0)
+	var grandTotal float64
+	for rows.Next() {
+		var item domain.ExpenseSummaryItem
+		if err := rows.Scan(&item.Category, &item.TotalAmount, &item.Count); err != nil {
+			return nil, 0, err
+		}
+		grandTotal += item.TotalAmount
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return items, grandTotal, nil
 }

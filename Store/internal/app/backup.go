@@ -32,6 +32,7 @@ var backupDatabases = []string{
 	"pharmar_inventory",
 	"pharmar_catalog",
 	"pharmar_customer",
+	"pharmar_notification",
 }
 
 type pgConnInfo struct {

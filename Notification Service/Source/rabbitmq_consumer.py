@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from decimal import Decimal, InvalidOperation
 
 import aio_pika
 
@@ -26,6 +27,95 @@ ROUTING_KEY_TITLE: dict[str, str] = {
     "inventory.low_stock": "Cảnh báo tồn kho thấp",
 }
 
+PAYMENT_METHOD_LABELS: dict[str, str] = {
+    "cash": "Tiền mặt",
+    "card": "Thẻ ngân hàng",
+    "bank_transfer": "Chuyển khoản",
+    "momo": "MoMo",
+    "zalopay": "ZaloPay",
+    "vnpay": "VNPay",
+    "debt": "Mua nợ",
+    "points": "Điểm thưởng",
+}
+
+
+def _fmt_money(amount) -> str:
+    try:
+        value = int(Decimal(str(amount)))
+        return f"{value:,}đ".replace(",", ".")
+    except (InvalidOperation, TypeError, ValueError):
+        return str(amount)
+
+
+def _build_body_text(routing_key: str, payload: dict) -> str:
+    if routing_key == "sale.invoice.created":
+        code = payload.get("invoice_code", "")
+        amount = _fmt_money(payload.get("total_amount", 0))
+        payment_key = payload.get("payment_method", "")
+        payment = PAYMENT_METHOD_LABELS.get(payment_key, payment_key)
+        cashier = payload.get("created_by_name") or ""
+        customer_name = payload.get("customer_name")
+        customer_phone = payload.get("customer_phone")
+
+        parts = [f"Hóa đơn {code} trị giá {amount} — Thanh toán: {payment}."]
+        if cashier:
+            parts.append(f"Thu ngân: {cashier}.")
+        if customer_name:
+            customer_info = customer_name
+            if customer_phone:
+                customer_info += f" ({customer_phone})"
+            parts.append(f"Khách hàng: {customer_info}.")
+        return " ".join(parts)
+
+    if routing_key == "sale.invoice.cancelled":
+        code = payload.get("invoice_code", "")
+        amount = _fmt_money(payload.get("total_amount", 0))
+        reason = payload.get("cancel_reason") or ""
+        parts = [f"Hóa đơn {code} ({amount}) đã bị hủy."]
+        if reason:
+            parts.append(f"Lý do: {reason}.")
+        return " ".join(parts)
+
+    if routing_key == "sale.return.approved":
+        return_code = payload.get("return_code", "")
+        invoice_code = payload.get("invoice_code", "")
+        refund = _fmt_money(payload.get("refund_amount", 0))
+        customer_name = payload.get("customer_name")
+
+        parts = [f"Phiếu trả hàng {return_code} (từ hóa đơn {invoice_code}) đã được duyệt."]
+        parts.append(f"Số tiền hoàn trả: {refund}.")
+        if customer_name:
+            parts.append(f"Khách hàng: {customer_name}.")
+        return " ".join(parts)
+
+    if routing_key == "inventory.low_stock":
+        drug_name = payload.get("drug_name") or "Không xác định"
+        current_qty = payload.get("current_quantity", 0)
+        min_qty = payload.get("min_quantity", 0)
+        unit = payload.get("unit", "")
+        unit_suffix = f" {unit}" if unit else ""
+        return (
+            f"Sản phẩm '{drug_name}' còn {current_qty}{unit_suffix} "
+            f"(ngưỡng tối thiểu: {min_qty}{unit_suffix})."
+        )
+
+    # Fallback for unknown routing keys
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _build_email_html(title: str, body_text: str) -> str:
+    return f"""
+    <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px;background:#f9fafb;border-radius:8px">
+        <div style="background:#fff;border-radius:6px;padding:20px 24px;border:1px solid #e5e7eb">
+            <h2 style="color:#111827;margin:0 0 12px;font-size:18px">{title}</h2>
+            <p style="color:#374151;margin:0;font-size:15px;line-height:1.6">{body_text}</p>
+        </div>
+        <p style="color:#9ca3af;font-size:12px;margin:12px 0 0;text-align:center">
+            Email tự động từ hệ thống Pharmar. Vui lòng không trả lời email này.
+        </p>
+    </div>
+    """
+
 
 async def _on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
     async with message.process():
@@ -36,8 +126,8 @@ async def _on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
             category = ROUTING_KEY_CATEGORY.get(routing_key, "system")
             title = ROUTING_KEY_TITLE.get(routing_key, f"Sự kiện: {routing_key}")
 
-            # Build body text from event data
-            body_text = body.get("message", json.dumps(body, ensure_ascii=False, default=str))
+            payload = body.get("payload", {})
+            body_text = _build_body_text(routing_key, payload)
 
             async with SessionLocal() as db:
                 # Check if alert rule exists and is active
@@ -52,7 +142,8 @@ async def _on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
                 if rule is None:
                     return
 
-                if not rule.send_web:
+                # Skip only when both channels are disabled
+                if not rule.send_web and not rule.send_email:
                     return
 
                 notification = Notification(
@@ -64,8 +155,16 @@ async def _on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
                 if rule.send_email:
                     from .email_sender import send_email
 
-                    sent = await send_email(db, "", title, f"<p>{body_text}</p>")
+                    sent = await send_email(
+                        db,
+                        subject=f"[Pharmar] {title}",
+                        body_html=_build_email_html(title, body_text),
+                    )
                     notification.email_sent = sent
+
+                # Only persist a web notification when send_web is enabled
+                if not rule.send_web:
+                    return
 
                 db.add(notification)
                 await db.commit()

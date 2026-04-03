@@ -12,6 +12,7 @@ from .db.session import get_db
 ROLE_OWNER = "owner"
 ROLE_MANAGER = "manager"
 ROLE_STAFF = "staff"
+LEGACY_ADMIN_USERNAME = "admin"
 
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
@@ -56,12 +57,16 @@ def require_roles(*allowed_roles: str):
     normalized_roles = {role.strip().lower() for role in allowed_roles}
 
     async def checker(current_user: Annotated[TokenUser, Depends(get_current_user)]) -> TokenUser:
-        if current_user.role not in normalized_roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Permission denied",
-            )
-        return current_user
+        if current_user.role in normalized_roles:
+            return current_user
+
+        username = (current_user.username or "").strip().lower()
+        if username == LEGACY_ADMIN_USERNAME and normalized_roles.intersection({ROLE_OWNER, ROLE_MANAGER}):
+            return current_user
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission denied",
+        )
 
     return checker
-

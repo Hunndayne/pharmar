@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect } from 'react'
-import { Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './layout/AppShell'
 import { RequireAuth } from './routes/RequireAuth'
 import { RequireOwnerOrAdmin } from './routes/RequireOwnerOrAdmin'
@@ -29,6 +29,8 @@ const Notifications = lazy(() => import('./pages/Notifications').then((module) =
 const NotificationSettings = lazy(() => import('./pages/NotificationSettings').then((module) => ({ default: module.NotificationSettings })))
 const StockAudit = lazy(() => import('./pages/StockAudit').then((module) => ({ default: module.StockAudit })))
 const ExpiryManagement = lazy(() => import('./pages/ExpiryManagement').then((module) => ({ default: module.ExpiryManagement })))
+const PublicInvoiceLookup = lazy(() => import('./pages/PublicInvoiceLookup').then((module) => ({ default: module.PublicInvoiceLookup })))
+const PrescriptionTemplates = lazy(() => import('./pages/PrescriptionTemplates').then((module) => ({ default: module.PrescriptionTemplates })))
 const NotFound = lazy(() => import('./pages/NotFound').then((module) => ({ default: module.NotFound })))
 
 function App() {
@@ -52,6 +54,14 @@ function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route
+        path="/tra-cuu-hoa-don"
+        element={(
+          <Suspense fallback={<div className="p-4 text-sm text-ink-600">Đang tải trang...</div>}>
+            <PublicInvoiceLookup />
+          </Suspense>
+        )}
+      />
 
       <Route element={<RequireAuth />}>
         <Route
@@ -72,6 +82,7 @@ function App() {
           <Route path="/nhap-hang" element={<Purchases />} />
           <Route path="/ton-kho" element={<Inventory />} />
           <Route path="/ban-hang" element={<Pos />} />
+          <Route path="/don-thuoc-mau" element={<PrescriptionTemplates />} />
           <Route path="/lich-su-ban-hang" element={<SalesHistory />} />
           <Route path="/khach-hang" element={<Customers />} />
           <Route path="/khuyen-mai" element={<Promotions />} />
@@ -79,7 +90,7 @@ function App() {
           <Route path="/han-su-dung" element={<ExpiryManagement />} />
           <Route path="/bao-cao" element={<Reports />} />
           <Route path="/thong-bao" element={<Notifications />} />
-          <Route path="/cai-dat-thong-bao" element={<NotificationSettings />} />
+          <Route path="/cai-dat-thong-bao" element={<Navigate to="/cua-hang/cai-dat" replace />} />
           <Route path="/cai-dat" element={<UserSettings />} />
           <Route path="/he-thong/suc-khoe-dich-vu" element={<SystemHealth />} />
 

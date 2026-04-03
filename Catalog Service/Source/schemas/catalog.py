@@ -1,12 +1,45 @@
 from datetime import datetime
-from decimal import Decimal
-from typing import Generic, TypeVar
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from typing import Generic, Literal, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_serializer, field_validator
 
 
 T = TypeVar("T")
+
+MONEY_FIELD_NAMES = (
+    "current_debt",
+    "amount",
+    "balance_after",
+    "selling_price",
+    "base_price",
+)
+
+
+def _round_money_decimal(value):
+    if value is None:
+        return None
+    try:
+        parsed = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        parsed = Decimal("0")
+    return parsed.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+
+class MoneyInputModel(BaseModel):
+    @field_validator(*MONEY_FIELD_NAMES, mode="before", check_fields=False)
+    @classmethod
+    def normalize_money_fields(cls, value):
+        rounded = _round_money_decimal(value)
+        return value if rounded is None else rounded
+
+
+class MoneyOutputModel(BaseModel):
+    @field_serializer(*MONEY_FIELD_NAMES, when_used="json", check_fields=False)
+    def serialize_money_fields(self, value):
+        rounded = _round_money_decimal(value)
+        return None if rounded is None else int(rounded)
 
 
 class PageResponse(BaseModel, Generic[T]):
@@ -107,7 +140,7 @@ class ManufacturerResponse(BaseModel):
     updated_at: datetime
 
 
-class SupplierCreateRequest(BaseModel):
+class SupplierCreateRequest(MoneyInputModel):
     code: str | None = Field(default=None, max_length=20)
     name: str = Field(min_length=1, max_length=200)
     address: str | None = None
@@ -148,7 +181,7 @@ class SupplierUpdateRequest(BaseModel):
         return normalized or None
 
 
-class SupplierResponse(BaseModel):
+class SupplierResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -166,7 +199,7 @@ class SupplierResponse(BaseModel):
     updated_at: datetime
 
 
-class SupplierDebtHistoryResponse(BaseModel):
+class SupplierDebtHistoryResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -181,13 +214,13 @@ class SupplierDebtHistoryResponse(BaseModel):
     created_at: datetime
 
 
-class SupplierDebtPaymentRequest(BaseModel):
+class SupplierDebtPaymentRequest(MoneyInputModel):
     amount: Decimal = Field(gt=0)
     note: str | None = None
     reference_id: UUID | None = None
 
 
-class SupplierDebtResponse(BaseModel):
+class SupplierDebtResponse(MoneyOutputModel):
     supplier_id: UUID
     supplier_code: str
     supplier_name: str
@@ -195,16 +228,36 @@ class SupplierDebtResponse(BaseModel):
     history: PageResponse[SupplierDebtHistoryResponse]
 
 
-class ProductBaseUnitRequest(BaseModel):
+class ProductBaseUnitRequest(MoneyInputModel):
     unit_name: str = Field(min_length=1, max_length=30)
     selling_price: Decimal = Field(ge=0)
+
+
+ProductUnitRole = Literal["import", "intermediate", "retail"]
+UnitConfigStatus = Literal["ok", "conflict"]
+
+
+class ProductRoleUnitConfigRequest(MoneyInputModel):
+    enabled: bool = True
+    unit_name: str = Field(min_length=1, max_length=30)
+    conversion_to_lower_role: int = Field(default=1, gt=0)
+    selling_price: Decimal = Field(ge=0)
+    barcode: str | None = Field(default=None, max_length=50)
+
+
+class ProductUnitConfigRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    retail: ProductRoleUnitConfigRequest
+    intermediate: ProductRoleUnitConfigRequest | None = None
+    import_role: ProductRoleUnitConfigRequest | None = Field(default=None, alias="import")
 
 
 class ProductCreateRequest(BaseModel):
     code: str | None = Field(default=None, max_length=20)
     barcode: str | None = Field(default=None, max_length=50)
     name: str = Field(min_length=1, max_length=300)
-    active_ingredient: str | None = Field(default=None, max_length=300)
+    active_ingredient: str | None = None
     registration_number: str | None = Field(default=None, max_length=50)
     group_id: UUID | None = None
     manufacturer_id: UUID | None = None
@@ -214,6 +267,7 @@ class ProductCreateRequest(BaseModel):
     other_tax_rate: Decimal = Field(default=Decimal("0.00"), ge=0, le=100)
     is_active: bool = True
     base_unit: ProductBaseUnitRequest | None = None
+    unit_config: ProductUnitConfigRequest | None = None
 
     @field_validator("code")
     @classmethod
@@ -228,7 +282,7 @@ class ProductUpdateRequest(BaseModel):
     code: str | None = Field(default=None, max_length=20)
     barcode: str | None = Field(default=None, max_length=50)
     name: str | None = Field(default=None, min_length=1, max_length=300)
-    active_ingredient: str | None = Field(default=None, max_length=300)
+    active_ingredient: str | None = None
     registration_number: str | None = Field(default=None, max_length=50)
     group_id: UUID | None = None
     manufacturer_id: UUID | None = None
@@ -237,6 +291,7 @@ class ProductUpdateRequest(BaseModel):
     vat_rate: Decimal | None = Field(default=None, ge=0, le=100)
     other_tax_rate: Decimal | None = Field(default=None, ge=0, le=100)
     is_active: bool | None = None
+    unit_config: ProductUnitConfigRequest | None = None
 
     @field_validator("code")
     @classmethod
@@ -259,13 +314,14 @@ class ProductManufacturerRef(BaseModel):
     name: str
 
 
-class ProductUnitResponse(BaseModel):
+class ProductUnitResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     product_id: UUID
     unit_name: str
     conversion_rate: int
+    unit_role: ProductUnitRole | None = None
     barcode: str | None
     selling_price: Decimal
     is_base_unit: bool
@@ -274,7 +330,7 @@ class ProductUnitResponse(BaseModel):
     updated_at: datetime
 
 
-class ProductListItemResponse(BaseModel):
+class ProductListItemResponse(MoneyOutputModel):
     id: UUID
     code: str
     barcode: str | None
@@ -306,23 +362,30 @@ class ProductDetailResponse(BaseModel):
     vat_rate: Decimal
     other_tax_rate: Decimal
     is_active: bool
+    unit_config_status: UnitConfigStatus
     units: list[ProductUnitResponse]
     created_at: datetime
     updated_at: datetime
 
 
-class ProductUnitCreateRequest(BaseModel):
+class ProductUnitCreateRequest(MoneyInputModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     unit_name: str = Field(min_length=1, max_length=30)
     conversion_rate: int = Field(gt=0)
+    unit_role: ProductUnitRole | None = None
     barcode: str | None = Field(default=None, max_length=50)
     selling_price: Decimal = Field(ge=0)
     is_base_unit: bool = False
     is_active: bool = True
 
 
-class ProductUnitUpdateRequest(BaseModel):
+class ProductUnitUpdateRequest(MoneyInputModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     unit_name: str | None = Field(default=None, min_length=1, max_length=30)
     conversion_rate: int | None = Field(default=None, gt=0)
+    unit_role: ProductUnitRole | None = None
     barcode: str | None = Field(default=None, max_length=50)
     selling_price: Decimal | None = Field(default=None, ge=0)
     is_base_unit: bool | None = None
@@ -364,3 +427,82 @@ class ProductImportResult(BaseModel):
     imported: int
     failed: int
     errors: list[str]
+
+
+# ---------------------------------------------------------------------------
+# Prescription Templates
+# ---------------------------------------------------------------------------
+
+class PrescriptionTemplateItemRequest(BaseModel):
+    product_unit_id: UUID
+    quantity: int = Field(gt=0)
+    sort_order: int = Field(default=0, ge=0)
+
+
+class PrescriptionTemplateCreateRequest(BaseModel):
+    code: str | None = Field(default=None, max_length=20)
+    name: str = Field(min_length=1, max_length=100)
+    description: str | None = None
+    is_active: bool = True
+    items: list[PrescriptionTemplateItemRequest] = Field(default_factory=list)
+
+    @field_validator("code")
+    @classmethod
+    def normalize_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized = value.strip().upper()
+        return normalized or None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        return value.strip()
+
+
+class PrescriptionTemplateUpdateRequest(BaseModel):
+    code: str | None = Field(default=None, max_length=20)
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = None
+    is_active: bool | None = None
+    items: list[PrescriptionTemplateItemRequest] | None = None
+
+    @field_validator("code")
+    @classmethod
+    def normalize_code(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        normalized = value.strip().upper()
+        return normalized or None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else value
+
+
+class PrescriptionTemplateItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    product_unit_id: UUID
+    product_id: UUID
+    product_code: str
+    product_name: str
+    unit_name: str
+    unit_conversion: int
+    quantity: int
+    sort_order: int
+
+
+class PrescriptionTemplateResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    code: str
+    name: str
+    description: str | None
+    is_active: bool
+    items: list[PrescriptionTemplateItemResponse]
+    created_at: datetime
+    updated_at: datetime

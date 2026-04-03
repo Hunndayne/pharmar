@@ -13,6 +13,17 @@ import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
 import { BANK_OPTIONS } from '../constants/bankList'
 import { resolveAssetUrl, setDocumentFavicon } from '../utils/assets'
+import {
+  DEFAULT_APP_TIME_ZONE,
+  TIMEZONE_SUGGESTIONS,
+  formatDateTimeInTimeZone,
+  getTimeZoneDisplayLabel,
+  isValidTimeZone,
+  normalizeTimeZone,
+  persistAppTimeZone,
+  readStoredAppTimeZone,
+} from '../utils/timezone'
+import { NotificationSettings as NotificationSettingsSection } from './NotificationSettings'
 
 type StoreInfoForm = {
   name: string
@@ -51,6 +62,8 @@ type StoreSettingsForm = {
   nearDateDays: string
   enableFefo: boolean
   fefoThresholdDays: string
+  restockSalesWindowDays: string
+  restockTargetCoverDays: string
   timezone: string
   currency: string
 }
@@ -89,7 +102,9 @@ const defaultStoreSettings: StoreSettingsForm = {
   nearDateDays: '90',
   enableFefo: true,
   fefoThresholdDays: '180',
-  timezone: 'Asia/Ho_Chi_Minh',
+  restockSalesWindowDays: '60',
+  restockTargetCoverDays: '14',
+  timezone: DEFAULT_APP_TIME_ZONE,
   currency: 'VND',
 }
 
@@ -97,12 +112,8 @@ const ADS_REF_TYPE = 'customer_display_ads'
 const ADS_REF_ID = 'default'
 const LOGO_REF_TYPE = 'store_logo'
 
-const formatDateTime = (value: string | null) => {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('vi-VN')
-}
+const formatDateTime = (value: string | null, timeZone = readStoredAppTimeZone()) =>
+  formatDateTimeInTimeZone(value, timeZone)
 
 const formatFileSize = (bytes: number): string => {
   if (bytes < 1024) return `${bytes} B`
@@ -242,7 +253,9 @@ const mapSettingsToForm = (settings: StoreSettingsMap): StoreSettingsForm => ({
   nearDateDays: asNumberString(settings['inventory.near_date_days'], 90),
   enableFefo: asBoolean(settings['inventory.enable_fefo'], true),
   fefoThresholdDays: asNumberString(settings['inventory.fefo_threshold_days'], 180),
-  timezone: asString(settings['system.timezone'], 'Asia/Ho_Chi_Minh'),
+  restockSalesWindowDays: asNumberString(settings['inventory.restock_sales_window_days'], 60),
+  restockTargetCoverDays: asNumberString(settings['inventory.restock_target_cover_days'], 14),
+  timezone: asString(settings['system.timezone'], DEFAULT_APP_TIME_ZONE),
   currency: asString(settings['system.currency'], 'VND'),
 })
 
@@ -290,6 +303,16 @@ export function StoreSettings() {
   const [adsFiles, setAdsFiles] = useState<FileRecord[]>([])
   const [adsFilesLoading, setAdsFilesLoading] = useState(false)
   const [adsFilesUploading, setAdsFilesUploading] = useState(false)
+  const effectiveSettingsTimeZone = normalizeTimeZone(storeSettingsForm.timezone)
+  const timeZoneValid = !storeSettingsForm.timezone.trim() || isValidTimeZone(storeSettingsForm.timezone.trim())
+  const timeZonePreview = useMemo(
+    () => formatDateTimeInTimeZone(new Date(), effectiveSettingsTimeZone),
+    [effectiveSettingsTimeZone],
+  )
+  const timeZoneDisplayLabel = useMemo(
+    () => getTimeZoneDisplayLabel(effectiveSettingsTimeZone),
+    [effectiveSettingsTimeZone],
+  )
 
   const bankSuggestions = useMemo(() => {
     const keyword = normalizeText(bankPickerKeyword.trim())
@@ -332,6 +355,7 @@ export function StoreSettings() {
       setStoreInfo(info)
       setStoreInfoForm(mapStoreInfoToForm(info))
       setStoreSettingsForm(mapSettingsToForm(mergedSettings))
+      persistAppTimeZone(asString(mergedSettings['system.timezone'], DEFAULT_APP_TIME_ZONE))
       setQrAccountName(asString(saleSettings['sale.bank_account_name'], info.owner_name ?? ''))
       setAutoPrintUpdatedAt(autoPrintSetting.updated_at)
     } catch (storeLoadError) {
@@ -835,6 +859,8 @@ export function StoreSettings() {
     const expiryDays = Number(storeSettingsForm.expiryWarningDays)
     const nearDateDays = Number(storeSettingsForm.nearDateDays)
     const fefoThresholdDays = Number(storeSettingsForm.fefoThresholdDays)
+    const restockSalesWindowDays = Number(storeSettingsForm.restockSalesWindowDays)
+    const restockTargetCoverDays = Number(storeSettingsForm.restockTargetCoverDays)
     const cashRoundingStep = Number(storeSettingsForm.cashRoundingStep)
     const returnWindowValue = Number(storeSettingsForm.returnWindowValue)
     const adsIntervalSeconds = Number(storeSettingsForm.customerDisplayAdsIntervalSeconds)
@@ -860,6 +886,14 @@ export function StoreSettings() {
       setSettingsError('Ngưỡng FEFO/FIFO không hợp lệ.')
       return
     }
+    if (!Number.isFinite(restockSalesWindowDays) || restockSalesWindowDays < 7) {
+      setSettingsError('Chu ky phan tich ban hang phai lon hon hoac bang 7 ngay.')
+      return
+    }
+    if (!Number.isFinite(restockTargetCoverDays) || restockTargetCoverDays < 1) {
+      setSettingsError('Muc tieu phu hang phai lon hon hoac bang 1 ngay.')
+      return
+    }
     if (!Number.isFinite(cashRoundingStep) || cashRoundingStep < 1) {
       setSettingsError('Bac lam tron tien mat khong hop le.')
       return
@@ -877,6 +911,12 @@ export function StoreSettings() {
       setSettingsError('Thoi gian transition ads khong hop le.')
       return
     }
+    if (!timeZoneValid) {
+      setSettingsError('Mui gio khong hop le. Vui long chon theo goi y IANA, vi du Asia/Ho_Chi_Minh.')
+      return
+    }
+
+    const normalizedTimeZone = normalizeTimeZone(storeSettingsForm.timezone)
 
     setSettingsSubmitting(true)
     setSettingsError(null)
@@ -905,13 +945,17 @@ export function StoreSettings() {
           'inventory.near_date_days': Math.trunc(nearDateDays),
           'inventory.enable_fefo': storeSettingsForm.enableFefo,
           'inventory.fefo_threshold_days': Math.trunc(fefoThresholdDays),
-          'system.timezone': storeSettingsForm.timezone.trim() || 'Asia/Ho_Chi_Minh',
+          'inventory.restock_sales_window_days': Math.trunc(restockSalesWindowDays),
+          'inventory.restock_target_cover_days': Math.trunc(restockTargetCoverDays),
+          'system.timezone': normalizedTimeZone,
           'system.currency': storeSettingsForm.currency.trim() || 'VND',
         }),
       ])
 
       const autoPrintSetting = await storeApi.getSetting('sale.auto_print')
       setAutoPrintUpdatedAt(autoPrintSetting.updated_at)
+      persistAppTimeZone(normalizedTimeZone)
+      setStoreSettingsForm((prev) => ({ ...prev, timezone: normalizedTimeZone }))
       setSettingsMessage('Đã cập nhật cấu hình cửa hàng.')
     } catch (submitStoreSettingsError) {
       if (submitStoreSettingsError instanceof ApiError) setSettingsError(submitStoreSettingsError.message)
@@ -1195,7 +1239,7 @@ export function StoreSettings() {
       <section className="glass-card rounded-3xl p-6">
         <h3 className="text-xl font-semibold text-ink-900">Cấu hình bán hàng và kho</h3>
         <p className="mt-2 text-xs text-ink-500">
-          Tự động in hóa đơn cập nhật lúc: {formatDateTime(autoPrintUpdatedAt)}
+          Tự động in hóa đơn cập nhật lúc: {formatDateTime(autoPrintUpdatedAt, effectiveSettingsTimeZone)}
         </p>
 
         <form onSubmit={onSubmitStoreSettings} className="mt-4 grid gap-4 md:grid-cols-2">
@@ -1221,6 +1265,11 @@ export function StoreSettings() {
             />
             Bán hàng theo lô (áp dụng FIFO/FEFO khi tạo hóa đơn)
           </label>
+          <p className="text-xs text-ink-500 md:col-span-2">
+            {storeSettingsForm.sellByLot
+              ? 'Khi bật, mỗi dòng bán hàng phải bám theo lô được chọn và kiểm chính sách FIFO/FEFO như hiện tại.'
+              : 'Khi tắt, hệ thống có thể tự phân bổ qua nhiều lô cho đơn vị lẻ. Nếu quét hoặc chọn một lô cụ thể thì vẫn giữ chặt theo lô đó.'}
+          </p>
           <label className="flex items-center gap-2 text-sm text-ink-700 md:col-span-2">
             <input
               type="checkbox"
@@ -1573,13 +1622,29 @@ export function StoreSettings() {
           <label className="space-y-2 text-sm text-ink-700">
             <span>Múi giờ</span>
             <input
+              list="store-timezone-suggestions"
               value={storeSettingsForm.timezone}
               onChange={(event) =>
                 setStoreSettingsForm((prev) => ({ ...prev, timezone: event.target.value }))
               }
               className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
               disabled={!canManageStore || storeLoading}
+              placeholder={DEFAULT_APP_TIME_ZONE}
+              autoComplete="off"
             />
+            <datalist id="store-timezone-suggestions">
+              {TIMEZONE_SUGGESTIONS.map((item) => (
+                <option key={item.value} value={item.value} label={item.displayLabel} />
+              ))}
+            </datalist>
+            <p className="text-xs text-ink-500">
+              Goi y IANA: {timeZoneDisplayLabel}. Khuyen nghi dung {DEFAULT_APP_TIME_ZONE}.
+            </p>
+            <p className={`text-xs ${timeZoneValid ? 'text-brand-700' : 'text-coral-500'}`}>
+              {timeZoneValid
+                ? `Gio hien tai theo mui gio nay: ${timeZonePreview}`
+                : 'Mui gio khong hop le. Vui long chon theo goi y, vi du Asia/Ho_Chi_Minh.'}
+            </p>
           </label>
           <label className="space-y-2 text-sm text-ink-700">
             <span>Tiền tệ</span>
@@ -1593,6 +1658,38 @@ export function StoreSettings() {
             />
           </label>
 
+          <label className="space-y-2 text-sm text-ink-700">
+            <span>Chu kỳ phân tích bán hàng cho gợi ý nhập (ngày)</span>
+            <input
+              type="number"
+              min={7}
+              value={storeSettingsForm.restockSalesWindowDays}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({
+                  ...prev,
+                  restockSalesWindowDays: event.target.value,
+                }))
+              }
+              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              disabled={!canManageStore || storeLoading}
+            />
+          </label>
+          <label className="space-y-2 text-sm text-ink-700">
+            <span>Mục tiêu đủ hàng cho gợi ý nhập (ngày)</span>
+            <input
+              type="number"
+              min={1}
+              value={storeSettingsForm.restockTargetCoverDays}
+              onChange={(event) =>
+                setStoreSettingsForm((prev) => ({
+                  ...prev,
+                  restockTargetCoverDays: event.target.value,
+                }))
+              }
+              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              disabled={!canManageStore || storeLoading}
+            />
+          </label>
           {settingsError ? <p className="md:col-span-2 text-sm text-coral-500">{settingsError}</p> : null}
           {settingsMessage ? <p className="md:col-span-2 text-sm text-brand-600">{settingsMessage}</p> : null}
 
@@ -1623,6 +1720,9 @@ export function StoreSettings() {
           </div>
         </form>
       </section>
+
+      {/* --- Notification Settings --- */}
+      <NotificationSettingsSection />
 
       {/* --- Backup & Sync --- */}
       {canManageStore ? (
@@ -1698,7 +1798,7 @@ export function StoreSettings() {
                     <tr key={b.id} className="border-b border-ink-900/5">
                       <td className="py-2 pr-4 font-mono text-xs text-ink-800">{b.filename}</td>
                       <td className="py-2 pr-4 text-ink-600">{formatFileSize(b.size_bytes)}</td>
-                      <td className="py-2 pr-4 text-ink-600">{formatDateTime(b.created_at)}</td>
+                      <td className="py-2 pr-4 text-ink-600">{formatDateTime(b.created_at, effectiveSettingsTimeZone)}</td>
                       <td className="py-2 pr-4 text-ink-500">{b.note ?? '-'}</td>
                       <td className="py-2">
                         <div className="flex gap-1">

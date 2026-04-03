@@ -2,16 +2,17 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+import re
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from Source.core.config import get_settings
-from Source.db.models import Invoice, InvoiceItem, InvoicePayment, Shift
+from Source.db.models import Invoice, InvoiceItem, InvoicePayment, ReturnItem, SCHEMA_NAME, Shift
 from Source.dependencies import (
     ROLE_MANAGER,
     ROLE_OWNER,
@@ -23,6 +24,8 @@ from Source.dependencies import (
 )
 from Source.events import publish_sale_event
 from Source.sale import (
+    build_utc_range_for_local_dates,
+    get_store_timezone,
     extract_item_sku,
     fetch_customer_by_id,
     fetch_customer_tier_discount_percent,
@@ -46,15 +49,20 @@ from Source.sale import (
 )
 from Source.schemas.sale import (
     InvoiceCancelRequest,
+    InvoiceCollectPaymentRequest,
     InvoiceCreateRequest,
     InvoiceListItemResponse,
     InvoicePrintResponse,
+    ProfitSourceInvoiceResponse,
+    PublicInvoiceListItemResponse,
+    PublicInvoiceResponse,
     InvoiceResponse,
     PageResponse,
 )
 
 
 settings = get_settings()
+MIN_DEBT_AMOUNT_AFTER_ROUNDING = Decimal("500.00")
 
 router = APIRouter(prefix="/sale", tags=["sale-invoices"])
 
@@ -73,6 +81,22 @@ def _decimal_to_float(value: Decimal | None) -> float:
     return float(value)
 
 
+def _apply_minimum_debt_threshold(
+    total_amount: Decimal,
+    amount_paid: Decimal,
+    rounding_adjustment_amount: Decimal,
+) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    debt_amount = _normalize_decimal(max(total_amount - amount_paid, Decimal("0.00")))
+    if Decimal("0.00") < debt_amount <= MIN_DEBT_AMOUNT_AFTER_ROUNDING:
+        # Absorb tiny residual balances into the rounding adjustment to avoid meaningless debt.
+        rounding_adjustment_amount = _normalize_decimal(rounding_adjustment_amount - debt_amount)
+        total_amount = _normalize_decimal(total_amount - debt_amount)
+        debt_amount = Decimal("0.00")
+
+    change_amount = _normalize_decimal(max(amount_paid - total_amount, Decimal("0.00")))
+    return total_amount, rounding_adjustment_amount, debt_amount, change_amount
+
+
 def _invoice_event_payload(invoice: Invoice) -> dict[str, Any]:
     return {
         "invoice_id": str(invoice.id),
@@ -81,8 +105,11 @@ def _invoice_event_payload(invoice: Invoice) -> dict[str, Any]:
         "customer_name": invoice.customer_name,
         "customer_phone": invoice.customer_phone,
         "total_amount": _decimal_to_float(invoice.total_amount),
+        "rounding_adjustment_amount": _decimal_to_float(invoice.rounding_adjustment_amount),
         "amount_paid": _decimal_to_float(invoice.amount_paid),
         "change_amount": _decimal_to_float(invoice.change_amount),
+        "service_fee_amount": _decimal_to_float(invoice.service_fee_amount),
+        "service_fee_mode": invoice.service_fee_mode,
         "payment_method": invoice.payment_method,
         "status": invoice.status,
         "created_by": invoice.created_by,
@@ -102,6 +129,13 @@ async def _get_invoice_with_details(invoice_id: UUID, db: AsyncSession) -> Invoi
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
     return item
+
+
+def _normalize_phone_lookup(phone: str) -> str:
+    normalized = re.sub(r"\D+", "", phone or "")
+    if len(normalized) < 8:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone number is invalid")
+    return normalized
 
 
 async def _prepare_invoice_creation(
@@ -207,27 +241,45 @@ async def _prepare_invoice_creation(
             reason = validate_result.get("reason") or "Promotion is invalid"
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
 
+    points_discount_base_amount = _normalize_decimal(promotion_base_amount - promotion_discount)
+    if points_discount_base_amount < Decimal("0.00"):
+        points_discount_base_amount = Decimal("0.00")
+
     points_discount = Decimal("0.00")
     points_used_applied = 0
     if payload.points_used > 0:
         if payload.customer_id is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="customer_id is required when using points")
-        redeem_payload = {
-            "customer_id": str(payload.customer_id),
-            "points": payload.points_used,
-            "reference_type": "invoice",
-            "reference_id": str(invoice_id),
-            "reference_code": invoice_code,
-            "note": "Invoice checkout",
-        }
-        redeem_result = await customer_internal_post("points/redeem", redeem_payload)
-        points_discount = safe_decimal(redeem_result.get("discount_amount"))
-        points_used_applied = int(redeem_result.get("points_used", payload.points_used) or 0)
+        if points_discount_base_amount > Decimal("0.00"):
+            redeem_payload = {
+                "customer_id": str(payload.customer_id),
+                "points": payload.points_used,
+                "max_discount_amount": points_discount_base_amount,
+                "reference_type": "invoice",
+                "reference_id": str(invoice_id),
+                "reference_code": invoice_code,
+                "note": "Invoice checkout",
+            }
+            redeem_result = await customer_internal_post("points/redeem", redeem_payload)
+            points_discount = _normalize_decimal(safe_decimal(redeem_result.get("discount_amount")))
+            if points_discount > points_discount_base_amount:
+                points_discount = points_discount_base_amount
+            points_used_applied = int(redeem_result.get("points_used", payload.points_used) or 0)
 
     total_discount = _normalize_decimal(line_discount_total + tier_discount + promotion_discount + points_discount)
     total_amount = _normalize_decimal(subtotal - total_discount)
     if total_amount < Decimal("0.00"):
         total_amount = Decimal("0.00")
+
+    service_fee_amount = _normalize_decimal(payload.service_fee_amount or Decimal("0.00"))
+    service_fee_mode = payload.service_fee_mode or "split"
+    if service_fee_mode == "separate" and service_fee_amount > Decimal("0.00"):
+        total_amount = _normalize_decimal(total_amount + service_fee_amount)
+
+    rounding_adjustment_amount = _normalize_decimal(payload.rounding_adjustment_amount or Decimal("0.00"))
+    if total_amount + rounding_adjustment_amount < Decimal("0.00"):
+        rounding_adjustment_amount = _normalize_decimal(-total_amount)
+    total_amount = _normalize_decimal(total_amount + rounding_adjustment_amount)
 
     payment_methods = await list_active_payment_methods_map(db)
 
@@ -275,7 +327,12 @@ async def _prepare_invoice_creation(
         )
         payment_method = single_method
 
-    change_amount = _normalize_decimal(max(amount_paid - total_amount, Decimal("0.00")))
+    total_amount, rounding_adjustment_amount, debt_amount, change_amount = _apply_minimum_debt_threshold(
+        total_amount,
+        amount_paid,
+        rounding_adjustment_amount,
+    )
+    effective_payment_method = "debt" if debt_amount > Decimal("0.00") else payment_method
 
     points_earned = 0
     if payload.customer_id is not None and total_amount > Decimal("0.00"):
@@ -308,7 +365,10 @@ async def _prepare_invoice_creation(
         points_used=points_used_applied,
         points_earned=points_earned,
         promotion_code=payload.promotion_code,
-        payment_method=payment_method,
+        payment_method=effective_payment_method,
+        service_fee_amount=service_fee_amount,
+        service_fee_mode=service_fee_mode,
+        rounding_adjustment_amount=rounding_adjustment_amount,
         amount_paid=_normalize_decimal(amount_paid),
         change_amount=_normalize_decimal(change_amount),
         status="completed",
@@ -432,6 +492,54 @@ async def process_checkout(
     return await _get_invoice_with_details(invoice.id, db)
 
 
+@router.get("/public/invoices/code/{code}", response_model=PublicInvoiceResponse)
+async def public_get_invoice_by_code(code: str, db: DbSession) -> PublicInvoiceResponse:
+    invoice = await get_invoice_by_code_or_404(code, db)
+    invoice = await _get_invoice_with_details(invoice.id, db)
+    return PublicInvoiceResponse.model_validate(invoice)
+
+
+@router.get("/public/invoices/phone/{phone}", response_model=PageResponse[PublicInvoiceListItemResponse])
+async def public_list_invoices_by_phone(
+    phone: str,
+    db: DbSession,
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=10, ge=1, le=50),
+) -> PageResponse[PublicInvoiceListItemResponse]:
+    normalized_phone = _normalize_phone_lookup(phone)
+    stmt = (
+        select(Invoice)
+        .where(
+            func.regexp_replace(func.coalesce(Invoice.customer_phone, ""), r"\D", "", "g") == normalized_phone
+        )
+        .order_by(Invoice.created_at.desc())
+    )
+    rows, meta = await paginate_scalars(db, stmt, page, size)
+    return PageResponse(
+        items=[
+            PublicInvoiceListItemResponse(
+                id=item.id,
+                code=item.code,
+                customer_name=item.customer_name,
+                customer_phone=item.customer_phone,
+                total_amount=item.total_amount,
+                rounding_adjustment_amount=item.rounding_adjustment_amount,
+                amount_paid=item.amount_paid,
+                payment_method=item.payment_method,
+                service_fee_amount=item.service_fee_amount,
+                service_fee_mode=item.service_fee_mode,
+                status=item.status,
+                created_at=item.created_at,
+            )
+            for item in rows
+        ],
+        total=meta.total,
+        page=meta.page,
+        size=meta.size,
+        pages=meta.pages,
+    )
+
+
 @router.get("/invoices", response_model=PageResponse[InvoiceListItemResponse])
 async def list_invoices(
     current_user: AnyUser,
@@ -454,10 +562,11 @@ async def list_invoices(
     elif cashier_id is not None and cashier_id.strip():
         stmt = stmt.where(Invoice.created_by == cashier_id.strip())
 
-    if date_from is not None:
-        stmt = stmt.where(func.date(Invoice.created_at) >= date_from)
-    if date_to is not None:
-        stmt = stmt.where(func.date(Invoice.created_at) <= date_to)
+    range_start_at, range_end_at = build_utc_range_for_local_dates(date_from, date_to, await get_store_timezone())
+    if range_start_at is not None:
+        stmt = stmt.where(Invoice.created_at >= range_start_at)
+    if range_end_at is not None:
+        stmt = stmt.where(Invoice.created_at < range_end_at)
 
     rows, meta = await paginate_scalars(db, stmt, page, size)
     return PageResponse[InvoiceListItemResponse](
@@ -468,8 +577,11 @@ async def list_invoices(
                 customer_name=item.customer_name,
                 customer_phone=item.customer_phone,
                 total_amount=item.total_amount,
+                rounding_adjustment_amount=item.rounding_adjustment_amount,
                 amount_paid=item.amount_paid,
                 payment_method=item.payment_method,
+                service_fee_amount=item.service_fee_amount,
+                service_fee_mode=item.service_fee_mode,
                 status=item.status,
                 cashier_name=item.created_by_name,
                 created_at=item.created_at,
@@ -510,6 +622,115 @@ async def create_invoice(
         payload=_invoice_event_payload(invoice),
     )
     return InvoiceResponse.model_validate(invoice)
+
+
+@router.post("/invoices/{invoice_id}/collect-payment", response_model=InvoiceResponse)
+async def collect_invoice_payment(
+    invoice_id: UUID,
+    payload: InvoiceCollectPaymentRequest,
+    current_user: AnyUser,
+    db: DbSession,
+) -> InvoiceResponse:
+    invoice = await _get_invoice_with_details(invoice_id, db)
+    if invoice.status != "completed":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only completed invoices can collect debt payments")
+
+    outstanding_before = _normalize_decimal(max(invoice.total_amount - invoice.amount_paid, Decimal("0.00")))
+    if outstanding_before <= Decimal("0.00"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invoice does not have outstanding debt")
+
+    payment_method = payload.payment_method.strip().lower()
+    if payment_method in {"mixed", "debt"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Payment method is not valid for debt collection")
+
+    payment_methods = await list_active_payment_methods_map(db)
+    payment_method_item = payment_methods.get(payment_method)
+    if payment_method_item is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Payment method '{payment_method}' is not available")
+    if payment_method_item.requires_reference and not payload.reference_code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Payment method '{payment_method}' requires reference_code",
+        )
+
+    collect_amount = _normalize_decimal(payload.amount or Decimal("0.00"))
+    if outstanding_before > MIN_DEBT_AMOUNT_AFTER_ROUNDING and collect_amount <= Decimal("0.00"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Collection amount must be greater than 0")
+    if collect_amount > outstanding_before:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Collection amount cannot exceed outstanding debt")
+
+    if collect_amount > Decimal("0.00"):
+        invoice.amount_paid = _normalize_decimal(invoice.amount_paid + collect_amount)
+        db.add(
+            InvoicePayment(
+                invoice_id=invoice.id,
+                payment_method=payment_method,
+                amount=collect_amount,
+                reference_code=payload.reference_code,
+                note=payload.note,
+            )
+        )
+
+    invoice.total_amount, invoice.rounding_adjustment_amount, debt_amount, invoice.change_amount = _apply_minimum_debt_threshold(
+        invoice.total_amount,
+        invoice.amount_paid,
+        invoice.rounding_adjustment_amount,
+    )
+    if outstanding_before > Decimal("0.00") or invoice.payment_method == "debt":
+        invoice.payment_method = "debt"
+    elif debt_amount <= Decimal("0.00"):
+        invoice.payment_method = payment_method
+
+    await db.commit()
+
+    refreshed = await _get_invoice_with_details(invoice.id, db)
+
+    await publish_sale_event(
+        event_type="sale.invoice.payment_collected",
+        routing_key="sale.invoice.payment_collected",
+        payload={
+            **_invoice_event_payload(refreshed),
+            "collected_amount": _decimal_to_float(collect_amount),
+            "collected_method": payment_method,
+            "collected_by": current_user.sub,
+            "outstanding_before": _decimal_to_float(outstanding_before),
+            "outstanding_after": _decimal_to_float(max(refreshed.total_amount - refreshed.amount_paid, Decimal("0.00"))),
+            "collection_note": payload.note,
+        },
+    )
+
+    return InvoiceResponse.model_validate(refreshed)
+
+
+@router.get("/reports/profit-source", response_model=PageResponse[ProfitSourceInvoiceResponse])
+async def list_profit_source_invoices(
+    _: AnyUser,
+    db: DbSession,
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=100, ge=1, le=200),
+) -> PageResponse[ProfitSourceInvoiceResponse]:
+    stmt = (
+        select(Invoice)
+        .options(selectinload(Invoice.items))
+        .where(Invoice.status.in_(["completed", "returned"]))
+        .order_by(Invoice.created_at.desc())
+    )
+    range_start_at, range_end_at = build_utc_range_for_local_dates(date_from, date_to, await get_store_timezone())
+    if range_start_at is not None:
+        stmt = stmt.where(Invoice.created_at >= range_start_at)
+    if range_end_at is not None:
+        stmt = stmt.where(Invoice.created_at < range_end_at)
+
+    rows, meta = await paginate_scalars(db, stmt, page, size)
+    return PageResponse[ProfitSourceInvoiceResponse](
+        items=[ProfitSourceInvoiceResponse.model_validate(item) for item in rows],
+        total=meta.total,
+        page=meta.page,
+        size=meta.size,
+        pages=meta.pages,
+    )
 
 
 @router.post("/invoices/{invoice_id}/cancel")
@@ -633,6 +854,9 @@ async def print_invoice_data(invoice_id: UUID, _: AnyUser, token: AccessToken, d
     if invoice.payment_method == "mixed":
         payment_name = "Thanh toán kết hợp"
 
+    if invoice.payment_method == "debt":
+        payment_name = "Mua nợ"
+
     raw_window_value = sale_settings.get("sale.return_window_value", 7)
     try:
         return_window_value = int(raw_window_value)
@@ -684,12 +908,16 @@ async def print_invoice_data(invoice_id: UUID, _: AnyUser, token: AccessToken, d
                 "amount": invoice.promotion_discount,
             },
             "points_discount": invoice.points_discount,
+            "service_fee_amount": invoice.service_fee_amount,
+            "service_fee_mode": invoice.service_fee_mode,
+            "rounding_adjustment_amount": invoice.rounding_adjustment_amount,
             "total": invoice.total_amount,
         },
         payment={
             "method": payment_name,
             "amount_paid": invoice.amount_paid,
             "change": invoice.change_amount,
+            "debt_amount": _normalize_decimal(max(invoice.total_amount - invoice.amount_paid, Decimal("0.00"))),
         },
         points={
             "used": invoice.points_used,
@@ -711,4 +939,46 @@ async def reprint_invoice(invoice_id: UUID, _: AnyUser, db: DbSession):
         "message": "Invoice marked for reprint",
         "invoice_id": str(invoice.id),
         "invoice_code": invoice.code,
+    }
+
+
+@router.get("/internal/products/{product_id}/usage")
+async def get_product_usage(product_id: str, _: AnyUser, db: DbSession) -> dict[str, Any]:
+    product_key = product_id.strip()
+    if not product_key:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="product_id is required")
+
+    invoice_item_count = int(
+        (await db.scalar(select(func.count()).select_from(InvoiceItem).where(InvoiceItem.product_id == product_key))) or 0
+    )
+    return_item_count = int(
+        (await db.scalar(select(func.count()).select_from(ReturnItem).where(ReturnItem.product_id == product_key))) or 0
+    )
+    held_order_count = int(
+        (
+            await db.execute(
+                text(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM {SCHEMA_NAME}.held_orders AS ho
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM jsonb_array_elements(ho.items) AS item
+                        WHERE item->>'product_id' = :product_id
+                    )
+                    """
+                ),
+                {"product_id": product_key},
+            )
+        ).scalar_one()
+        or 0
+    )
+
+    return {
+        "used": any((invoice_item_count, return_item_count, held_order_count)),
+        "references": {
+            "invoice_items": invoice_item_count,
+            "return_items": return_item_count,
+            "held_orders": held_order_count,
+        },
     }

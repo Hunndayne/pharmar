@@ -18,6 +18,7 @@ from Source.catalog import (
     normalize_optional_string,
     paginate_scalars,
     parse_decimal,
+    round_money_decimal,
     search_filter,
     to_supplier_debt_history,
 )
@@ -607,7 +608,7 @@ async def import_suppliers(
         note = normalize_optional_string(str(_cell_value(row_values, index_map, "note") or ""))
         is_active = _parse_excel_bool(_cell_value(row_values, index_map, "is_active"), default=True)
         current_debt_raw = _cell_value(row_values, index_map, "current_debt")
-        current_debt = parse_decimal(current_debt_raw, Decimal("0.00"))
+        current_debt = round_money_decimal(current_debt_raw, Decimal("0"))
         if current_debt < 0:
             errors.append(f"Row {row_index}: current_debt must be >= 0")
             continue

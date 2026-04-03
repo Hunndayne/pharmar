@@ -146,6 +146,17 @@
     container_name: pharmar-report-service
     environment:
       REDIS_URL: redis://redis:6379/0
+      SALE_SERVICE_URL: http://sale-service:8003
+      INVENTORY_SERVICE_URL: http://inventory-service:8002
+      STORE_SERVICE_URL: http://store-service:8005
+      REPORT_CACHE_TTL_SECONDS: ${REPORT_CACHE_TTL_SECONDS:-120}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      INTERNAL_SERVICE_TOKEN_EXPIRE_MINUTES: ${INTERNAL_SERVICE_TOKEN_EXPIRE_MINUTES:-30}
+      AI_DASHBOARD_INSIGHTS_ENABLED: ${AI_DASHBOARD_INSIGHTS_ENABLED:-false}
+      AI_WORKER_DASHBOARD_INSIGHTS_URL: ${AI_WORKER_DASHBOARD_INSIGHTS_URL:-}
+      AI_WORKER_API_KEY: ${AI_WORKER_API_KEY:-}
+      AI_WORKER_TIMEOUT_SECONDS: ${AI_WORKER_TIMEOUT_SECONDS:-45}
       RABBITMQ_ENABLED: ${RABBITMQ_ENABLED:-true}
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-pharmar.events}
@@ -204,6 +215,7 @@
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       INVENTORY_SERVICE_URL: http://inventory-service:8002
+      SALE_SERVICE_URL: http://sale-service:8003
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
     ports:
       - "8006:8006"
@@ -281,7 +293,7 @@
       DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_notification
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      INTERNAL_API_KEY: ${NOTIFICATION_INTERNAL_API_KEY:-change-this-internal-key}
+      INTERNAL_API_KEY: ${NOTIFICATION_INTERNAL_API_KEY:-${CUSTOMER_INTERNAL_API_KEY:-change-this-internal-key}}
       RABBITMQ_ENABLED: ${RABBITMQ_ENABLED:-true}
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-pharmar.events}
@@ -318,7 +330,7 @@
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
     ports:
-      - "8008:8008"
+      - "${PAYMENT_QR_HOST_PORT:-18008}:8008"
     restart: unless-stopped
 
   frontend:

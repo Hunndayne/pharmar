@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS catalog.products (
     code VARCHAR(20) UNIQUE NOT NULL,
     barcode VARCHAR(50),
     name VARCHAR(300) NOT NULL,
-    active_ingredient VARCHAR(300),
+    active_ingredient TEXT,
     registration_number VARCHAR(50),
     group_id UUID REFERENCES catalog.drug_groups(id),
     manufacturer_id UUID REFERENCES catalog.manufacturers(id),
@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS catalog.product_units (
     id UUID PRIMARY KEY,
     product_id UUID NOT NULL REFERENCES catalog.products(id) ON DELETE CASCADE,
     unit_name VARCHAR(30) NOT NULL,
+    unit_role VARCHAR(20),
     conversion_rate INT NOT NULL DEFAULT 1,
     barcode VARCHAR(50),
     selling_price DECIMAL(12,2) NOT NULL,
@@ -80,7 +81,7 @@ CREATE TABLE IF NOT EXISTS catalog.product_units (
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (product_id, unit_name)
+    UNIQUE (product_id, unit_role)
 );
 
 CREATE INDEX IF NOT EXISTS idx_drug_groups_code ON catalog.drug_groups(code);
@@ -95,4 +96,29 @@ CREATE INDEX IF NOT EXISTS idx_product_units_product ON catalog.product_units(pr
 CREATE INDEX IF NOT EXISTS idx_products_name ON catalog.products USING gin(to_tsvector('simple', name));
 
 ALTER TABLE catalog.products
-  ADD COLUMN IF NOT EXISTS active_ingredient VARCHAR(300);
+  ADD COLUMN IF NOT EXISTS active_ingredient TEXT;
+
+ALTER TABLE catalog.products
+  ALTER COLUMN active_ingredient TYPE TEXT;
+
+CREATE TABLE IF NOT EXISTS catalog.prescription_templates (
+    id UUID PRIMARY KEY,
+    code VARCHAR(20) UNIQUE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS catalog.prescription_template_items (
+    id UUID PRIMARY KEY,
+    template_id UUID NOT NULL REFERENCES catalog.prescription_templates(id) ON DELETE CASCADE,
+    product_unit_id UUID NOT NULL REFERENCES catalog.product_units(id),
+    quantity INT NOT NULL,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_prescription_templates_code ON catalog.prescription_templates(code);
+CREATE INDEX IF NOT EXISTS idx_prescription_template_items_template ON catalog.prescription_template_items(template_id);

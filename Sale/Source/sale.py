@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from math import ceil
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import HTTPException, status
@@ -19,7 +20,8 @@ from .db.models import HeldOrder, Invoice, InvoiceItem, PaymentMethod, Return, S
 settings = get_settings()
 
 
-DECIMAL_ZERO = Decimal("0.00")
+DECIMAL_ZERO = Decimal("0")
+DEFAULT_STORE_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 @dataclass(slots=True)
@@ -52,6 +54,38 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def resolve_store_timezone(value: str | None) -> ZoneInfo:
+    raw = str(value or "").strip()
+    if not raw:
+        return DEFAULT_STORE_TIMEZONE
+    try:
+        return ZoneInfo(raw)
+    except Exception:
+        return DEFAULT_STORE_TIMEZONE
+
+
+async def get_store_timezone(token: str | None = None) -> ZoneInfo:
+    settings_map = await fetch_store_settings_group("system", token)
+    return resolve_store_timezone(settings_map.get("system.timezone") if isinstance(settings_map, dict) else None)
+
+
+def build_utc_range_for_local_dates(
+    date_from: date | None,
+    date_to: date | None,
+    time_zone: ZoneInfo,
+) -> tuple[datetime | None, datetime | None]:
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+
+    if date_from is not None:
+        start_at = datetime.combine(date_from, datetime.min.time(), tzinfo=time_zone).astimezone(timezone.utc)
+    if date_to is not None:
+        next_day = date_to + timedelta(days=1)
+        end_at = datetime.combine(next_day, datetime.min.time(), tzinfo=time_zone).astimezone(timezone.utc)
+
+    return start_at, end_at
+
+
 def quantize_money(value: Decimal | int | float | str) -> Decimal:
     if isinstance(value, Decimal):
         parsed = value
@@ -60,7 +94,7 @@ def quantize_money(value: Decimal | int | float | str) -> Decimal:
             parsed = Decimal(str(value))
         except (InvalidOperation, ValueError):
             parsed = DECIMAL_ZERO
-    return parsed.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return parsed.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
 
 def safe_decimal(value: Any, default: Decimal = DECIMAL_ZERO) -> Decimal:

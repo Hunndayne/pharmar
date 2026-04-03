@@ -1,4 +1,4 @@
-import { ApiError, buildUsersApiUrl } from './usersService'
+import { ApiError, buildUsersApiUrl, type ApiValidationDetailItem } from './usersService'
 import { controlledFetch } from './fetchControl'
 
 export type InventoryMetaSupplier = {
@@ -38,6 +38,7 @@ export type InventoryMetaDrug = {
   code: string
   name: string
   group: string
+  instructions?: string | null
   base_unit: string
   reorder_level: number
   units: InventoryMetaUnit[]
@@ -156,6 +157,30 @@ export type PaginatedResponse<T> = {
 export type InventoryImportReceiptPagedResponse = PaginatedResponse<InventoryReceiptListItem>
 
 export type InventoryBatchPagedResponse = PaginatedResponse<InventoryBatch> & {
+  summary: {
+    total_drugs: number
+    out_of_stock: number
+    near_date: number
+    expired: number
+  }
+}
+
+export type InventoryStockListItem = {
+  drug_id: string
+  drug_code: string
+  drug_name: string
+  drug_group: string
+  base_unit: string
+  reorder_level: number
+  total_qty: number
+  nearest_expiry: string | null
+  days_to_nearest_expiry: number | null
+  active_batch_count: number
+  status: InventoryStockStatus
+  units: InventoryMetaUnit[]
+}
+
+export type InventoryStockDrugPagedResponse = PaginatedResponse<InventoryStockListItem> & {
   summary: {
     total_drugs: number
     out_of_stock: number
@@ -371,8 +396,11 @@ const requestInventoryJson = async <T>(
   const payload = isJson ? await response.json() : null
 
   if (!response.ok) {
-    const detailMessage = Array.isArray(payload?.detail)
-      ? payload.detail
+    const validationDetail = Array.isArray(payload?.detail)
+      ? (payload.detail as ApiValidationDetailItem[])
+      : undefined
+    const detailMessage = validationDetail
+      ? validationDetail
           .map((item: { msg?: string; loc?: (string | number)[] }) => {
             const loc = Array.isArray(item?.loc) ? item.loc.join('.') : ''
             return loc ? `${loc}: ${item?.msg ?? 'Dữ liệu không hợp lệ'}` : (item?.msg ?? 'Dữ liệu không hợp lệ')
@@ -386,7 +414,10 @@ const requestInventoryJson = async <T>(
       payload?.message ??
       `Yêu cầu thất bại (${response.status})`
 
-    throw new ApiError(detail, response.status)
+    throw new ApiError(detail, response.status, {
+      detail: payload?.detail,
+      validationDetail,
+    })
   }
 
   return payload as T
@@ -460,6 +491,7 @@ export const inventoryApi = {
     status?: InventoryBatchStatus
     exp_from?: string
     exp_to?: string
+    hide_zero?: boolean
   }) => requestInventoryJson<InventoryBatch[]>('/inventory/batches', { method: 'GET' }, undefined, params),
 
   listBatchesPaged: (params?: {
@@ -471,6 +503,7 @@ export const inventoryApi = {
     status?: InventoryBatchStatus
     exp_from?: string
     exp_to?: string
+    hide_zero?: boolean
   }) =>
     requestInventoryJson<InventoryBatchPagedResponse>(
       '/inventory/batches/paged',
@@ -509,6 +542,23 @@ export const inventoryApi = {
       token,
       undefined,
       { getCacheMs: 4000, max429Retries: 2 },
+    ),
+
+  listStockDrugsPaged: (params?: {
+    page?: number
+    size?: number
+    search?: string
+    drug?: string
+    supplier_id?: string
+    exp_from?: string
+    exp_to?: string
+    quick_filter?: 'all' | 'out' | 'near' | 'expired'
+  }) =>
+    requestInventoryJson<InventoryStockDrugPagedResponse>(
+      '/inventory/stock/drugs/paged',
+      { method: 'GET' },
+      undefined,
+      params,
     ),
 
   getStockDrugDetail: (drugId: string, token?: string) =>

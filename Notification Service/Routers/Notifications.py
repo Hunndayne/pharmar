@@ -87,7 +87,7 @@ async def create_notification(
     if payload.send_email:
         from Source.email_sender import send_email
 
-        sent = await send_email(db, "", payload.title, payload.body)
+        sent = await send_email(db, subject=payload.title, body_html=f"<p>{payload.body}</p>")
         notification.email_sent = sent
 
     db.add(notification)

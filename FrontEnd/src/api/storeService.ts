@@ -119,6 +119,34 @@ export type BackupRecord = {
   created_by: string | null
 }
 
+export type OperatingExpense = {
+  id: string
+  category: string
+  name: string
+  amount: number
+  expense_date: string
+  note: string | null
+  created_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type CreateExpensePayload = {
+  category: string
+  name: string
+  amount: number
+  expense_date: string
+  note?: string | null
+}
+
+export type UpdateExpensePayload = {
+  category?: string
+  name?: string
+  amount?: number
+  expense_date?: string
+  note?: string | null
+}
+
 const sanitizePrefix = (value: string) => {
   const trimmed = value.trim()
   if (!trimmed) return ''
@@ -391,4 +419,36 @@ export const storeApi = {
 
   syncPull: (token: string) =>
     requestStoreJson<{ message: string }>('/backup/sync/pull', { method: 'POST' }, token),
+
+  // --- Expenses ---
+
+  listExpenses: (token: string, params?: { date_from?: string; date_to?: string; category?: string }) =>
+    requestStoreJson<{ items: OperatingExpense[]; total: number }>('/expenses', { method: 'GET' }, token, params),
+
+  createExpense: (token: string, payload: CreateExpensePayload) =>
+    requestStoreJson<{ message: string; data: OperatingExpense }>(
+      '/expenses',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+      token,
+    ),
+
+  updateExpense: (token: string, expenseId: string, payload: UpdateExpensePayload) =>
+    requestStoreJson<{ message: string; data: OperatingExpense }>(
+      `/expenses/${encodeURIComponent(expenseId)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      },
+      token,
+    ),
+
+  deleteExpense: (token: string, expenseId: string) =>
+    requestStoreJson<{ message: string; id: string }>(
+      `/expenses/${encodeURIComponent(expenseId)}`,
+      { method: 'DELETE' },
+      token,
+    ),
 }

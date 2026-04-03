@@ -3,6 +3,7 @@ import json
 import re
 from enum import Enum
 from datetime import date, datetime, time, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -25,6 +26,7 @@ from Source.domain import (
     ReceiptStatus,
 )
 from Source.schemas.inventory import (
+    BatchCostLookupRequest,
     BatchStatusUpdateRequest,
     ImportReceiptCreateRequest,
     ImportReceiptUpdateRequest,
@@ -59,6 +61,16 @@ def _to_non_negative_int(value: Any, default: int) -> int:
     if parsed < 0:
         return default
     return parsed
+
+
+def round_money_value(value: Any, default: int = 0) -> int:
+    try:
+        if value is None or value == "":
+            return default
+        parsed = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return default
+    return int(parsed.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def _to_bool(value: Any, default: bool) -> bool:
@@ -182,7 +194,7 @@ def default_line_unit_prices(drug: dict[str, Any]) -> list[dict[str, Any]]:
                 "unit_id": unit_price["unit_id"],
                 "unit_name": unit_meta["name"],
                 "conversion": unit_meta["conversion"],
-                "price": unit_price["price"],
+                "price": round_money_value(unit_price["price"]),
             }
         )
     return result
@@ -195,7 +207,7 @@ def resolve_line_unit_prices(line: Any, drug: dict[str, Any]) -> list[dict[str, 
                 "unit_id": item.unit_id,
                 "unit_name": item.unit_name,
                 "conversion": item.conversion,
-                "price": item.price,
+                "price": round_money_value(item.price),
             }
             for item in line.unit_prices
         ]
@@ -208,10 +220,88 @@ def import_unit_conversion(unit_prices: list[dict[str, Any]]) -> int:
     return max(1, max(int(item.get("conversion", 1)) for item in unit_prices))
 
 
-def to_stock_quantity(import_quantity: int, unit_prices: list[dict[str, Any]]) -> int:
+def to_effective_import_quantity(
+    import_quantity: int,
+    promo_type: PromoType = PromoType.NONE,
+    promo_buy_qty: int | None = None,
+    promo_get_qty: int | None = None,
+) -> int:
+    base_quantity = max(1, int(import_quantity))
+    if promo_type == PromoType.BUY_X_GET_Y and promo_buy_qty and promo_get_qty and promo_buy_qty > 0:
+        bonus_quantity = (base_quantity // int(promo_buy_qty)) * int(promo_get_qty)
+        return base_quantity + max(0, bonus_quantity)
+    return base_quantity
+
+
+def to_stock_quantity(
+    import_quantity: int,
+    unit_prices: list[dict[str, Any]],
+    promo_type: PromoType = PromoType.NONE,
+    promo_buy_qty: int | None = None,
+    promo_get_qty: int | None = None,
+) -> int:
     # quantity sent from receipt line is nhập theo đơn vị nhập (đơn vị lớn nhất).
     # tồn kho luôn lưu theo đơn vị bán lẻ (conversion nhỏ nhất).
-    return max(1, int(import_quantity)) * import_unit_conversion(unit_prices)
+    effective_import_quantity = to_effective_import_quantity(
+        import_quantity,
+        promo_type=promo_type,
+        promo_buy_qty=promo_buy_qty,
+        promo_get_qty=promo_get_qty,
+    )
+    return effective_import_quantity * import_unit_conversion(unit_prices)
+
+
+def paid_import_quantity_for_batch(batch: dict[str, Any]) -> int:
+    stock_quantity = max(0, int(batch.get("qty_in", 0) or 0))
+    if stock_quantity <= 0:
+        return 0
+
+    conversion = import_unit_conversion(batch.get("unit_prices", []))
+    effective_import_quantity = max(1, stock_quantity // max(1, conversion))
+    promo_type = batch.get("promo_type", PromoType.NONE)
+    promo_buy_qty = batch.get("promo_buy_qty")
+    promo_get_qty = batch.get("promo_get_qty")
+
+    if promo_type == PromoType.BUY_X_GET_Y and promo_buy_qty and promo_get_qty and promo_buy_qty > 0:
+        for paid_quantity in range(1, effective_import_quantity + 1):
+            if to_effective_import_quantity(
+                paid_quantity,
+                promo_type=promo_type,
+                promo_buy_qty=promo_buy_qty,
+                promo_get_qty=promo_get_qty,
+            ) == effective_import_quantity:
+                return paid_quantity
+
+    return effective_import_quantity
+
+
+def batch_cost_snapshot(batch: dict[str, Any]) -> dict[str, Any]:
+    qty_in = max(0, int(batch.get("qty_in", 0) or 0))
+    import_price = round_money_value(batch.get("import_price", 0))
+    promo_type = batch.get("promo_type", PromoType.NONE)
+    promo_discount_percent = batch.get("promo_discount_percent")
+    discount_percent = round(float(promo_discount_percent or 0), 4) if promo_discount_percent is not None else None
+    effective_import_price = import_price
+    if promo_type == PromoType.DISCOUNT_PERCENT and discount_percent and discount_percent > 0:
+        effective_import_price = round_money_value(import_price * max(0.0, 1 - (discount_percent / 100)))
+    paid_import_quantity = paid_import_quantity_for_batch(batch)
+    total_cost_amount = round_money_value(paid_import_quantity * effective_import_price)
+    cost_per_base_unit = round(total_cost_amount / qty_in, 6) if qty_in > 0 else 0.0
+
+    return {
+        "batch_id": batch["id"],
+        "qty_in": qty_in,
+        "import_price": import_price,
+        "effective_import_price": effective_import_price,
+        "promo_type": promo_type,
+        "promo_buy_qty": batch.get("promo_buy_qty"),
+        "promo_get_qty": batch.get("promo_get_qty"),
+        "promo_discount_percent": discount_percent,
+        "import_unit_conversion": import_unit_conversion(batch.get("unit_prices", [])),
+        "paid_import_quantity": paid_import_quantity,
+        "total_cost_amount": total_cost_amount,
+        "cost_per_base_unit": cost_per_base_unit,
+    }
 
 
 def resolve_line_promo_note(line: Any) -> str | None:
@@ -337,10 +427,10 @@ def _to_positive_int(value: Any, default: int = 1) -> int:
 
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
-        parsed = float(value)
-    except (TypeError, ValueError):
+        parsed = round_money_value(value, int(default))
+    except Exception:
         return default
-    return parsed
+    return float(parsed)
 
 
 async def fetch_catalog_json(
@@ -401,14 +491,14 @@ def upsert_drug_from_catalog_product(
         unit_prices.append(
             {
                 "unit_id": unit_id,
-                "price": _to_float(unit.get("selling_price"), default=0.0),
+                "price": round_money_value(unit.get("selling_price"), default=0),
             }
         )
 
     if not units:
         fallback_unit_id = f"{product_code}-U1"
         units = [{"id": fallback_unit_id, "name": "Don vi", "conversion": 1, "barcode": ""}]
-        unit_prices = [{"unit_id": fallback_unit_id, "price": 0.0}]
+        unit_prices = [{"unit_id": fallback_unit_id, "price": 0}]
 
     units.sort(key=lambda item: item["conversion"])
     highest_unit = max(units, key=lambda item: item["conversion"])
@@ -431,6 +521,7 @@ def upsert_drug_from_catalog_product(
         "code": product_code,
         "name": product_name,
         "group": group_name,
+        "instructions": str(product.get("instructions") or "").strip(),
         "base_unit": highest_unit["name"],
         "reorder_level": _to_positive_int((existing or {}).get("reorder_level"), default=0),
         "units": units,
@@ -934,14 +1025,14 @@ def register_provisional_drug_from_line(line: Any) -> dict[str, Any]:
         unit_prices.append(
             {
                 "unit_id": candidate_unit_id,
-                "price": float(unit_price.price),
+                "price": round_money_value(unit_price.price),
             }
         )
 
     if not units:
         fallback_unit_id = f"{raw_code}-U1"
         units = [{"id": fallback_unit_id, "name": "Don vi", "conversion": 1, "barcode": ""}]
-        unit_prices = [{"unit_id": fallback_unit_id, "price": float(line.import_price)}]
+        unit_prices = [{"unit_id": fallback_unit_id, "price": round_money_value(line.import_price)}]
 
     if line.barcode:
         units[0]["barcode"] = line.barcode.strip()
@@ -1149,13 +1240,19 @@ def batch_to_view(batch: dict[str, Any], as_of: date | None = None) -> dict[str,
         "days_to_expiry": (batch["exp_date"] - day).days,
         "qty_in": batch["qty_in"],
         "qty_remaining": batch["qty_remaining"],
-        "import_price": batch["import_price"],
+        "import_price": round_money_value(batch["import_price"]),
         "barcode": batch.get("barcode", ""),
         "promo_type": batch.get("promo_type", PromoType.NONE),
         "promo_buy_qty": batch.get("promo_buy_qty"),
         "promo_get_qty": batch.get("promo_get_qty"),
         "promo_discount_percent": batch.get("promo_discount_percent"),
-        "unit_prices": batch.get("unit_prices", []),
+        "unit_prices": [
+            {
+                **unit_price,
+                "price": round_money_value(unit_price.get("price")),
+            }
+            for unit_price in batch.get("unit_prices", [])
+        ],
         "promo_note": batch["promo_note"],
         "status": batch_status(batch, day),
         "created_at": batch["created_at"],
@@ -1186,11 +1283,18 @@ def receipt_is_editable(
             if raise_if_not:
                 raise HTTPException(status_code=409, detail="Receipt cannot be modified because batch has sales/adjustments")
             return False
-        non_import = any(
-            m["batch_id"] == batch["id"] and m["event_type"] != MovementType.IMPORT_RECEIPT
+        irreversible_movement = any(
+            m["batch_id"] == batch["id"]
+            and (
+                m["event_type"] == MovementType.RECEIPT_CANCEL
+                or (
+                    m["event_type"] == MovementType.STOCK_ADJUSTMENT
+                    and not str(m.get("note") or "").startswith("sale_return:")
+                )
+            )
             for m in runtime_state.movements
         )
-        if non_import:
+        if irreversible_movement:
             if raise_if_not:
                 raise HTTPException(status_code=409, detail="Receipt cannot be modified because batch has sales/adjustments")
             return False
@@ -1211,7 +1315,15 @@ def receipt_to_view(receipt: dict[str, Any]) -> dict[str, Any]:
         lines.append(
             {
                 **line,
-                "line_total": round(line["quantity"] * line["import_price"], 2),
+                "import_price": round_money_value(line["import_price"]),
+                "unit_prices": [
+                    {
+                        **unit_price,
+                        "price": round_money_value(unit_price.get("price")),
+                    }
+                    for unit_price in line.get("unit_prices", [])
+                ],
+                "line_total": round_money_value(line["quantity"] * line["import_price"]),
                 "batch_status": batch_status(batch) if batch else BatchStatus.CANCELLED,
             }
         )
@@ -1231,7 +1343,7 @@ def receipt_to_view(receipt: dict[str, Any]) -> dict[str, Any]:
         "created_by": receipt["created_by"],
         "created_at": receipt["created_at"],
         "updated_at": receipt["updated_at"],
-        "total_value": receipt["total_value"],
+        "total_value": round_money_value(receipt["total_value"]),
         "line_count": len(lines),
         "lines": lines,
         "can_edit": receipt_is_editable(receipt, raise_if_not=False),
@@ -1256,7 +1368,7 @@ def receipt_list_item_to_view(receipt: dict[str, Any]) -> dict[str, Any]:
         "payment_status": receipt.get("payment_status", PaymentStatus.PAID),
         "payment_method": receipt.get("payment_method", PaymentMethod.BANK),
         "status": receipt["status"],
-        "total_value": receipt["total_value"],
+        "total_value": round_money_value(receipt["total_value"]),
         "line_count": len(receipt.get("lines", [])),
         "created_at": receipt["created_at"],
         "updated_at": receipt["updated_at"],
@@ -1303,6 +1415,9 @@ def filter_import_receipts(
             )
         ]
     filtered.sort(key=lambda receipt: (receipt["receipt_date"], receipt["created_at"]), reverse=True)
+    filtered.sort(
+        key=lambda receipt: 1 if receipt.get("status") == ReceiptStatus.CANCELLED else 0
+    )
     return filtered
 
 
@@ -1316,6 +1431,7 @@ def filter_batches(
     status_filter: BatchStatus | None = None,
     exp_from: date | None = None,
     exp_to: date | None = None,
+    hide_zero: bool = False,
 ) -> list[dict[str, Any]]:
     filtered = records
     if drug:
@@ -1338,6 +1454,8 @@ def filter_batches(
             or keyword in normalize_key(runtime_state.drugs[batch["drug_id"]]["code"])
             or keyword in normalize_key(batch.get("supplier_name", ""))
         ]
+    if hide_zero:
+        filtered = [batch for batch in filtered if int(batch.get("qty_remaining", 0)) > 0]
     if status_filter:
         filtered = [batch for batch in filtered if batch_status(batch, day) == status_filter]
 
@@ -1379,6 +1497,84 @@ def summarize_batches_by_drug(
         "near_date": near_date,
         "expired": expired,
     }
+
+
+def stock_drug_item_to_view(
+    drug: dict[str, Any],
+    *,
+    day: date,
+    low_stock_threshold: int,
+    expiry_warning_days: int,
+    near_date_days: int,
+) -> dict[str, Any]:
+    drug_id = str(drug.get("id") or "")
+    non_cancelled_batches = [
+        batch
+        for batch in runtime_state.batches.values()
+        if batch.get("drug_id") == drug_id and not batch.get("cancelled")
+    ]
+    active_batches = [
+        batch
+        for batch in non_cancelled_batches
+        if int(batch.get("qty_remaining", 0) or 0) > 0
+    ]
+    nearest_expiry = min((batch["exp_date"] for batch in active_batches), default=None)
+
+    return {
+        "drug_id": drug_id,
+        "drug_code": str(drug.get("code") or ""),
+        "drug_name": str(drug.get("name") or ""),
+        "drug_group": str(drug.get("group") or ""),
+        "base_unit": str(drug.get("base_unit") or ""),
+        "reorder_level": _to_positive_int(drug.get("reorder_level"), default=0),
+        "total_qty": stock_total_for_drug(drug_id),
+        "nearest_expiry": nearest_expiry,
+        "days_to_nearest_expiry": (nearest_expiry - day).days if nearest_expiry else None,
+        "active_batch_count": len(active_batches),
+        "status": stock_status_for_drug(
+            drug_id,
+            day,
+            low_stock_threshold=low_stock_threshold,
+            expiry_warning_days=expiry_warning_days,
+            near_date_days=near_date_days,
+        ),
+        "units": [
+            {
+                "id": str(unit.get("id") or ""),
+                "name": str(unit.get("name") or ""),
+                "conversion": max(1, int(unit.get("conversion") or 1)),
+                "barcode": str(unit.get("barcode") or ""),
+            }
+            for unit in drug.get("units", [])
+            if str(unit.get("name") or "").strip()
+        ],
+    }
+
+
+def summarize_stock_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "total_drugs": len(rows),
+        "out_of_stock": sum(1 for row in rows if row.get("total_qty", 0) <= 0),
+        "near_date": sum(
+            1
+            for row in rows
+            if row.get("status") in {"near_date", "expiring_soon"}
+        ),
+        "expired": sum(1 for row in rows if row.get("status") == "expired"),
+    }
+
+
+def matches_stock_quick_filter(row: dict[str, Any], quick_filter: str) -> bool:
+    total_qty = int(row.get("total_qty", 0) or 0)
+    status = str(row.get("status") or "")
+
+    if quick_filter == "out":
+        return total_qty <= 0
+    if quick_filter == "near":
+        return status in {"near_date", "expiring_soon"}
+    if quick_filter == "expired":
+        return status == "expired"
+    return total_qty > 0
 
 
 def issue_sort_key(
@@ -1729,6 +1925,81 @@ async def get_stock_summary(token: str | None = Depends(optional_oauth2_scheme))
     return rows
 
 
+@router.get("/stock/drugs/paged")
+async def list_stock_drugs_paged(
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None),
+    drug: str | None = Query(default=None),
+    supplier_id: str | None = Query(default=None),
+    exp_from: date | None = Query(default=None),
+    exp_to: date | None = Query(default=None),
+    quick_filter: str = Query(default="all"),
+    token: str | None = Depends(optional_oauth2_scheme),
+) -> dict[str, Any]:
+    await maybe_sync_catalog_drugs(token)
+    inventory_settings = await fetch_inventory_settings()
+    day = date.today()
+    low_stock_threshold = _to_non_negative_int(inventory_settings.get("inventory.low_stock_threshold"), 10)
+    expiry_warning_days = _to_non_negative_int(inventory_settings.get("inventory.expiry_warning_days"), 30)
+    near_date_days = _to_non_negative_int(inventory_settings.get("inventory.near_date_days"), 90)
+
+    base_records = filter_batches(
+        list(runtime_state.batches.values()),
+        day=day,
+        search=search,
+        drug=drug,
+        supplier_id=supplier_id,
+        exp_from=exp_from,
+        exp_to=exp_to,
+    )
+
+    matched_drug_ids: set[str] = set()
+    for batch in base_records:
+        if batch.get("cancelled"):
+            continue
+        drug_id = str(batch.get("drug_id") or "")
+        if drug_id and drug_id in runtime_state.drugs:
+            matched_drug_ids.add(drug_id)
+
+    rows = [
+        stock_drug_item_to_view(
+            runtime_state.drugs[drug_id],
+            day=day,
+            low_stock_threshold=low_stock_threshold,
+            expiry_warning_days=expiry_warning_days,
+            near_date_days=near_date_days,
+        )
+        for drug_id in matched_drug_ids
+    ]
+    rows.sort(
+        key=lambda row: (
+            row.get("nearest_expiry") is None,
+            row.get("nearest_expiry") or date.max,
+            str(row.get("drug_code") or ""),
+        )
+    )
+
+    summary = summarize_stock_rows(rows)
+    records = [row for row in rows if matches_stock_quick_filter(row, quick_filter)]
+
+    total = len(records)
+    pages = max(1, (total + size - 1) // size)
+    current_page = min(page, pages)
+    start = (current_page - 1) * size
+    end = start + size
+    items = records[start:end]
+
+    return {
+        "items": items,
+        "total": total,
+        "page": current_page,
+        "size": size,
+        "pages": pages,
+        "summary": summary,
+    }
+
+
 @router.get("/stock/drugs/{drug_id}")
 async def get_stock_detail(drug_id: str, token: str | None = Depends(optional_oauth2_scheme)) -> dict[str, Any]:
     await maybe_sync_catalog_drugs(token)
@@ -1755,6 +2026,31 @@ async def get_stock_detail(drug_id: str, token: str | None = Depends(optional_oa
         },
         "batches": [batch_to_view(batch, day) for batch in batches],
     }
+
+
+@router.post("/reports/batch-costs")
+async def get_batch_costs(
+    payload: BatchCostLookupRequest,
+    token: str | None = Depends(optional_oauth2_scheme),
+) -> dict[str, Any]:
+    if token:
+        get_current_subject(token)
+
+    unique_batch_ids: list[str] = []
+    seen: set[str] = set()
+    for batch_id in payload.batch_ids:
+        normalized = str(batch_id).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_batch_ids.append(normalized)
+
+    items = [
+        batch_cost_snapshot(batch)
+        for batch_id in unique_batch_ids
+        if (batch := runtime_state.batches.get(batch_id)) is not None
+    ]
+    return {"items": items}
 
 @router.get("/import-receipts")
 async def list_import_receipts(
@@ -1846,7 +2142,13 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
             promo_note = resolve_line_promo_note(line)
             barcode = resolve_line_barcode(line, drug)
             unit_prices = resolve_line_unit_prices(line, drug)
-            stock_quantity = to_stock_quantity(line.quantity, unit_prices)
+            stock_quantity = to_stock_quantity(
+                line.quantity,
+                unit_prices,
+                promo_type=line.promo_type,
+                promo_buy_qty=line.promo_buy_qty,
+                promo_get_qty=line.promo_get_qty,
+            )
 
             batch = {
                 "id": batch_id,
@@ -1864,7 +2166,7 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
                 "exp_date": line.exp_date,
                 "qty_in": stock_quantity,
                 "qty_remaining": stock_quantity,
-                "import_price": line.import_price,
+                "import_price": round_money_value(line.import_price),
                 "barcode": barcode,
                 "promo_type": line.promo_type,
                 "promo_buy_qty": line.promo_buy_qty,
@@ -1890,7 +2192,7 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
                 "quantity": line.quantity,
                 "mfg_date": line.mfg_date,
                 "exp_date": line.exp_date,
-                "import_price": line.import_price,
+                "import_price": round_money_value(line.import_price),
                 "barcode": barcode,
                 "promo_type": line.promo_type,
                 "promo_buy_qty": line.promo_buy_qty,
@@ -1901,7 +2203,7 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
                 "stock_quantity": stock_quantity,
             }
             lines.append(row)
-            total += line.quantity * line.import_price
+            total += line.quantity * round_money_value(line.import_price)
             staged_movements.append((drug["id"], batch_id, stock_quantity))
 
         receipt = {
@@ -1921,7 +2223,7 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
             "created_by": actor,
             "created_at": now,
             "updated_at": now,
-            "total_value": round(total, 2),
+            "total_value": round_money_value(total),
             "lines": lines,
         }
 
@@ -1966,64 +2268,136 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
 
             existing_batch_ids = {line["batch_id"] for line in receipt["lines"]}
             incoming_batch_codes: set[str] = set()
+            matched_existing_batch_codes: set[str] = set()
             lines: list[dict[str, Any]] = []
             staged_batch_updates: list[tuple[dict[str, Any], dict[str, Any]]] = []
+            staged_new_batches: list[dict[str, Any]] = []
+            staged_movements: list[tuple[str, str, int]] = []
             total = 0.0
 
             for line in payload.lines:
                 payload_batch_code = normalize_code(line.batch_code or "")
-                if not payload_batch_code:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Receipt has sales/adjustments. Owner/admin update requires existing batch_code for every line.",
-                    )
-                if payload_batch_code in incoming_batch_codes:
+                existing_line = existing_by_batch_code.get(payload_batch_code) if payload_batch_code else None
+
+                if payload_batch_code and payload_batch_code in incoming_batch_codes:
                     raise HTTPException(status_code=409, detail=f"Batch code '{payload_batch_code}' is duplicated in payload")
-                incoming_batch_codes.add(payload_batch_code)
 
-                existing_line = existing_by_batch_code.get(payload_batch_code)
-                if existing_line is None:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Receipt has sales/adjustments. Owner/admin cannot add/remove lines.",
+                if existing_line is not None:
+                    incoming_batch_codes.add(payload_batch_code)
+                    matched_existing_batch_codes.add(payload_batch_code)
+
+                    batch = runtime_state.batches.get(existing_line["batch_id"])
+                    if batch is None:
+                        raise HTTPException(status_code=409, detail="Receipt has missing batch")
+
+                    drug = await resolve_or_register_drug(line, token=token)
+                    if drug["id"] != existing_line["drug_id"]:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Receipt has sales/adjustments. Owner/admin cannot change drug of existing line.",
+                        )
+                    if line.quantity != existing_line["quantity"]:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Receipt has sales/adjustments. Owner/admin cannot change quantity.",
+                        )
+
+                    batch_code = normalize_code(line.batch_code)
+                    if is_batch_code_used(batch_code, ignore_ids=existing_batch_ids):
+                        raise HTTPException(status_code=409, detail=f"Batch code '{batch_code}' already exists")
+
+                    promo_note = resolve_line_promo_note(line)
+                    barcode = resolve_line_barcode(line, drug)
+                    unit_prices = resolve_line_unit_prices(line, drug)
+
+                    row = {
+                        "id": existing_line["id"],
+                        "batch_id": existing_line["batch_id"],
+                        "drug_id": drug["id"],
+                        "drug_code": drug["code"],
+                        "drug_name": drug["name"],
+                        "lot_number": line.lot_number.strip(),
+                        "batch_code": batch_code,
+                        "quantity": existing_line["quantity"],
+                        "mfg_date": line.mfg_date,
+                        "exp_date": line.exp_date,
+                        "import_price": round_money_value(line.import_price),
+                        "barcode": barcode,
+                        "promo_type": line.promo_type,
+                        "promo_buy_qty": line.promo_buy_qty,
+                        "promo_get_qty": line.promo_get_qty,
+                        "promo_discount_percent": line.promo_discount_percent,
+                        "unit_prices": unit_prices,
+                        "promo_note": promo_note,
+                    }
+                    lines.append(row)
+                    total += row["quantity"] * row["import_price"]
+                    staged_batch_updates.append(
+                        (
+                            batch,
+                            {
+                                "batch_code": row["batch_code"],
+                                "lot_number": row["lot_number"],
+                                "supplier_id": supplier["id"],
+                                "supplier_name": supplier.get("name", ""),
+                                "supplier_contact_name": supplier.get("contact_name", ""),
+                                "supplier_phone": supplier.get("phone", ""),
+                                "supplier_address": supplier.get("address", ""),
+                                "received_date": payload.receipt_date,
+                                "mfg_date": row["mfg_date"],
+                                "exp_date": row["exp_date"],
+                                "import_price": row["import_price"],
+                                "barcode": row["barcode"],
+                                "promo_type": row["promo_type"],
+                                "promo_buy_qty": row["promo_buy_qty"],
+                                "promo_get_qty": row["promo_get_qty"],
+                                "promo_discount_percent": row["promo_discount_percent"],
+                                "unit_prices": row["unit_prices"],
+                                "promo_note": row["promo_note"],
+                                "updated_at": now,
+                            },
+                        )
                     )
-
-                batch = runtime_state.batches.get(existing_line["batch_id"])
-                if batch is None:
-                    raise HTTPException(status_code=409, detail="Receipt has missing batch")
+                    continue
 
                 drug = await resolve_or_register_drug(line, token=token)
-                if drug["id"] != existing_line["drug_id"]:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Receipt has sales/adjustments. Owner/admin cannot change drug of existing line.",
-                    )
-                if line.quantity != existing_line["quantity"]:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Receipt has sales/adjustments. Owner/admin cannot change quantity.",
-                    )
-
-                batch_code = normalize_code(line.batch_code)
-                if is_batch_code_used(batch_code, ignore_ids=existing_batch_ids):
+                batch_code = payload_batch_code or next_available_batch_code(payload.receipt_date, incoming_batch_codes)
+                if batch_code in incoming_batch_codes:
+                    raise HTTPException(status_code=409, detail=f"Batch code '{batch_code}' is duplicated in payload")
+                if is_batch_code_used(batch_code):
                     raise HTTPException(status_code=409, detail=f"Batch code '{batch_code}' already exists")
+                incoming_batch_codes.add(batch_code)
 
+                line_id = next_id("receipt_line", "rline")
+                batch_id = next_id("batch", "bt")
                 promo_note = resolve_line_promo_note(line)
                 barcode = resolve_line_barcode(line, drug)
                 unit_prices = resolve_line_unit_prices(line, drug)
+                stock_quantity = to_stock_quantity(
+                    line.quantity,
+                    unit_prices,
+                    promo_type=line.promo_type,
+                    promo_buy_qty=line.promo_buy_qty,
+                    promo_get_qty=line.promo_get_qty,
+                )
 
-                row = {
-                    "id": existing_line["id"],
-                    "batch_id": existing_line["batch_id"],
-                    "drug_id": drug["id"],
-                    "drug_code": drug["code"],
-                    "drug_name": drug["name"],
-                    "lot_number": line.lot_number.strip(),
+                batch = {
+                    "id": batch_id,
                     "batch_code": batch_code,
-                    "quantity": existing_line["quantity"],
+                    "lot_number": line.lot_number.strip(),
+                    "receipt_id": receipt["id"],
+                    "drug_id": drug["id"],
+                    "supplier_id": supplier["id"],
+                    "supplier_name": supplier.get("name", ""),
+                    "supplier_contact_name": supplier.get("contact_name", ""),
+                    "supplier_phone": supplier.get("phone", ""),
+                    "supplier_address": supplier.get("address", ""),
+                    "received_date": payload.receipt_date,
                     "mfg_date": line.mfg_date,
                     "exp_date": line.exp_date,
-                    "import_price": line.import_price,
+                    "qty_in": stock_quantity,
+                    "qty_remaining": stock_quantity,
+                    "import_price": round_money_value(line.import_price),
                     "barcode": barcode,
                     "promo_type": line.promo_type,
                     "promo_buy_qty": line.promo_buy_qty,
@@ -2031,44 +2405,49 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                     "promo_discount_percent": line.promo_discount_percent,
                     "unit_prices": unit_prices,
                     "promo_note": promo_note,
+                    "stock_quantity": stock_quantity,
+                    "force_expired": False,
+                    "cancelled": False,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                staged_new_batches.append(batch)
+
+                row = {
+                    "id": line_id,
+                    "batch_id": batch_id,
+                    "drug_id": drug["id"],
+                    "drug_code": drug["code"],
+                    "drug_name": drug["name"],
+                    "lot_number": batch["lot_number"],
+                    "batch_code": batch_code,
+                    "quantity": line.quantity,
+                    "mfg_date": line.mfg_date,
+                    "exp_date": line.exp_date,
+                    "import_price": round_money_value(line.import_price),
+                    "barcode": barcode,
+                    "promo_type": line.promo_type,
+                    "promo_buy_qty": line.promo_buy_qty,
+                    "promo_get_qty": line.promo_get_qty,
+                    "promo_discount_percent": line.promo_discount_percent,
+                    "unit_prices": unit_prices,
+                    "promo_note": promo_note,
+                    "stock_quantity": stock_quantity,
                 }
                 lines.append(row)
                 total += row["quantity"] * row["import_price"]
-                staged_batch_updates.append(
-                    (
-                        batch,
-                        {
-                            "batch_code": row["batch_code"],
-                            "lot_number": row["lot_number"],
-                            "supplier_id": supplier["id"],
-                            "supplier_name": supplier.get("name", ""),
-                            "supplier_contact_name": supplier.get("contact_name", ""),
-                            "supplier_phone": supplier.get("phone", ""),
-                            "supplier_address": supplier.get("address", ""),
-                            "received_date": payload.receipt_date,
-                            "mfg_date": row["mfg_date"],
-                            "exp_date": row["exp_date"],
-                            "import_price": row["import_price"],
-                            "barcode": row["barcode"],
-                            "promo_type": row["promo_type"],
-                            "promo_buy_qty": row["promo_buy_qty"],
-                            "promo_get_qty": row["promo_get_qty"],
-                            "promo_discount_percent": row["promo_discount_percent"],
-                            "unit_prices": row["unit_prices"],
-                            "promo_note": row["promo_note"],
-                            "updated_at": now,
-                        },
-                    )
-                )
+                staged_movements.append((drug["id"], batch_id, stock_quantity))
 
-            if len(incoming_batch_codes) != len(existing_by_batch_code):
+            if len(matched_existing_batch_codes) != len(existing_by_batch_code):
                 raise HTTPException(
                     status_code=409,
-                    detail="Receipt has sales/adjustments. Owner/admin cannot add/remove lines.",
+                    detail="Receipt has sales/adjustments. Owner/admin cannot remove existing lines.",
                 )
 
             for batch, patch in staged_batch_updates:
                 batch.update(patch)
+            for batch in staged_new_batches:
+                runtime_state.batches[batch["id"]] = batch
 
             receipt["receipt_date"] = payload.receipt_date
             receipt["supplier_id"] = supplier["id"]
@@ -2081,8 +2460,19 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
             receipt["payment_method"] = payload.payment_method
             receipt["note"] = payload.note
             receipt["lines"] = lines
-            receipt["total_value"] = round(total, 2)
+            receipt["total_value"] = round_money_value(total)
             receipt["updated_at"] = now
+            for drug_id, batch_id, quantity in staged_movements:
+                add_movement(
+                    MovementType.IMPORT_RECEIPT,
+                    drug_id,
+                    batch_id,
+                    quantity,
+                    "import_receipt",
+                    receipt["id"],
+                    actor,
+                    "append line to locked receipt",
+                )
             await save_runtime_state_safe()
             return receipt_to_view(receipt)
 
@@ -2116,7 +2506,13 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
             promo_note = resolve_line_promo_note(line)
             barcode = resolve_line_barcode(line, drug)
             unit_prices = resolve_line_unit_prices(line, drug)
-            stock_quantity = to_stock_quantity(line.quantity, unit_prices)
+            stock_quantity = to_stock_quantity(
+                line.quantity,
+                unit_prices,
+                promo_type=line.promo_type,
+                promo_buy_qty=line.promo_buy_qty,
+                promo_get_qty=line.promo_get_qty,
+            )
 
             batch = {
                 "id": batch_id,
@@ -2134,7 +2530,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                 "exp_date": line.exp_date,
                 "qty_in": stock_quantity,
                 "qty_remaining": stock_quantity,
-                "import_price": line.import_price,
+                "import_price": round_money_value(line.import_price),
                 "barcode": barcode,
                 "promo_type": line.promo_type,
                 "promo_buy_qty": line.promo_buy_qty,
@@ -2161,7 +2557,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                 "quantity": line.quantity,
                 "mfg_date": line.mfg_date,
                 "exp_date": line.exp_date,
-                "import_price": line.import_price,
+                "import_price": round_money_value(line.import_price),
                 "barcode": barcode,
                 "promo_type": line.promo_type,
                 "promo_buy_qty": line.promo_buy_qty,
@@ -2172,7 +2568,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
                 "stock_quantity": stock_quantity,
             }
             lines.append(row)
-            total += line.quantity * line.import_price
+            total += line.quantity * round_money_value(line.import_price)
             staged_movements.append((drug["id"], batch_id, stock_quantity))
 
         for batch_id in old_batch_ids:
@@ -2198,7 +2594,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
         receipt["payment_method"] = payload.payment_method
         receipt["note"] = payload.note
         receipt["lines"] = lines
-        receipt["total_value"] = round(total, 2)
+        receipt["total_value"] = round_money_value(total)
         receipt["updated_at"] = now
         for drug_id, batch_id, quantity in staged_movements:
             add_movement(
@@ -2253,6 +2649,7 @@ async def list_batches(
     status_filter: BatchStatus | None = Query(default=None, alias="status"),
     exp_from: date | None = Query(default=None),
     exp_to: date | None = Query(default=None),
+    hide_zero: bool = Query(default=False),
 ) -> list[dict[str, Any]]:
     day = date.today()
     records = filter_batches(
@@ -2264,6 +2661,7 @@ async def list_batches(
         status_filter=status_filter,
         exp_from=exp_from,
         exp_to=exp_to,
+        hide_zero=hide_zero,
     )
     return [batch_to_view(batch, day) for batch in records]
 
@@ -2278,9 +2676,10 @@ async def list_batches_paged(
     status_filter: BatchStatus | None = Query(default=None, alias="status"),
     exp_from: date | None = Query(default=None),
     exp_to: date | None = Query(default=None),
+    hide_zero: bool = Query(default=False),
 ) -> dict[str, Any]:
     day = date.today()
-    records = filter_batches(
+    base_records = filter_batches(
         list(runtime_state.batches.values()),
         day=day,
         search=search,
@@ -2292,7 +2691,12 @@ async def list_batches_paged(
     )
     inventory_settings = await fetch_inventory_settings()
     near_date_days = _to_non_negative_int(inventory_settings.get("inventory.near_date_days"), 90)
-    summary = summarize_batches_by_drug(records, day=day, near_date_days=near_date_days)
+    summary = summarize_batches_by_drug(base_records, day=day, near_date_days=near_date_days)
+    records = (
+        [batch for batch in base_records if int(batch.get("qty_remaining", 0)) > 0]
+        if hide_zero
+        else base_records
+    )
 
     total = len(records)
     pages = max(1, (total + size - 1) // size)

@@ -1,9 +1,9 @@
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Generic, Literal, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_serializer, field_validator, model_validator
 
 
 T = TypeVar("T")
@@ -11,6 +11,41 @@ T = TypeVar("T")
 GenderType = Literal["male", "female", "other"]
 PromotionDiscountType = Literal["percent", "fixed"]
 PointTransactionType = Literal["earn", "redeem", "expire", "adjust", "rollback"]
+
+MONEY_FIELD_NAMES = (
+    "total_spent",
+    "max_discount",
+    "max_discount_amount",
+    "min_order_amount",
+    "discount_amount",
+    "order_amount",
+    "calculated_discount",
+)
+
+
+def _round_money_decimal(value):
+    if value is None:
+        return None
+    try:
+        parsed = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        parsed = Decimal("0")
+    return parsed.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+
+class MoneyInputModel(BaseModel):
+    @field_validator(*MONEY_FIELD_NAMES, mode="before", check_fields=False)
+    @classmethod
+    def normalize_money_fields(cls, value):
+        rounded = _round_money_decimal(value)
+        return value if rounded is None else rounded
+
+
+class MoneyOutputModel(BaseModel):
+    @field_serializer(*MONEY_FIELD_NAMES, when_used="json", check_fields=False)
+    def serialize_money_fields(self, value):
+        rounded = _round_money_decimal(value)
+        return None if rounded is None else int(rounded)
 
 
 class PageResponse(BaseModel, Generic[T]):
@@ -43,7 +78,7 @@ class CustomerUpdateRequest(BaseModel):
     is_active: bool | None = None
 
 
-class CustomerResponse(BaseModel):
+class CustomerResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -69,7 +104,7 @@ class CustomerResponse(BaseModel):
     updated_at: datetime
 
 
-class CustomerStatsResponse(BaseModel):
+class CustomerStatsResponse(MoneyOutputModel):
     customer_id: UUID
     customer_code: str
     customer_name: str
@@ -136,7 +171,7 @@ class TierConfigUpdateRequest(BaseModel):
     display_order: int | None = None
 
 
-class PromotionBaseRequest(BaseModel):
+class PromotionBaseRequest(MoneyInputModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
     discount_type: PromotionDiscountType | None = None
@@ -197,7 +232,7 @@ class PromotionUpdateRequest(PromotionBaseRequest):
         return value.strip().upper()
 
 
-class PromotionResponse(BaseModel):
+class PromotionResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -223,7 +258,7 @@ class PromotionResponse(BaseModel):
     updated_at: datetime
 
 
-class PromotionUsageResponse(BaseModel):
+class PromotionUsageResponse(MoneyOutputModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -247,7 +282,7 @@ class CustomerLookupResponse(BaseModel):
     customer: dict | None
 
 
-class PointsCalculateRequest(BaseModel):
+class PointsCalculateRequest(MoneyInputModel):
     customer_id: UUID
     order_amount: Decimal = Field(ge=0)
 
@@ -275,16 +310,17 @@ class PointsEarnResponse(BaseModel):
     new_tier: str
 
 
-class PointsRedeemRequest(BaseModel):
+class PointsRedeemRequest(MoneyInputModel):
     customer_id: UUID
     points: int = Field(gt=0)
+    max_discount_amount: Decimal | None = Field(default=None, ge=0)
     reference_type: str = Field(default="invoice", max_length=20)
     reference_id: UUID | None = None
     reference_code: str | None = Field(default=None, max_length=30)
     note: str | None = None
 
 
-class PointsRedeemResponse(BaseModel):
+class PointsRedeemResponse(MoneyOutputModel):
     success: bool
     points_used: int
     discount_amount: Decimal
@@ -307,7 +343,7 @@ class PointsRollbackResponse(BaseModel):
     new_balance: int
 
 
-class PromotionValidateRequest(BaseModel):
+class PromotionValidateRequest(MoneyInputModel):
     promotion_code: str = Field(min_length=1, max_length=30)
     customer_id: UUID | None = None
     order_amount: Decimal = Field(ge=0)
@@ -320,14 +356,14 @@ class PromotionValidateRequest(BaseModel):
         return value.strip().upper()
 
 
-class PromotionValidateResponse(BaseModel):
+class PromotionValidateResponse(MoneyOutputModel):
     valid: bool
     promotion: dict | None = None
     calculated_discount: Decimal | None = None
     reason: str | None = None
 
 
-class PromotionApplyRequest(BaseModel):
+class PromotionApplyRequest(MoneyInputModel):
     promotion_code: str = Field(min_length=1, max_length=30)
     customer_id: UUID | None = None
     order_amount: Decimal = Field(ge=0)
@@ -342,7 +378,7 @@ class PromotionApplyRequest(BaseModel):
         return value.strip().upper()
 
 
-class PromotionApplyResponse(BaseModel):
+class PromotionApplyResponse(MoneyOutputModel):
     success: bool
     usage_id: UUID
     promotion_id: UUID
@@ -363,7 +399,7 @@ class PromotionRollbackResponse(BaseModel):
     new_usage_count: int
 
 
-class PromotionSuggestionItem(BaseModel):
+class PromotionSuggestionItem(MoneyOutputModel):
     promotion: dict
     discount_amount: Decimal
     auto_apply: bool
@@ -374,13 +410,13 @@ class PromotionSuggestResponse(BaseModel):
     best_auto_apply: dict | None
 
 
-class StatsUpdateRequest(BaseModel):
+class StatsUpdateRequest(MoneyInputModel):
     customer_id: UUID
     order_amount: Decimal = Field(ge=0)
     purchased_at: datetime | None = None
 
 
-class StatsUpdateResponse(BaseModel):
+class StatsUpdateResponse(MoneyOutputModel):
     success: bool
     total_orders: int
     total_spent: Decimal

@@ -24,7 +24,7 @@ type LotLabelPrintPageProps = {
 }
 
 const sanitizeDigits = (value: string) => value.replace(/\D+/g, '')
-const formatCurrency = (value: number) => `${value.toLocaleString('vi-VN')}đ`
+const formatCurrency = (value: number) => `${Math.round(Number(value) || 0).toLocaleString('vi-VN')}đ`
 const escapeHtml = (value: string) =>
   value
     .replace(/&/g, '&amp;')

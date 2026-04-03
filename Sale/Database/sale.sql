@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS sale.invoices (
     promotion_usage_id UUID,
     promotion_code VARCHAR(30),
     payment_method VARCHAR(20) NOT NULL,
+    service_fee_amount NUMERIC(15,2) NOT NULL DEFAULT 0,
+    service_fee_mode VARCHAR(20) NOT NULL DEFAULT 'split',
     amount_paid NUMERIC(15,2) NOT NULL,
     change_amount NUMERIC(15,2) NOT NULL DEFAULT 0,
     status VARCHAR(20) NOT NULL DEFAULT 'completed',
@@ -56,6 +58,9 @@ CREATE TABLE IF NOT EXISTS sale.invoices (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE sale.invoices ADD COLUMN IF NOT EXISTS service_fee_amount NUMERIC(15,2) NOT NULL DEFAULT 0;
+ALTER TABLE sale.invoices ADD COLUMN IF NOT EXISTS service_fee_mode VARCHAR(20) NOT NULL DEFAULT 'split';
 
 CREATE TABLE IF NOT EXISTS sale.invoice_items (
     id UUID PRIMARY KEY,

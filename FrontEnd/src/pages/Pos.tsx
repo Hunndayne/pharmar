@@ -4,7 +4,9 @@ import {
   type InventoryBatch,
   type InventoryBatchDetail,
   type InventoryMetaDrug,
+  type InventoryStockDrugDetail,
 } from '../api/inventoryService'
+import { catalogApi, type PrescriptionTemplate } from '../api/catalogService'
 import { customerApi, type CustomerRecord } from '../api/customerService'
 import { paymentQrApi } from '../api/paymentQrService'
 import { saleApi } from '../api/saleService'
@@ -34,7 +36,19 @@ type PosDrug = {
   code: string
   name: string
   group: string
+  instructions: string
   units: PosDrugUnit[]
+  totalQty: number
+}
+
+type PosItemAllocationMode = 'explicit_lot' | 'auto_fill'
+
+type PosOrderItemAllocation = {
+  batchId: string
+  batchCode: string
+  lotNumber: string
+  expDate: string
+  baseQuantity: number
 }
 
 type PosOrderItem = {
@@ -52,6 +66,10 @@ type PosOrderItem = {
   conversion: number
   unitPrice: number
   quantity: string
+  allocationMode: PosItemAllocationMode
+  plannedAllocations: PosOrderItemAllocation[]
+  availableBaseQty: number | null
+  allocationWarning: string | null
   lotPolicyWarning: string | null
   lotPolicyAcknowledged: boolean
 }
@@ -64,7 +82,9 @@ type PosOrder = {
   customerName: string
   customerPhone: string
   customerTier: string | null
+  customerTierDiscountPercent: number | null
   customerPoints: number | null
+  pointsToRedeem: string
   note: string
   serviceFee: string
   serviceFeeMode: ServiceFeeMode
@@ -81,6 +101,19 @@ type CheckoutLine = {
   adjustedUnitPrice: number
 }
 
+type ExpandedCheckoutLine = {
+  item: PosOrderItem
+  batchId: string
+  batchCode: string
+  lotNumber: string
+  expDate: string
+  quantity: number
+  conversion: number
+  unitId: string
+  unitName: string
+  adjustedUnitPrice: number
+}
+
 type ScannerCamera = {
   id: string
   label: string
@@ -92,6 +125,7 @@ type InvoicePreviewLine = {
   quantity: number
   unitPrice: number
   amount: number
+  lotNumber?: string | null
   isService?: boolean
 }
 
@@ -111,11 +145,15 @@ type InvoicePreview = {
   amountPaid: number
   changeAmount: number
   debtAmount: number
+  roundingAdjustmentAmount: number
   medicineTotal: number
   serviceFee: number
   grandTotal: number
   serviceFeeMode: ServiceFeeMode
-  returnPolicyText: string
+  returnPolicyText: string | null
+  tierDiscountAmount?: number
+  pointsDiscountAmount?: number
+  pointsUsed?: number
   lines: InvoicePreviewLine[]
 }
 
@@ -185,7 +223,18 @@ type CheckoutOptions = {
   noteSuffix?: string
 }
 
-const formatCurrency = (value: number) => `${Math.max(0, value).toLocaleString('vi-VN')}đ`
+const MIN_DEBT_AMOUNT_AFTER_ROUNDING = 500
+
+const roundMoneyAmount = (value: number) =>
+  Math.round(Number.isFinite(value) ? value : 0)
+
+const coerceFiniteNumber = (value: unknown, fallback = 0) => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+const formatCurrency = (value: number) =>
+  `${roundMoneyAmount(value).toLocaleString('vi-VN')}đ`
 
 const parseNonNegativeNumber = (value: string) => {
   const normalized = value.replace(/,/g, '').trim()
@@ -198,6 +247,25 @@ const roundCashTotalByStep = (amount: number, step: number) => {
   const safeAmount = Math.max(0, amount)
   const safeStep = Math.max(1, Math.floor(step))
   return Math.round(safeAmount / safeStep) * safeStep
+}
+
+const applyMinimumDebtThreshold = (
+  totalAmount: number,
+  amountPaid: number,
+  roundingAdjustmentAmount: number,
+) => {
+  const rawDebtAmount = Math.max(0, totalAmount - amountPaid)
+  const absorbedDebtAmount =
+    rawDebtAmount > 0 && rawDebtAmount <= MIN_DEBT_AMOUNT_AFTER_ROUNDING ? rawDebtAmount : 0
+  const adjustedTotalAmount = Math.max(0, totalAmount - absorbedDebtAmount)
+
+  return {
+    totalAmount: adjustedTotalAmount,
+    debtAmount: Math.max(0, adjustedTotalAmount - amountPaid),
+    changeAmount: Math.max(0, amountPaid - adjustedTotalAmount),
+    roundingAdjustmentAmount: roundingAdjustmentAmount - absorbedDebtAmount,
+    absorbedDebtAmount,
+  }
 }
 
 const parsePositiveInt = (value: string, fallback = 0) => {
@@ -223,6 +291,24 @@ const unitRoleLabel = (role: UnitRole) => {
   return 'Đơn vị'
 }
 
+const isAutoFillAllocationMode = (mode: PosItemAllocationMode) => mode === 'auto_fill'
+
+const sumPlannedAllocationBaseQty = (item: PosOrderItem) =>
+  item.plannedAllocations.reduce((sum, allocation) => sum + Math.max(0, allocation.baseQuantity), 0)
+
+const getItemAvailableBaseQty = (item: PosOrderItem) =>
+  Math.max(
+    0,
+    isAutoFillAllocationMode(item.allocationMode)
+      ? item.availableBaseQty ?? item.batchQtyRemaining
+      : item.batchQtyRemaining,
+  )
+
+const buildAutoFillPolicyLabel = (fefoEnabled: boolean, fefoThresholdDays: number) =>
+  fefoEnabled
+    ? `Xuất kho tự động theo FEFO/FIFO (ngưỡng ${fefoThresholdDays} ngày)`
+    : 'Xuất kho tự động theo FIFO'
+
 const mapMetaDrugToPosDrug = (drug: InventoryMetaDrug): PosDrug => {
   const priceByUnitId = new Map(drug.unit_prices.map((item) => [item.unit_id, Number(item.price || 0)]))
   const sortedUnits = drug.units.slice().sort((a, b) => b.conversion - a.conversion)
@@ -232,6 +318,8 @@ const mapMetaDrugToPosDrug = (drug: InventoryMetaDrug): PosDrug => {
     code: drug.code,
     name: drug.name,
     group: drug.group ?? '',
+    instructions: String(drug.instructions ?? '').trim(),
+    totalQty: 0,
     units: sortedUnits.map((unit, index) => ({
       id: unit.id,
       name: unit.name,
@@ -259,7 +347,9 @@ const createEmptyOrder = (): PosOrder => ({
   customerName: '',
   customerPhone: '',
   customerTier: null,
+  customerTierDiscountPercent: null,
   customerPoints: null,
+  pointsToRedeem: '',
   note: '',
   serviceFee: '0',
   serviceFeeMode: 'split',
@@ -269,6 +359,36 @@ const createEmptyOrder = (): PosOrder => ({
 })
 
 const normalizePhone = (value: string) => value.replace(/[^\d+]/g, '').trim()
+const normalizeSearchText = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^0-9a-zA-Z]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+
+const buildDrugSearchLabel = (drug: Pick<PosDrug, 'code' | 'name'>) => `${drug.code} - ${drug.name}`
+const buildDrugSearchHaystack = (drug: Pick<PosDrug, 'code' | 'name' | 'group'>) =>
+  normalizeSearchText([drug.code, drug.name, drug.group].join(' '))
+
+const extractDrugSearchNeedles = (raw: string) => {
+  const normalized = normalizeSearchText(raw)
+  if (!normalized) return [] as string[]
+
+  const needles = new Set<string>([normalized])
+  const codeMatches = normalized.match(/\b[a-z]{1,4}\d{3,}\b/g)
+  codeMatches?.forEach((code) => needles.add(code))
+
+  normalized
+    .split(' ')
+    .filter((word) => word.length >= 3)
+    .slice(0, 4)
+    .forEach((word) => needles.add(word))
+
+  return Array.from(needles)
+}
+
 const normalizeQrText = (value: string) => value.replace(/[\u0000-\u001F\u007F]/g, '').trim()
 const normalizeBarcodeText = (value: string) => value.replace(/\s+/g, '').trim().toUpperCase()
 
@@ -415,7 +535,6 @@ const allocateServiceFee = (lineTotals: number[], serviceFee: number, mode: Serv
   if (!lineTotals.length || normalizedFee <= 0) return output
 
   if (mode === 'separate') {
-    output[0] = normalizedFee
     return output
   }
 
@@ -638,6 +757,11 @@ export function Pos() {
   const [bankQrState, setBankQrState] = useState<BankQrState | null>(null)
   const [generatingBankQr, setGeneratingBankQr] = useState(false)
 
+  const [templates, setTemplates] = useState<PrescriptionTemplate[]>([])
+  const [templateDropdownOpen, setTemplateDropdownOpen] = useState(false)
+  const [applyingTemplate, setApplyingTemplate] = useState(false)
+  const templateDropdownRef = useRef<HTMLDivElement>(null)
+
   const [orders, setOrders] = useState<PosOrder[]>([createEmptyOrder()])
   const [activeOrderId, setActiveOrderId] = useState<string>('')
 
@@ -661,9 +785,11 @@ export function Pos() {
   const [invoicePreview, setInvoicePreview] = useState<InvoicePreview | null>(null)
   const [invoicePreviewOpen, setInvoicePreviewOpen] = useState(false)
   const [lotPolicyConfirm, setLotPolicyConfirm] = useState<LotPolicyConfirmState | null>(null)
+  const [stockDetailsByDrugId, setStockDetailsByDrugId] = useState<Record<string, InventoryStockDrugDetail>>({})
 
   const [newMemberName, setNewMemberName] = useState('')
   const [newMemberPhone, setNewMemberPhone] = useState('')
+  const [customerPointValue, setCustomerPointValue] = useState<number>(1000)
 
   const scanContainerRef = useRef<HTMLDivElement | null>(null)
   const scanEngineRef = useRef<any>(null)
@@ -671,28 +797,53 @@ export function Pos() {
   const scanProcessingRef = useRef(false)
   const customerDisplayChannelRef = useRef<BroadcastChannel | null>(null)
   const customerDisplaySyncTimerRef = useRef<number | null>(null)
+  const ordersRef = useRef<PosOrder[]>(orders)
 
   const activeOrder = useMemo(
     () => orders.find((order) => order.id === activeOrderId) ?? orders[0] ?? null,
     [orders, activeOrderId],
   )
 
-  const drugsById = useMemo(() => new Map(drugs.map((drug) => [drug.id, drug])), [drugs])
-  const filteredDrugs = useMemo(() => {
-    const keyword = drugSearch.trim().toLowerCase()
-    if (!keyword) return drugs
+  useEffect(() => {
+    ordersRef.current = orders
+  }, [orders])
 
-    const normalizedKeyword = keyword.replace(/\s*-\s*/g, ' ').replace(/\s+/g, ' ').trim()
-    return drugs.filter((drug) =>
-      [drug.code, drug.name, drug.group]
-        .join(' ')
-        .toLowerCase()
-        .includes(normalizedKeyword),
-    )
-  }, [drugs, drugSearch])
+  const drugsById = useMemo(() => new Map(drugs.map((drug) => [drug.id, drug])), [drugs])
+  const availableDrugs = useMemo(
+    () => drugs.filter((drug) => Number.isFinite(drug.totalQty) && drug.totalQty > 0),
+    [drugs],
+  )
+  const searchableDrugs = useMemo(
+    () =>
+      drugs
+        .slice()
+        .sort((a, b) => {
+          const aAvailable = a.totalQty > 0 ? 1 : 0
+          const bAvailable = b.totalQty > 0 ? 1 : 0
+          if (aAvailable !== bAvailable) return bAvailable - aAvailable
+          return a.name.localeCompare(b.name, 'vi-VN')
+        }),
+    [drugs],
+  )
+  const filteredDrugs = useMemo(() => {
+    const needles = extractDrugSearchNeedles(drugSearch)
+    if (!needles.length) return searchableDrugs
+
+    return searchableDrugs.filter((drug) => {
+      const haystack = buildDrugSearchHaystack(drug)
+      const code = normalizeSearchText(drug.code)
+      const name = normalizeSearchText(drug.name)
+      return needles.some((needle) => {
+        if (haystack.includes(needle)) return true
+        if (needle.includes(code) || needle.includes(name)) return true
+        return false
+      })
+    })
+  }, [searchableDrugs, drugSearch])
 
   const selectedDrug = selectedDrugId ? drugsById.get(selectedDrugId) ?? null : null
   const selectedUnit = selectedDrug?.units.find((unit) => unit.id === selectedUnitId) ?? null
+  const selectedDrugOutOfStock = Boolean(selectedDrug && selectedDrug.totalQty <= 0)
   const barcodeIndex = useMemo(() => {
     const map = new Map<string, { drug: PosDrug; unit: PosDrugUnit }>()
     for (const drug of drugs) {
@@ -705,27 +856,56 @@ export function Pos() {
     return map
   }, [drugs])
 
+  const findDrugByExactSearch = useCallback(
+    (raw: string) => {
+      const normalized = normalizeSearchText(raw)
+      if (!normalized) return null
+
+      const codeMatches = normalized.match(/\b[a-z]{1,4}\d{3,}\b/g) ?? []
+      for (const matchedCode of codeMatches) {
+        const matchedDrug = searchableDrugs.find(
+          (drug) => normalizeSearchText(drug.code) === matchedCode,
+        )
+        if (matchedDrug) return matchedDrug
+      }
+
+      return (
+        searchableDrugs.find((drug) => {
+          const code = normalizeSearchText(drug.code)
+          const name = normalizeSearchText(drug.name)
+          const label = normalizeSearchText(buildDrugSearchLabel(drug))
+          return code === normalized || name === normalized || label === normalized
+        }) ?? null
+      )
+    },
+    [searchableDrugs],
+  )
+
   const resolveDrugFromSearch = useCallback(
     (raw: string) => {
-      const keyword = raw.trim().toLowerCase()
-      if (!keyword) return null
+      const exactDrug = findDrugByExactSearch(raw)
+      if (exactDrug) return exactDrug
 
-      const normalized = keyword.replace(/\s*-\s*/g, ' ').replace(/\s+/g, ' ').trim()
+      const needles = extractDrugSearchNeedles(raw)
+      if (!needles.length) return null
+      const primary = needles[0]
       return (
-        drugs.find((drug) => {
-          const code = drug.code.toLowerCase()
-          const name = drug.name.toLowerCase()
-          const codeName = `${code} ${name}`
-          return code === keyword || name === keyword || codeName === normalized
+        searchableDrugs.find((drug) => {
+          const code = normalizeSearchText(drug.code)
+          const name = normalizeSearchText(drug.name)
+          const label = normalizeSearchText(buildDrugSearchLabel(drug))
+          return code === primary || name === primary || label === primary
         }) ??
-        filteredDrugs.find((drug) => {
-          const haystack = [drug.code, drug.name, drug.group].join(' ').toLowerCase()
-          return haystack.includes(normalized)
+        searchableDrugs.find((drug) => {
+          const haystack = buildDrugSearchHaystack(drug)
+          const code = normalizeSearchText(drug.code)
+          const name = normalizeSearchText(drug.name)
+          return needles.some((needle) => haystack.includes(needle) || needle.includes(code) || needle.includes(name))
         }) ??
         null
       )
     },
-    [drugs, filteredDrugs],
+    [findDrugByExactSearch, searchableDrugs],
   )
 
   useEffect(() => {
@@ -735,13 +915,23 @@ export function Pos() {
   }, [orders, activeOrderId])
 
   useEffect(() => {
+    const exactDrug = findDrugByExactSearch(drugSearch)
+    if (exactDrug) {
+      if (selectedDrugId !== exactDrug.id) {
+        setSelectedDrugId(exactDrug.id)
+      }
+      return
+    }
+
     if (!filteredDrugs.length) {
-      setSelectedDrugId('')
+      if (selectedDrugId) {
+        setSelectedDrugId('')
+      }
       return
     }
     if (selectedDrugId && filteredDrugs.some((drug) => drug.id === selectedDrugId)) return
     setSelectedDrugId(filteredDrugs[0].id)
-  }, [filteredDrugs, selectedDrugId])
+  }, [drugSearch, filteredDrugs, findDrugByExactSearch, selectedDrugId])
 
   useEffect(() => {
     if (!selectedDrug) {
@@ -765,18 +955,38 @@ export function Pos() {
     setLoadError(null)
 
     try {
-      const [metaDrugs, inventorySettings, saleSettings, store] = await Promise.all([
+      const [metaDrugs, stockSummary, inventorySettings, saleSettings, customerSettings, store] = await Promise.all([
         inventoryApi.getMetaDrugs(token?.access_token),
+        inventoryApi.getStockSummary(token?.access_token),
         storeApi.getSettingsByGroup('inventory'),
         storeApi.getSettingsByGroup('sale'),
+        storeApi.getSettingsByGroup('customer').catch(() => ({})),
         storeApi.getInfo().catch(() => null),
       ])
 
+      const totalQtyByDrugId = new Map(
+        stockSummary.map((item) => [item.drug_id, Number(item.total_qty || 0)]),
+      )
       const mappedDrugs = metaDrugs
-        .map(mapMetaDrugToPosDrug)
+        .map((drug) => ({
+          ...mapMetaDrugToPosDrug(drug),
+          totalQty: totalQtyByDrugId.get(drug.id) ?? 0,
+        }))
         .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN'))
 
       setDrugs(mappedDrugs)
+
+      // Load prescription templates (non-blocking — ignore errors)
+      try {
+        const tmpl = await catalogApi.listPrescriptionTemplates(token?.access_token ?? '', {
+          is_active: true,
+          size: 200,
+        })
+        setTemplates(tmpl.items)
+      } catch {
+        // templates are optional; silently ignore
+      }
+
       setFefoEnabled(normalizeSettingBoolean(inventorySettings['inventory.enable_fefo'], true))
       setFefoThresholdDays(
         normalizeSettingNumber(inventorySettings['inventory.fefo_threshold_days'], 180),
@@ -823,6 +1033,12 @@ export function Pos() {
           normalizeSettingNumber(saleSettings['sale.customer_display_ads_transition_ms'], 650),
         ),
       )
+      const customerSettingsRecord = customerSettings as Record<string, unknown> | null
+      if (customerSettingsRecord && typeof customerSettingsRecord['customer.point_value'] === 'number') {
+        setCustomerPointValue(customerSettingsRecord['customer.point_value'])
+      } else if (customerSettingsRecord && typeof customerSettingsRecord['customer.point_value'] === 'string') {
+        setCustomerPointValue(Number(customerSettingsRecord['customer.point_value']) || 1000)
+      }
       if (store) {
         const bankOption = findBankOption(normalizeSettingString(store.bank_name, ''))
         setBankQrAccountNo(normalizeSettingString(store.bank_account, ''))
@@ -861,22 +1077,242 @@ export function Pos() {
     }
   }, [])
 
-  const updateOrder = useCallback((orderId: string, updater: (order: PosOrder) => PosOrder) => {
-    setOrders((prev) => prev.map((order) => (order.id === orderId ? updater(order) : order)))
+  useEffect(() => {
+    if (!templateDropdownOpen) return
+    const handler = (e: MouseEvent) => {
+      if (templateDropdownRef.current && !templateDropdownRef.current.contains(e.target as Node)) {
+        setTemplateDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [templateDropdownOpen])
+
+  const commitOrders = useCallback((nextOrders: PosOrder[]) => {
+    ordersRef.current = nextOrders
+    setOrders(nextOrders)
+    return nextOrders
   }, [])
+
+  const mutateOrder = useCallback(
+    (orderId: string, updater: (order: PosOrder) => PosOrder) => {
+      let nextOrder: PosOrder | null = null
+      const nextOrders = ordersRef.current.map((order) => {
+        if (order.id !== orderId) return order
+        nextOrder = updater(order)
+        return nextOrder
+      })
+
+      if (!nextOrder) return null
+      commitOrders(nextOrders)
+      return nextOrder
+    },
+    [commitOrders],
+  )
+
+  const replaceOrderSnapshot = useCallback(
+    (orderSnapshot: PosOrder) => {
+      if (!ordersRef.current.some((order) => order.id === orderSnapshot.id)) {
+        return null
+      }
+      commitOrders(
+        ordersRef.current.map((order) =>
+          order.id === orderSnapshot.id ? orderSnapshot : order,
+        ),
+      )
+      return orderSnapshot
+    },
+    [commitOrders],
+  )
+
+  const updateOrder = useCallback(
+    (orderId: string, updater: (order: PosOrder) => PosOrder) => {
+      void mutateOrder(orderId, updater)
+    },
+    [mutateOrder],
+  )
 
   const addOrder = useCallback(() => {
     const nextOrder = createEmptyOrder()
-    setOrders((prev) => [...prev, nextOrder])
+    commitOrders([...ordersRef.current, nextOrder])
     setActiveOrderId(nextOrder.id)
-  }, [])
+  }, [commitOrders])
 
-  const removeOrder = useCallback((orderId: string) => {
-    setOrders((prev) => {
-      if (prev.length <= 1) return prev
-      return prev.filter((order) => order.id !== orderId)
-    })
-  }, [])
+  const removeOrder = useCallback(
+    (orderId: string) => {
+      if (ordersRef.current.length <= 1) return
+      commitOrders(ordersRef.current.filter((order) => order.id !== orderId))
+    },
+    [commitOrders],
+  )
+
+  const getStockDrugDetailCached = useCallback(
+    async (drugId: string, forceRefresh = false) => {
+      if (!forceRefresh && stockDetailsByDrugId[drugId]) {
+        return stockDetailsByDrugId[drugId]
+      }
+
+      const detail = await inventoryApi.getStockDrugDetail(drugId, token?.access_token)
+      setStockDetailsByDrugId((prev) => ({ ...prev, [drugId]: detail }))
+      return detail
+    },
+    [stockDetailsByDrugId, token?.access_token],
+  )
+
+  const recalculateAutoFillOrder = useCallback(
+    async (orderSnapshot: PosOrder, forceRefresh = false) => {
+      const autoFillItems = orderSnapshot.items.filter((item) =>
+        isAutoFillAllocationMode(item.allocationMode),
+      )
+      if (!autoFillItems.length) {
+        return replaceOrderSnapshot(orderSnapshot) ?? orderSnapshot
+      }
+
+      const uniqueDrugIds = Array.from(new Set(autoFillItems.map((item) => item.drugId)))
+      const detailEntries = await Promise.all(
+        uniqueDrugIds.map(async (drugId) => [drugId, await getStockDrugDetailCached(drugId, forceRefresh)] as const),
+      )
+
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+
+      const sortedBatchesByDrugId = new Map<string, InventoryBatch[]>()
+      const remainingByDrugId = new Map<string, Map<string, number>>()
+
+      detailEntries.forEach(([drugId, detail]) => {
+        const sorted = detail.batches
+          .filter((batch) => batch.status === 'active' && batch.qty_remaining > 0)
+          .slice()
+          .sort((left, right) =>
+            compareByLotIssuePolicy(left, right, today, fefoEnabled, fefoThresholdDays),
+          )
+
+        sortedBatchesByDrugId.set(drugId, sorted)
+        remainingByDrugId.set(
+          drugId,
+          new Map(sorted.map((batch) => [batch.id, batch.qty_remaining])),
+        )
+      })
+
+      orderSnapshot.items.forEach((item) => {
+        if (isAutoFillAllocationMode(item.allocationMode)) return
+        const requestedBaseQty =
+          parsePositiveInt(item.quantity, 0) * Math.max(item.conversion, 1)
+        if (requestedBaseQty <= 0) return
+
+        const remaining = remainingByDrugId.get(item.drugId)
+        if (!remaining) return
+
+        const available = remaining.get(item.batchId) ?? 0
+        remaining.set(item.batchId, Math.max(0, available - Math.min(available, requestedBaseQty)))
+      })
+
+      const recalculatedItems = orderSnapshot.items.map((item) => {
+        if (!isAutoFillAllocationMode(item.allocationMode)) {
+          return {
+            ...item,
+            availableBaseQty: item.batchQtyRemaining,
+            allocationWarning: null,
+          }
+        }
+
+        const drug = drugsById.get(item.drugId)
+        const retailUnit = drug ? getRetailUnit(drug) : null
+        const sortedBatches = sortedBatchesByDrugId.get(item.drugId) ?? []
+        const remaining = remainingByDrugId.get(item.drugId) ?? new Map<string, number>()
+        const totalAvailableBaseQty = Array.from(remaining.values()).reduce((sum, value) => sum + Math.max(0, value), 0)
+
+        if (!drug || !retailUnit || item.conversion !== 1 || item.unitId !== retailUnit.id) {
+          return {
+            ...item,
+            batchQtyRemaining: totalAvailableBaseQty,
+            availableBaseQty: totalAvailableBaseQty,
+            plannedAllocations: [],
+            allocationWarning: `Tự phân bổ nhiều lô chỉ hỗ trợ ở đơn vị lẻ ${retailUnit?.name ?? 'đơn vị gốc'}. Vui lòng đổi về đơn vị lẻ hoặc chọn lô cụ thể.`,
+          }
+        }
+
+        const requestedBaseQty = parsePositiveInt(item.quantity, 0)
+        let remainingNeed = requestedBaseQty
+        const plannedAllocations: PosOrderItemAllocation[] = []
+
+        sortedBatches.forEach((batch) => {
+          if (remainingNeed <= 0) return
+          const available = remaining.get(batch.id) ?? 0
+          if (available <= 0) return
+
+          const allocated = Math.min(available, remainingNeed)
+          if (allocated <= 0) return
+
+          plannedAllocations.push({
+            batchId: batch.id,
+            batchCode: batch.batch_code,
+            lotNumber: batch.lot_number,
+            expDate: toIsoDate(batch.exp_date),
+            baseQuantity: allocated,
+          })
+          remaining.set(batch.id, available - allocated)
+          remainingNeed -= allocated
+        })
+
+        const firstAllocation = plannedAllocations[0]
+        return {
+          ...item,
+          batchId: firstAllocation?.batchId ?? item.batchId,
+          batchCode: 'Tự động',
+          lotNumber: '',
+          expDate: '',
+          batchQtyRemaining: totalAvailableBaseQty,
+          availableBaseQty: totalAvailableBaseQty,
+          plannedAllocations,
+          allocationWarning:
+            remainingNeed > 0
+              ? `Không đủ tồn kho khả dụng khi cộng các lô. Có ${totalAvailableBaseQty.toLocaleString('vi-VN')} ${retailUnit.name}, cần ${requestedBaseQty.toLocaleString('vi-VN')} ${retailUnit.name}.`
+              : null,
+        }
+      })
+
+      const nextOrder = {
+        ...orderSnapshot,
+        items: recalculatedItems,
+      }
+
+      return replaceOrderSnapshot(nextOrder) ?? nextOrder
+    },
+    [drugsById, fefoEnabled, fefoThresholdDays, getStockDrugDetailCached, replaceOrderSnapshot],
+  )
+
+  const validateOrderItemQuantityMessage = useCallback(
+    (item: PosOrderItem, quantity: number) => {
+      if (quantity <= 0) {
+        return 'Số lượng phải lớn hơn 0.'
+      }
+
+      if (isAutoFillAllocationMode(item.allocationMode)) {
+        if (item.conversion !== 1) {
+          return item.allocationWarning || 'Đơn vị này chưa hỗ trợ tự phân bổ nhiều lô.'
+        }
+
+        const availableBaseQty = getItemAvailableBaseQty(item)
+        if (quantity > availableBaseQty) {
+          return item.allocationWarning || 'Số lượng vượt tồn kho khả dụng khi cộng các lô.'
+        }
+
+        if (sumPlannedAllocationBaseQty(item) < quantity) {
+          return item.allocationWarning || 'Chưa phân bổ đủ số lượng qua các lô khả dụng.'
+        }
+
+        return null
+      }
+
+      const availableBaseQty = getItemAvailableBaseQty(item)
+      if (quantity * Math.max(item.conversion, 1) > availableBaseQty) {
+        return `Số lượng vượt tồn kho của lô ${item.batchCode}.`
+      }
+      return null
+    },
+    [],
+  )
 
   const printInvoicePreview = useCallback((preview: InvoicePreview) => {
     const printWindow = window.open('', '_blank', 'width=900,height=680')
@@ -890,7 +1326,10 @@ export function Pos() {
         (line, index) => `
           <tr>
             <td>${index + 1}</td>
-            <td>${escapeHtml(line.name)}${line.isService ? ' <span class="service">(DV)</span>' : ''}</td>
+            <td>
+              ${escapeHtml(line.name)}${line.isService ? ' <span class="service">(DV)</span>' : ''}
+              ${line.lotNumber ? `<div class="service">Lô: ${escapeHtml(line.lotNumber)}</div>` : ''}
+            </td>
             <td class="center">${escapeHtml(line.unit)}</td>
             <td class="right">${line.quantity.toLocaleString('vi-VN')}</td>
             <td class="right">${formatCurrency(line.unitPrice)}</td>
@@ -1058,6 +1497,21 @@ export function Pos() {
                   ? `<div class="summary-row"><span>Phí dịch vụ</span><strong>${formatCurrency(preview.serviceFee)}</strong></div>`
                   : ''
               }
+              ${
+                preview.tierDiscountAmount
+                  ? `<div class="summary-row" style="color:#059669"><span>Chiết khấu hạng thẻ</span><strong>-${formatCurrency(preview.tierDiscountAmount)}</strong></div>`
+                  : ''
+              }
+              ${
+                preview.pointsDiscountAmount
+                  ? `<div class="summary-row" style="color:#059669"><span>Điểm thưởng (-${preview.pointsUsed} điểm)</span><strong>-${formatCurrency(preview.pointsDiscountAmount)}</strong></div>`
+                  : ''
+              }
+              ${
+                preview.roundingAdjustmentAmount !== 0
+                  ? `<div class="summary-row"><span>Điều chỉnh làm tròn</span><strong>${formatCurrency(preview.roundingAdjustmentAmount)}</strong></div>`
+                  : ''
+              }
               <div class="summary-row total"><span>Tổng thanh toán</span><strong>${formatCurrency(preview.grandTotal)}</strong></div>
               <div class="summary-row"><span>Khách đưa</span><strong>${formatCurrency(preview.amountPaid)}</strong></div>
               <div class="summary-row"><span>Tiền thừa</span><strong>${formatCurrency(Math.max(0, preview.changeAmount))}</strong></div>
@@ -1159,66 +1613,124 @@ export function Pos() {
         baseQuantity: params.quantity * Math.max(params.conversion, 1),
       })
 
-      setOrders((prev) =>
-        prev.map((order) => {
-          if (order.id !== orderId) return order
-          return {
-            ...order,
-            items: order.items.map((item) =>
-              item.id === itemId
-                ? {
-                    ...item,
-                    lotPolicyWarning: warning,
-                    lotPolicyAcknowledged:
-                      !!warning &&
-                      item.lotPolicyAcknowledged &&
-                      item.lotPolicyWarning === warning,
-                  }
-                : item,
-            ),
-          }
-        }),
-      )
+      updateOrder(orderId, (order) => ({
+        ...order,
+        items: order.items.map((item) =>
+          item.id === itemId
+            ? {
+                ...item,
+                lotPolicyWarning: warning,
+                lotPolicyAcknowledged:
+                  !!warning &&
+                  item.lotPolicyAcknowledged &&
+                  item.lotPolicyWarning === warning,
+              }
+            : item,
+        ),
+      }))
     },
-    [evaluateLotPolicy],
+    [evaluateLotPolicy, updateOrder],
   )
 
   const addItemToOrder = useCallback((orderId: string, item: PosOrderItem) => {
-    setOrders((prev) =>
-      prev.map((order) => {
-        if (order.id !== orderId) return order
-
-        const existing = order.items.find(
-          (current) =>
-            current.batchId === item.batchId &&
-            current.drugId === item.drugId &&
-            current.unitId === item.unitId,
-        )
-
-        if (existing) {
-          const nextQuantity = parsePositiveInt(existing.quantity, 0) + parsePositiveInt(item.quantity, 1)
-          return {
-            ...order,
-            items: order.items.map((current) =>
-              current.id === existing.id
-                ? {
-                    ...current,
-                    quantity: String(nextQuantity),
-                    lotPolicyWarning: item.lotPolicyWarning,
-                    lotPolicyAcknowledged: item.lotPolicyAcknowledged,
-                  }
-                : current,
-            ),
-          }
+    return mutateOrder(orderId, (order) => {
+      const existing = order.items.find((current) => {
+        if (
+          isAutoFillAllocationMode(current.allocationMode) &&
+          isAutoFillAllocationMode(item.allocationMode)
+        ) {
+          return current.drugId === item.drugId && current.unitId === item.unitId
         }
 
+        return (
+          current.batchId === item.batchId &&
+          current.drugId === item.drugId &&
+          current.unitId === item.unitId
+        )
+      })
+
+      if (existing) {
+        const nextQuantity =
+          parsePositiveInt(existing.quantity, 0) + parsePositiveInt(item.quantity, 1)
         return {
           ...order,
-          items: [item, ...order.items],
+          items: order.items.map((current) =>
+            current.id === existing.id
+              ? {
+                  ...current,
+                  quantity: String(nextQuantity),
+                  lotPolicyWarning: item.lotPolicyWarning,
+                  lotPolicyAcknowledged: item.lotPolicyAcknowledged,
+                  allocationWarning: item.allocationWarning,
+                }
+              : current,
+          ),
         }
-      }),
-    )
-  }, [])
+      }
+
+      return {
+        ...order,
+        items: [item, ...order.items],
+      }
+    })
+  }, [mutateOrder])
+
+  const buildAutoFillItem = useCallback(
+    async (
+      orderId: string,
+      drug: PosDrug,
+      preferredUnit: PosDrugUnit,
+      defaultQuantity = 1,
+    ) => {
+      const retailUnit = getRetailUnit(drug)
+      if (preferredUnit.conversion !== 1 || preferredUnit.id !== retailUnit.id) {
+        throw new ApiError(
+          `Tự phân bổ nhiều lô chỉ hỗ trợ ở đơn vị lẻ ${retailUnit.name}. Vui lòng đổi về đơn vị lẻ hoặc chọn lô cụ thể.`,
+          400,
+        )
+      }
+
+      const detail = await getStockDrugDetailCached(drug.id)
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+      const firstBatch = detail.batches
+        .filter((batch) => batch.status === 'active' && batch.qty_remaining > 0)
+        .slice()
+        .sort((left, right) =>
+          compareByLotIssuePolicy(left, right, today, fefoEnabled, fefoThresholdDays),
+        )[0]
+
+      if (!firstBatch) {
+        throw new ApiError(`Không còn lô khả dụng cho ${drug.name}.`, 409)
+      }
+
+      const nextOrder = addItemToOrder(orderId, {
+        id: createItemId(),
+        drugId: drug.id,
+        drugCode: drug.code,
+        drugName: drug.name,
+        batchId: firstBatch.id,
+        batchCode: 'Tự động',
+        lotNumber: '',
+        expDate: '',
+        batchQtyRemaining: 0,
+        unitId: retailUnit.id,
+        unitName: retailUnit.name,
+        conversion: retailUnit.conversion,
+        unitPrice: retailUnit.price,
+        quantity: String(Math.max(1, defaultQuantity)),
+        allocationMode: 'auto_fill',
+        plannedAllocations: [],
+        availableBaseQty: 0,
+        allocationWarning: null,
+        lotPolicyWarning: null,
+        lotPolicyAcknowledged: false,
+      })
+
+      return nextOrder ? recalculateAutoFillOrder(nextOrder) : null
+    },
+    [addItemToOrder, fefoEnabled, fefoThresholdDays, getStockDrugDetailCached, recalculateAutoFillOrder],
+  )
 
   const buildItemFromBatch = useCallback(
     async (
@@ -1267,6 +1779,18 @@ export function Pos() {
         conversion: defaultUnit.conversion,
         unitPrice: defaultUnit.price,
         quantity: String(quantity),
+        allocationMode: 'explicit_lot',
+        plannedAllocations: [
+          {
+            batchId: batch.id,
+            batchCode: batch.batch_code,
+            lotNumber: batch.lot_number,
+            expDate: toIsoDate(batch.exp_date),
+            baseQuantity: quantity * Math.max(defaultUnit.conversion, 1),
+          },
+        ],
+        availableBaseQty: batch.qty_remaining,
+        allocationWarning: null,
         lotPolicyWarning: warning,
         lotPolicyAcknowledged: false,
       }
@@ -1285,11 +1809,14 @@ export function Pos() {
         return
       }
 
-      addItemToOrder(orderId, item)
+      const nextOrder = addItemToOrder(orderId, item)
+      if (!sellByLot && nextOrder) {
+        await recalculateAutoFillOrder(nextOrder)
+      }
       setActionMessage(`Đã thêm ${drug.name} từ lô ${batch.batch_code}.`)
       setActionError(null)
     },
-    [addItemToOrder, drugsById, evaluateLotPolicy, sellByLot],
+    [addItemToOrder, drugsById, evaluateLotPolicy, recalculateAutoFillOrder, sellByLot],
   )
 
   const addByLotQrValue = useCallback(
@@ -1341,6 +1868,27 @@ export function Pos() {
                 throw new ApiError(`Không đủ tồn kho cho ${barcodeLookup.drug.name}.`, 409)
               }
 
+              if (barcodeLookup.unit.conversion === 1) {
+                await buildAutoFillItem(
+                  activeOrder.id,
+                  barcodeLookup.drug,
+                  barcodeLookup.unit,
+                  quantity,
+                )
+                setActionMessage(
+                  `Đã thêm ${barcodeLookup.drug.name}; hệ thống sẽ tự phân bổ lô khi thanh toán.`,
+                )
+                setLotScanInput('')
+                return
+              }
+
+              if (suggestion.allocations.length > 1 || suggestedBatch.allocated < baseQuantity) {
+                throw new ApiError(
+                  `Đơn vị ${barcodeLookup.unit.name} chỉ bán được khi một lô đủ tồn. Vui lòng đổi về đơn vị lẻ hoặc quét lô cụ thể.`,
+                  409,
+                )
+              }
+
               const byBarcodeDetail = await inventoryApi.getBatchDetail(suggestedBatch.batch_id)
               await buildItemFromBatch(
                 byBarcodeDetail,
@@ -1372,7 +1920,7 @@ export function Pos() {
         setAddingByQr(false)
       }
     },
-    [activeOrder, barcodeIndex, buildItemFromBatch, sellByLot, selectedQuantity, token?.access_token],
+    [activeOrder, barcodeIndex, buildAutoFillItem, buildItemFromBatch, sellByLot, selectedQuantity, token?.access_token],
   )
 
   const handleAddByLotQr = useCallback(async () => {
@@ -1568,6 +2116,7 @@ export function Pos() {
     setActionError(null)
     setActionMessage(null)
 
+    let succeeded = false
     try {
       const suggestion = await inventoryApi.suggestIssueByDrug({
         drug_id: selectedDrug.id,
@@ -1578,15 +2127,61 @@ export function Pos() {
         throw new ApiError(`Không đủ tồn kho cho ${selectedDrug.name}.`, 409)
       }
 
+      if (!sellByLot && selectedUnit.conversion === 1) {
+        await buildAutoFillItem(activeOrder.id, selectedDrug, selectedUnit, quantity)
+        setActionMessage(
+          `Đã thêm ${selectedDrug.name}; hệ thống sẽ tự phân bổ lô khi thanh toán.`,
+        )
+        succeeded = true
+        return
+      }
+
+      if (!sellByLot && (suggestion.allocations.length > 1 || suggestedBatch.allocated < baseQuantity)) {
+        throw new ApiError(
+          `Đơn vị ${selectedUnit.name} chỉ bán được khi một lô đủ tồn. Vui lòng đổi về đơn vị lẻ hoặc chọn lô cụ thể.`,
+          409,
+        )
+      }
+
       const batchDetail = await inventoryApi.getBatchDetail(suggestedBatch.batch_id)
       await buildItemFromBatch(batchDetail, activeOrder.id, quantity, selectedDrug, selectedUnit)
+      succeeded = true
     } catch (error) {
       if (error instanceof ApiError) setActionError(error.message)
       else setActionError('Không thể thêm thuốc theo gợi ý lô.')
     } finally {
       setAddingByDrug(false)
+      if (succeeded) {
+        setDrugSearch('')
+        setSelectedDrugId('')
+      }
     }
-  }, [activeOrder, selectedDrug, selectedUnit, selectedQuantity, buildItemFromBatch, token?.access_token])
+  }, [activeOrder, selectedDrug, selectedUnit, selectedQuantity, buildAutoFillItem, buildItemFromBatch, sellByLot, token?.access_token, setDrugSearch, setSelectedDrugId])
+
+  const applyTemplate = useCallback(
+    async (template: PrescriptionTemplate) => {
+      if (!activeOrder || sellByLot) return
+      setApplyingTemplate(true)
+      setTemplateDropdownOpen(false)
+      setActionError(null)
+      let addedCount = 0
+      for (const item of template.items) {
+        const drug = drugsById.get(item.product_id)
+        if (!drug) continue
+        const unit = drug.units.find((u) => u.id === item.product_unit_id)
+        if (!unit || unit.conversion !== 1) continue
+        await buildAutoFillItem(activeOrder.id, drug, unit, item.quantity)
+        addedCount++
+      }
+      setActionMessage(
+        addedCount > 0
+          ? `Đã áp dụng đơn mẫu "${template.name}" (${addedCount} loại thuốc).`
+          : `Không có thuốc nào trong đơn mẫu "${template.name}" khả dụng để thêm.`,
+      )
+      setApplyingTemplate(false)
+    },
+    [activeOrder, sellByLot, drugsById, buildAutoFillItem],
+  )
 
   const updateActiveOrder = useCallback(
     (updater: (order: PosOrder) => PosOrder) => {
@@ -1597,7 +2192,7 @@ export function Pos() {
   )
 
   const applyCustomerToOrder = useCallback(
-    (orderId: string, customer: CustomerRecord) => {
+    (orderId: string, customer: CustomerRecord, customerStats?: import('../api/customerService').CustomerStatsResponse) => {
       updateOrder(orderId, (order) => ({
         ...order,
         customerMode: 'member',
@@ -1605,8 +2200,10 @@ export function Pos() {
         customerCode: customer.code,
         customerName: customer.name,
         customerPhone: customer.phone,
-        customerTier: customer.tier,
-        customerPoints: customer.current_points,
+        customerTier: customerStats?.tier ?? customer.tier,
+        customerTierDiscountPercent: customerStats?.tier_discount_percent ?? null,
+        customerPoints: customerStats?.current_points ?? customer.current_points,
+        pointsToRedeem: '',
       }))
       setShowCreateMemberForm(false)
     },
@@ -1628,7 +2225,14 @@ export function Pos() {
 
     try {
       const customer = await customerApi.getCustomerByPhone(token.access_token, phone)
-      applyCustomerToOrder(activeOrder.id, customer)
+      let stats = undefined
+      try {
+        stats = await customerApi.getCustomerStats(token.access_token, customer.id)
+      } catch (statsErr) {
+        console.warn('Failed to fetch customer stats', statsErr)
+      }
+
+      applyCustomerToOrder(activeOrder.id, customer, stats)
       setActionMessage(`Đã tìm thấy khách hàng ${customer.name}.`)
       setNewMemberPhone(customer.phone)
       setNewMemberName(customer.name)
@@ -1641,7 +2245,9 @@ export function Pos() {
           customerName: '',
           customerPhone: phone,
           customerTier: null,
+          customerTierDiscountPercent: null,
           customerPoints: null,
+          pointsToRedeem: '',
         }))
         setActionError('Không tìm thấy thành viên theo số điện thoại.')
         setNewMemberPhone(phone)
@@ -1681,7 +2287,14 @@ export function Pos() {
         is_active: true,
       })
 
-      applyCustomerToOrder(activeOrder.id, customer)
+      let stats = undefined
+      try {
+        stats = await customerApi.getCustomerStats(token.access_token, customer.id)
+      } catch (statsErr) {
+        console.warn('Failed to fetch customer stats for new member', statsErr)
+      }
+
+      applyCustomerToOrder(activeOrder.id, customer, stats)
       setActionMessage(`Da tao thanh vien ${customer.name}.`)
       setNewMemberPhone(customer.phone)
       setNewMemberName(customer.name)
@@ -1696,23 +2309,26 @@ export function Pos() {
   const updateItemField = useCallback(
     (itemId: string, updater: (item: PosOrderItem) => PosOrderItem) => {
       if (!activeOrder) return
-      updateOrder(activeOrder.id, (order) => ({
+      return mutateOrder(activeOrder.id, (order) => ({
         ...order,
         items: order.items.map((item) => (item.id === itemId ? updater(item) : item)),
       }))
     },
-    [activeOrder, updateOrder],
+    [activeOrder, mutateOrder],
   )
 
   const removeItem = useCallback(
     (itemId: string) => {
       if (!activeOrder) return
-      updateOrder(activeOrder.id, (order) => ({
+      const nextOrder = mutateOrder(activeOrder.id, (order) => ({
         ...order,
         items: order.items.filter((item) => item.id !== itemId),
       }))
+      if (!sellByLot && nextOrder) {
+        void recalculateAutoFillOrder(nextOrder)
+      }
     },
-    [activeOrder, updateOrder],
+    [activeOrder, mutateOrder, recalculateAutoFillOrder, sellByLot],
   )
 
   const handleItemQuantityChange = useCallback(
@@ -1721,16 +2337,22 @@ export function Pos() {
       const item = activeOrder.items.find((row) => row.id === itemId)
       if (!item) return
 
-      const availableInSelectedUnit = Math.floor(item.batchQtyRemaining / Math.max(item.conversion, 1))
+      const availableInSelectedUnit = Math.floor(
+        getItemAvailableBaseQty(item) / Math.max(item.conversion, 1),
+      )
       const nextQuantity = parsePositiveInt(rawValue, 0)
       const safeQuantity = Math.min(nextQuantity, Math.max(0, availableInSelectedUnit))
 
-      updateItemField(itemId, (current) => ({
+      const nextOrder = updateItemField(itemId, (current) => ({
         ...current,
         quantity: rawValue.trim() === '' ? '' : String(safeQuantity),
       }))
 
-      if (safeQuantity > 0) {
+      if (!sellByLot && nextOrder) {
+        void recalculateAutoFillOrder(nextOrder)
+      }
+
+      if (!isAutoFillAllocationMode(item.allocationMode) && safeQuantity > 0) {
         void applyItemPolicyCheck(activeOrder.id, itemId, {
           drugId: item.drugId,
           drugCode: item.drugCode,
@@ -1742,7 +2364,13 @@ export function Pos() {
         })
       }
     },
-    [activeOrder, updateItemField, applyItemPolicyCheck],
+    [
+      activeOrder,
+      applyItemPolicyCheck,
+      recalculateAutoFillOrder,
+      sellByLot,
+      updateItemField,
+    ],
   )
 
   const handleItemUnitChange = useCallback(
@@ -1756,10 +2384,12 @@ export function Pos() {
       if (!nextUnit) return
 
       const currentQty = parsePositiveInt(item.quantity, 0)
-      const maxQuantity = Math.floor(item.batchQtyRemaining / Math.max(nextUnit.conversion, 1))
+      const maxQuantity = Math.floor(
+        getItemAvailableBaseQty(item) / Math.max(nextUnit.conversion, 1),
+      )
       const safeQuantity = Math.min(currentQty, Math.max(0, maxQuantity))
 
-      updateItemField(itemId, (current) => ({
+      const nextOrder = updateItemField(itemId, (current) => ({
         ...current,
         unitId: nextUnit.id,
         unitName: nextUnit.name,
@@ -1768,7 +2398,11 @@ export function Pos() {
         quantity: String(safeQuantity),
       }))
 
-      if (safeQuantity > 0) {
+      if (!sellByLot && nextOrder) {
+        void recalculateAutoFillOrder(nextOrder)
+      }
+
+      if (!isAutoFillAllocationMode(item.allocationMode) && safeQuantity > 0) {
         void applyItemPolicyCheck(activeOrder.id, itemId, {
           drugId: item.drugId,
           drugCode: item.drugCode,
@@ -1780,7 +2414,14 @@ export function Pos() {
         })
       }
     },
-    [activeOrder, drugsById, updateItemField, applyItemPolicyCheck],
+    [
+      activeOrder,
+      applyItemPolicyCheck,
+      drugsById,
+      recalculateAutoFillOrder,
+      sellByLot,
+      updateItemField,
+    ],
   )
 
   const activeOrderLineDetails = useMemo(() => {
@@ -1790,21 +2431,25 @@ export function Pos() {
       lineTotal: number
       availableInUnit: number
       isQuantityValid: boolean
+      validationMessage: string | null
     }>
 
     return activeOrder.items.map((item) => {
       const quantity = parsePositiveInt(item.quantity, 0)
-      const availableInUnit = Math.floor(item.batchQtyRemaining / Math.max(item.conversion, 1))
-      const isQuantityValid = quantity > 0 && quantity <= availableInUnit
+      const availableInUnit = Math.floor(
+        getItemAvailableBaseQty(item) / Math.max(item.conversion, 1),
+      )
+      const validationMessage = validateOrderItemQuantityMessage(item, quantity)
       return {
         item,
         quantity,
         lineTotal: quantity * item.unitPrice,
         availableInUnit,
-        isQuantityValid,
+        isQuantityValid: !validationMessage,
+        validationMessage,
       }
     })
-  }, [activeOrder])
+  }, [activeOrder, validateOrderItemQuantityMessage])
 
   const subtotal = useMemo(
     () => activeOrderLineDetails.reduce((sum, row) => sum + row.lineTotal, 0),
@@ -1816,16 +2461,97 @@ export function Pos() {
     [activeOrder?.serviceFee],
   )
 
-  const grandTotal = subtotal + serviceFee
+  const tierDiscountPercent = activeOrder?.customerTierDiscountPercent || 0
+  const isSeparateServiceFee = activeOrder?.serviceFeeMode === 'separate'
+  const discountableSubtotal = useMemo(
+    () => Math.max(0, subtotal + (isSeparateServiceFee ? 0 : serviceFee)),
+    [isSeparateServiceFee, serviceFee, subtotal],
+  )
+  const tierDiscountAmount = useMemo(() => {
+    if (tierDiscountPercent <= 0 || discountableSubtotal <= 0) return 0
+    return Math.min(
+      discountableSubtotal,
+      roundMoneyAmount((discountableSubtotal * tierDiscountPercent) / 100),
+    )
+  }, [discountableSubtotal, tierDiscountPercent])
+  const discountableAmountAfterTier = useMemo(
+    () => Math.max(0, discountableSubtotal - tierDiscountAmount),
+    [discountableSubtotal, tierDiscountAmount],
+  )
+
+  const requestedPointsToRedeem = parsePositiveInt(activeOrder?.pointsToRedeem)
+  const availableCustomerPoints = Math.max(0, activeOrder?.customerPoints ?? 0)
+  const maxRedeemablePoints = useMemo(() => {
+    if (activeOrder?.customerMode !== 'member' || availableCustomerPoints <= 0 || customerPointValue <= 0) {
+      return 0
+    }
+    const maxPointsByAmount = Math.floor(discountableAmountAfterTier / customerPointValue)
+    return Math.max(0, Math.min(availableCustomerPoints, maxPointsByAmount))
+  }, [
+    activeOrder?.customerMode,
+    availableCustomerPoints,
+    customerPointValue,
+    discountableAmountAfterTier,
+  ])
+  const effectivePointsToRedeem = Math.min(requestedPointsToRedeem, maxRedeemablePoints)
+  const pointsToRedeem = effectivePointsToRedeem
+  const pointsDiscountAmount = effectivePointsToRedeem * customerPointValue
+
+  const unroundedTotal = useMemo(() => {
+    const discountedAmount = Math.max(0, discountableAmountAfterTier - pointsDiscountAmount)
+    return discountedAmount + (isSeparateServiceFee ? serviceFee : 0)
+  }, [discountableAmountAfterTier, isSeparateServiceFee, pointsDiscountAmount, serviceFee])
+
+  const grandTotal = useMemo(() => {
+    if (activeOrder?.paymentMode !== 'cash' || !cashRoundingEnabled) {
+      return unroundedTotal
+    }
+    return roundCashTotalByStep(unroundedTotal, cashRoundingUnit)
+  }, [activeOrder?.paymentMode, cashRoundingEnabled, cashRoundingUnit, unroundedTotal])
+  const baseRoundingAdjustment = useMemo(
+    () => grandTotal - unroundedTotal,
+    [grandTotal, unroundedTotal],
+  )
   const cashReceived = parseNonNegativeNumber(activeOrder?.cashReceived ?? '0')
-  const changeAmount = cashReceived - grandTotal
-  const outstandingAmount = Math.max(0, grandTotal - cashReceived)
+  const paymentSummary = useMemo(
+    () =>
+      applyMinimumDebtThreshold(
+        grandTotal,
+        cashReceived,
+        baseRoundingAdjustment,
+      ),
+    [grandTotal, cashReceived, baseRoundingAdjustment],
+  )
+  const displayGrandTotal = paymentSummary.totalAmount
+  const displayRoundingAdjustmentAmount = paymentSummary.roundingAdjustmentAmount
+  const changeAmount = cashReceived - displayGrandTotal
+  const outstandingAmount = paymentSummary.debtAmount
   const roundedCashChangeAmount = useMemo(() => {
     if (activeOrder?.paymentMode !== 'cash') return 0
-    const positiveChange = Math.max(0, changeAmount)
-    if (!cashRoundingEnabled) return positiveChange
-    return roundCashTotalByStep(positiveChange, cashRoundingUnit)
-  }, [activeOrder?.paymentMode, changeAmount, cashRoundingEnabled, cashRoundingUnit])
+    return paymentSummary.changeAmount
+  }, [activeOrder?.paymentMode, paymentSummary.changeAmount])
+
+  useEffect(() => {
+    if (!activeOrder) return
+    if (activeOrder.customerMode !== 'member') {
+      if (activeOrder.pointsToRedeem !== '') {
+        updateOrder(activeOrder.id, (order) => ({ ...order, pointsToRedeem: '' }))
+      }
+      return
+    }
+
+    const rawPointsValue = activeOrder.pointsToRedeem.trim()
+    if (!rawPointsValue) return
+
+    const clampedValue = String(effectivePointsToRedeem)
+    if (rawPointsValue !== clampedValue) {
+      updateOrder(activeOrder.id, (order) => ({ ...order, pointsToRedeem: clampedValue }))
+    }
+  }, [
+    activeOrder,
+    effectivePointsToRedeem,
+    updateOrder,
+  ])
 
   const customerDisplayPayload = useMemo<CustomerDisplayPayload>(() => {
     const lines = activeOrderLineDetails.map((row) => ({
@@ -1858,7 +2584,7 @@ export function Pos() {
         itemCount: lines.length,
         subtotal,
         serviceFee,
-        total: grandTotal,
+        total: displayGrandTotal,
         lines,
       },
       paymentQr: bankQrState
@@ -1882,7 +2608,7 @@ export function Pos() {
     customerDisplayAdsTransitionMs,
     customerDisplayShowPrice,
     customerDisplayShowTotal,
-    grandTotal,
+    displayGrandTotal,
     serviceFee,
     storeInfo?.address,
     storeInfo?.name,
@@ -1967,6 +2693,44 @@ export function Pos() {
     [],
   )
 
+  const expandCheckoutLines = useCallback(
+    (lines: CheckoutLine[]): ExpandedCheckoutLine[] =>
+      lines.flatMap((line) => {
+        if (!isAutoFillAllocationMode(line.item.allocationMode)) {
+          return [
+            {
+              item: line.item,
+              batchId: line.item.batchId,
+              batchCode: line.item.batchCode,
+              lotNumber: line.item.lotNumber,
+              expDate: line.item.expDate,
+              quantity: line.quantity,
+              conversion: Math.max(1, line.item.conversion),
+              unitId: line.item.unitId,
+              unitName: line.item.unitName,
+              adjustedUnitPrice: line.adjustedUnitPrice,
+            },
+          ]
+        }
+
+        return line.item.plannedAllocations
+          .filter((allocation) => allocation.baseQuantity > 0)
+          .map((allocation) => ({
+            item: line.item,
+            batchId: allocation.batchId,
+            batchCode: allocation.batchCode,
+            lotNumber: allocation.lotNumber,
+            expDate: allocation.expDate,
+            quantity: allocation.baseQuantity,
+            conversion: 1,
+            unitId: line.item.unitId,
+            unitName: line.item.unitName,
+            adjustedUnitPrice: line.adjustedUnitPrice,
+          }))
+      }),
+    [],
+  )
+
   const findFirstPolicyViolation = useCallback(
     async (order: PosOrder) => {
       for (const item of order.items) {
@@ -2004,17 +2768,30 @@ export function Pos() {
     setActionMessage(null)
 
     try {
-      const lines = buildCheckoutLines(activeOrder)
+      let checkoutOrder =
+        ordersRef.current.find((order) => order.id === activeOrder.id) ?? activeOrder
+      if (!sellByLot && checkoutOrder.items.some((item) => isAutoFillAllocationMode(item.allocationMode))) {
+        const recalculatedOrder = await recalculateAutoFillOrder(checkoutOrder, true)
+        checkoutOrder = recalculatedOrder ?? checkoutOrder
+      }
+
+      const lines = buildCheckoutLines(checkoutOrder)
       if (!lines.length) {
         throw new ApiError('Don hang chua co thuoc hop le de thanh toan.', 400)
       }
 
-      const invalidStock = lines.find(
-        (line) => line.quantity * Math.max(line.item.conversion, 1) > line.item.batchQtyRemaining,
+      const invalidStock = lines.find((line) =>
+        Boolean(validateOrderItemQuantityMessage(line.item, line.quantity)),
       )
       if (invalidStock) {
-        throw new ApiError(`So luong vuot ton kho cua lo ${invalidStock.item.batchCode}.`, 409)
+        throw new ApiError(
+          validateOrderItemQuantityMessage(invalidStock.item, invalidStock.quantity) ||
+            `So luong vuot ton kho cua lo ${invalidStock.item.batchCode}.`,
+          409,
+        )
       }
+
+      const expandedLines = expandCheckoutLines(lines)
 
       if (sellByLot && !skipPolicyCheck) {
         const violatingFromCache = lines.find((line) => !!line.item.lotPolicyWarning)
@@ -2024,16 +2801,16 @@ export function Pos() {
         ) {
           setLotPolicyConfirm({
             mode: 'checkout',
-            orderId: activeOrder.id,
+            orderId: checkoutOrder.id,
             item: violatingFromCache.item,
             message: violatingFromCache.item.lotPolicyWarning,
           })
           return false
         }
 
-        const freshViolation = await findFirstPolicyViolation(activeOrder)
+        const freshViolation = await findFirstPolicyViolation(checkoutOrder)
         if (freshViolation) {
-          updateOrder(activeOrder.id, (order) => ({
+          updateOrder(checkoutOrder.id, (order) => ({
             ...order,
             items: order.items.map((row) =>
               row.id === freshViolation.item.id
@@ -2043,7 +2820,7 @@ export function Pos() {
           }))
           setLotPolicyConfirm({
             mode: 'checkout',
-            orderId: activeOrder.id,
+            orderId: checkoutOrder.id,
             item: freshViolation.item,
             message: freshViolation.warning,
           })
@@ -2052,41 +2829,40 @@ export function Pos() {
       }
 
       const checkoutPaymentMethod = options?.paymentMethod ?? 'cash'
-      const shouldRoundCashChange =
-        checkoutPaymentMethod === 'cash' &&
-        activeOrder.paymentMode === 'cash' &&
-        cashRoundingEnabled
+      const checkoutTotal = grandTotal
+      const baseRoundingAdjustmentAmount = baseRoundingAdjustment
+      const amountPaid = options?.amountPaid ?? parseNonNegativeNumber(checkoutOrder.cashReceived)
+      const paymentSummary = applyMinimumDebtThreshold(
+        checkoutTotal,
+        amountPaid,
+        baseRoundingAdjustmentAmount,
+      )
+      const effectiveCheckoutTotal = paymentSummary.totalAmount
+      const roundingAdjustmentAmount = paymentSummary.roundingAdjustmentAmount
+      const debtAmount = paymentSummary.debtAmount
 
-      const amountPaid = options?.amountPaid ?? parseNonNegativeNumber(activeOrder.cashReceived)
-      if (activeOrder.paymentMode === 'cash' && amountPaid < grandTotal) {
+      if (checkoutOrder.paymentMode === 'cash' && amountPaid < effectiveCheckoutTotal) {
         throw new ApiError('Tiền khách đưa chưa đủ để thanh toán.', 400)
       }
-      if (activeOrder.customerMode === 'member' && !activeOrder.customerId) {
+      if (checkoutOrder.customerMode === 'member' && !checkoutOrder.customerId) {
         throw new ApiError('Vui lòng tìm hoặc tạo thành viên trước khi thanh toán.', 400)
       }
 
-      const serviceFeeValue = parseNonNegativeNumber(activeOrder.serviceFee)
-      const noteParts = [activeOrder.note.trim()].filter(Boolean)
-      if (serviceFeeValue > 0) {
-        noteParts.push(
-          `Phí dịch vụ: ${formatCurrency(serviceFeeValue)} (${activeOrder.serviceFeeMode === 'split' ? 'chia đều vào các dòng thuốc' : 'mục riêng'})`,
-        )
+      const serviceFeeValue = parseNonNegativeNumber(checkoutOrder.serviceFee)
+      const noteParts = [checkoutOrder.note.trim()].filter(Boolean)
+      if (serviceFeeValue > 0 && checkoutOrder.serviceFeeMode === 'separate') {
+        noteParts.push(`Phí dịch vụ: ${formatCurrency(serviceFeeValue)} (mục riêng)`)
       }
-      const debtAmount = Math.max(0, grandTotal - amountPaid)
-      const paymentChangeRaw = Math.max(0, amountPaid - grandTotal)
-      const paymentChange = shouldRoundCashChange
-        ? roundCashTotalByStep(paymentChangeRaw, cashRoundingUnit)
-        : paymentChangeRaw
       if (debtAmount > 0) {
         noteParts.push(`Cong no: ${formatCurrency(debtAmount)}`)
       }
-      if (activeOrder.customerName.trim()) {
-        if (activeOrder.customerMode === 'member') {
+      if (checkoutOrder.customerName.trim()) {
+        if (checkoutOrder.customerMode === 'member') {
           noteParts.push(
-            `Khách thành viên: ${activeOrder.customerName.trim()}${activeOrder.customerCode ? ` (${activeOrder.customerCode})` : ''}${activeOrder.customerPhone ? ` - ${activeOrder.customerPhone}` : ''}`,
+            `Khách thành viên: ${checkoutOrder.customerName.trim()}${checkoutOrder.customerCode ? ` (${checkoutOrder.customerCode})` : ''}${checkoutOrder.customerPhone ? ` - ${checkoutOrder.customerPhone}` : ''}`,
           )
         } else {
-          noteParts.push(`Khách vãng lai: ${activeOrder.customerName.trim()}`)
+          noteParts.push(`Khách vãng lai: ${checkoutOrder.customerName.trim()}`)
         }
       }
       if (options?.noteSuffix?.trim()) {
@@ -2095,24 +2871,28 @@ export function Pos() {
 
       const invoice = await saleApi.createInvoice(token.access_token, {
         customer_id:
-          activeOrder.customerMode === 'member' && activeOrder.customerId
-            ? activeOrder.customerId
+          checkoutOrder.customerMode === 'member' && checkoutOrder.customerId
+            ? checkoutOrder.customerId
             : null,
         payment_method: checkoutPaymentMethod,
+        service_fee_amount: serviceFeeValue,
+        service_fee_mode: checkoutOrder.serviceFeeMode,
+        points_used: effectivePointsToRedeem,
+        rounding_adjustment_amount: roundingAdjustmentAmount,
         amount_paid: amountPaid,
         note: noteParts.join(' | ') || null,
-        items: lines.map((line) => ({
+        items: expandedLines.map((line) => ({
           // Use product_id as SKU for reserve API to avoid ambiguity when drug codes are duplicated.
           sku: line.item.drugId,
           product_id: line.item.drugId,
           product_code: line.item.drugCode,
           product_name: line.item.drugName,
-          unit_id: line.item.unitId,
-          unit_name: line.item.unitName,
-          conversion_rate: Math.max(1, line.item.conversion),
-          batch_id: line.item.batchId,
-          lot_number: line.item.lotNumber,
-          expiry_date: line.item.expDate || null,
+          unit_id: line.unitId,
+          unit_name: line.unitName,
+          conversion_rate: Math.max(1, line.conversion),
+          batch_id: line.batchId,
+          lot_number: line.lotNumber,
+          expiry_date: line.expDate || null,
           quantity: line.quantity,
           unit_price: line.adjustedUnitPrice,
           discount_amount: 0,
@@ -2120,21 +2900,19 @@ export function Pos() {
       })
 
       const medicineTotal = lines.reduce((sum, line) => sum + line.lineTotal, 0)
-      const previewLines: InvoicePreviewLine[] = lines.map((line) => {
-        const lineAmount =
-          activeOrder.serviceFeeMode === 'split'
-            ? line.lineTotal + line.surcharge
-            : line.lineTotal
+      const previewLines: InvoicePreviewLine[] = expandedLines.map((line) => {
+        const lineAmount = line.quantity * line.adjustedUnitPrice
         return {
           name: line.item.drugName,
-          unit: line.item.unitName,
+          unit: line.unitName,
           quantity: line.quantity,
           unitPrice: line.quantity > 0 ? lineAmount / line.quantity : line.item.unitPrice,
           amount: lineAmount,
+          lotNumber: line.lotNumber || null,
         }
       })
 
-      if (activeOrder.serviceFeeMode === 'separate' && serviceFeeValue > 0) {
+      if (checkoutOrder.serviceFeeMode === 'separate' && serviceFeeValue > 0) {
         previewLines.push({
           name: 'Phi dich vu',
           unit: 'Lan',
@@ -2145,6 +2923,23 @@ export function Pos() {
         })
       }
 
+      const invoiceAmountPaid = coerceFiniteNumber(invoice.amount_paid, amountPaid)
+      const invoiceGrandTotal = coerceFiniteNumber(invoice.total_amount, effectiveCheckoutTotal)
+      const invoiceChangeAmount = coerceFiniteNumber(
+        invoice.change_amount,
+        Math.max(0, invoiceAmountPaid - invoiceGrandTotal),
+      )
+      const invoiceDebtAmount = Math.max(0, invoiceGrandTotal - invoiceAmountPaid)
+      const invoiceRoundingAdjustmentAmount = coerceFiniteNumber(
+        invoice.rounding_adjustment_amount,
+        roundingAdjustmentAmount,
+      )
+      const invoiceTierDiscountAmount = coerceFiniteNumber(invoice.tier_discount, tierDiscountAmount)
+      const invoicePointsDiscountAmount = coerceFiniteNumber(invoice.points_discount, pointsDiscountAmount)
+      const invoicePointsUsed = Math.max(
+        0,
+        roundMoneyAmount(coerceFiniteNumber(invoice.points_used, effectivePointsToRedeem)),
+      )
       const preview: InvoicePreview = {
         id: invoice.id,
         code: invoice.code,
@@ -2156,25 +2951,29 @@ export function Pos() {
         storePhone: storeInfo?.phone?.trim() || '',
         storeAddress: storeInfo?.address?.trim() || '',
         cashier: user?.full_name?.trim() || user?.username || 'Nhan vien',
-        customerName: activeOrder.customerName.trim() || 'Khach vang lai',
-        customerPhone: activeOrder.customerPhone.trim(),
-        note: activeOrder.note.trim(),
-        paymentMethod: debtAmount > 0 ? 'Mua no' : (options?.paymentLabel ?? 'Tien mat'),
-        amountPaid,
-        changeAmount: paymentChange,
-        debtAmount,
+        customerName: checkoutOrder.customerName.trim() || 'Khach vang lai',
+        customerPhone: checkoutOrder.customerPhone.trim(),
+        note: checkoutOrder.note.trim(),
+        paymentMethod: invoice.payment_method === 'debt' ? 'Mua no' : (options?.paymentLabel ?? 'Tien mat'),
+        amountPaid: invoiceAmountPaid,
+        changeAmount: invoiceChangeAmount,
+        debtAmount: invoiceDebtAmount,
+        roundingAdjustmentAmount: invoiceRoundingAdjustmentAmount,
         medicineTotal,
         serviceFee: serviceFeeValue,
-        grandTotal,
-        serviceFeeMode: activeOrder.serviceFeeMode,
+        grandTotal: invoiceGrandTotal,
+        serviceFeeMode: checkoutOrder.serviceFeeMode,
         returnPolicyText,
+        tierDiscountAmount: invoiceTierDiscountAmount > 0 ? invoiceTierDiscountAmount : undefined,
+        pointsDiscountAmount: invoicePointsDiscountAmount > 0 ? invoicePointsDiscountAmount : undefined,
+        pointsUsed: invoicePointsUsed > 0 ? invoicePointsUsed : undefined,
         lines: previewLines,
       }
       setInvoicePreview(preview)
       setInvoicePreviewOpen(true)
       printInvoicePreview(preview)
 
-      updateOrder(activeOrder.id, (order) => ({
+      updateOrder(checkoutOrder.id, (order) => ({
         ...order,
         customerMode: 'walk_in',
         customerId: null,
@@ -2182,7 +2981,9 @@ export function Pos() {
         customerName: '',
         customerPhone: '',
         customerTier: null,
+        customerTierDiscountPercent: null,
         customerPoints: null,
+        pointsToRedeem: '',
         note: '',
         serviceFee: '0',
         paymentMode: 'cash',
@@ -2191,7 +2992,7 @@ export function Pos() {
       }))
 
       setActionMessage(
-        `Thanh toan thanh cong ${invoice.code}. Thanh tien: ${formatCurrency(grandTotal)}. Tien thua: ${formatCurrency(paymentChange)}.`,
+        `Thanh toan thanh cong ${invoice.code}. Thanh tien: ${formatCurrency(invoiceGrandTotal)}.${invoiceDebtAmount > 0 ? ` Con no: ${formatCurrency(invoiceDebtAmount)}.` : ` Tien thua: ${formatCurrency(invoiceChangeAmount)}.`}`,
       )
       return true
     } catch (error) {
@@ -2201,7 +3002,26 @@ export function Pos() {
     } finally {
       setCheckingOut(false)
     }
-  }, [activeOrder, token?.access_token, user, storeInfo, returnPolicyText, buildCheckoutLines, grandTotal, cashRoundingEnabled, cashRoundingUnit, updateOrder, printInvoicePreview, sellByLot, findFirstPolicyViolation])
+  }, [
+    activeOrder,
+    token?.access_token,
+    user,
+    storeInfo,
+    returnPolicyText,
+    buildCheckoutLines,
+    expandCheckoutLines,
+    grandTotal,
+    baseRoundingAdjustment,
+    effectivePointsToRedeem,
+    updateOrder,
+    printInvoicePreview,
+    recalculateAutoFillOrder,
+    sellByLot,
+    findFirstPolicyViolation,
+    tierDiscountAmount,
+    pointsDiscountAmount,
+    validateOrderItemQuantityMessage,
+  ])
 
   const handleGenerateBankQr = useCallback(async () => {
     if (!activeOrder || !token?.access_token) return
@@ -2306,22 +3126,22 @@ export function Pos() {
         : 'Bán theo lô tắt: hệ thống tự gợi ý xuất kho FIFO.')
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       <header>
         <p className="text-xs uppercase tracking-[0.35em] text-ink-600">POS</p>
-        <h2 className="mt-2 text-3xl font-semibold text-ink-900">Bán hàng tại quầy</h2>
-        <p className="mt-2 text-sm text-ink-600">Quét QR số lô, xử lý nhiều khách cùng lúc và thanh toán tiền mặt.</p>
-        <p className="mt-1 text-xs text-ink-500">Chính sách xuất kho hiện tại: {policyDescription}</p>
+        <h2 className="mt-1 text-2xl font-semibold text-ink-900 sm:mt-2 sm:text-3xl">Bán hàng tại quầy</h2>
+        <p className="mt-1 hidden text-sm text-ink-600 sm:block">Quét QR số lô, xử lý nhiều khách cùng lúc và thanh toán tiền mặt.</p>
+        <p className="mt-1 text-xs text-ink-500 hidden sm:block">Chính sách xuất kho hiện tại: {policyDescription}</p>
       </header>
 
-      <section className="glass-card rounded-3xl p-4 sm:p-6">
-        <div className="flex flex-wrap items-center gap-2">
+      <section className="glass-card rounded-2xl p-3 sm:rounded-3xl sm:p-5">
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
           {orders.map((order, index) => (
             <div key={order.id} className="flex items-center gap-1">
               <button
                 type="button"
                 onClick={() => setActiveOrderId(order.id)}
-                className={`rounded-full px-4 py-2 text-sm font-semibold ${
+                className={`rounded-full px-3 py-1.5 text-xs font-semibold sm:px-4 sm:py-2 sm:text-sm ${
                   activeOrder?.id === order.id
                     ? 'bg-ink-900 text-white'
                     : 'border border-ink-900/10 bg-white text-ink-900'
@@ -2343,15 +3163,15 @@ export function Pos() {
           <button
             type="button"
             onClick={addOrder}
-            className="rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900"
+            className="rounded-full border border-ink-900/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink-900 sm:px-4 sm:py-2 sm:text-sm"
           >
-            + Thêm khách
+            + Thêm
           </button>
         </div>
 
         {activeOrder ? (
-          <div className="mt-4 space-y-3">
-            <div className="grid gap-3 md:grid-cols-[220px,1fr]">
+          <div className="mt-3 space-y-2 sm:mt-4 sm:space-y-3">
+            <div className="grid gap-2 sm:gap-3 md:grid-cols-[220px,1fr]">
               <label className="space-y-2 text-sm text-ink-700">
                 <span>Loại khách</span>
                 <select
@@ -2368,7 +3188,9 @@ export function Pos() {
                           customerCode: null,
                           customerName: '',
                           customerTier: null,
+                          customerTierDiscountPercent: null,
                           customerPoints: null,
+                          pointsToRedeem: '',
                         }
                       }
 
@@ -2380,11 +3202,13 @@ export function Pos() {
                         customerName: '',
                         customerPhone: '',
                         customerTier: null,
+                        customerTierDiscountPercent: null,
                         customerPoints: null,
+                        pointsToRedeem: '',
                       }
                     })
                   }}
-                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                 >
                   <option value="walk_in">Khách vãng lai</option>
                   <option value="member">Khách hàng thân thiết</option>
@@ -2399,7 +3223,7 @@ export function Pos() {
                     onChange={(event) =>
                       updateActiveOrder((order) => ({ ...order, customerName: event.target.value }))
                     }
-                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                     placeholder="Khách vãng lai"
                   />
                 </label>
@@ -2419,11 +3243,13 @@ export function Pos() {
                           customerCode: null,
                           customerName: '',
                           customerTier: null,
+                          customerTierDiscountPercent: null,
                           customerPoints: null,
+                          pointsToRedeem: '',
                         }))
                         setNewMemberPhone(phone)
                       }}
-                      className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                      className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                       placeholder="Nhap so dien thoai"
                     />
                   </label>
@@ -2476,7 +3302,7 @@ export function Pos() {
               <input
                 value={activeOrder.note}
                 onChange={(event) => updateActiveOrder((order) => ({ ...order, note: event.target.value }))}
-                className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                 placeholder="Ghi chú thêm"
               />
             </label>
@@ -2484,10 +3310,10 @@ export function Pos() {
         ) : null}
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1.7fr,1fr]">
-        <article className="glass-card rounded-3xl p-4 sm:p-6">
-          <div className="grid gap-3 lg:grid-cols-[1.2fr,auto]">
-            <div className="flex flex-wrap items-center gap-2">
+      <section className="grid gap-3 sm:gap-4 xl:grid-cols-[1.7fr,1fr]">
+        <article className="glass-card rounded-2xl p-3 sm:rounded-3xl sm:p-5">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:flex-nowrap">
               <input
                 value={lotScanInput}
                 onChange={(event) => setLotScanInput(event.target.value)}
@@ -2503,7 +3329,7 @@ export function Pos() {
                     setScanOpen(true)
                   }
                 }}
-                className="min-w-[240px] flex-1 rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+                className="min-w-0 flex-1 rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-sm sm:min-w-[180px] sm:rounded-2xl sm:px-4 sm:py-2"
                 placeholder={
                   sellByLot
                     ? 'Quét QR số lô hoặc nhập mã lô'
@@ -2522,7 +3348,7 @@ export function Pos() {
                   setScanOpen(true)
                 }}
                 disabled={addingByQr || !activeOrder}
-                className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
+                className="shrink-0 rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink-900 disabled:opacity-60 sm:rounded-2xl sm:px-4 sm:py-2 sm:text-sm"
               >
                 {addingByQr
                   ? 'Đang xử lý...'
@@ -2537,43 +3363,47 @@ export function Pos() {
               onClick={() => {
                 void loadPosData()
               }}
-              className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900"
+              className="shrink-0 rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink-900 sm:rounded-2xl sm:px-4 sm:py-2 sm:text-sm"
             >
-              Tải lại dữ liệu
+              <span className="sm:hidden">Tải lại</span>
+              <span className="hidden sm:inline">Tải lại dữ liệu</span>
             </button>
           </div>
 
-          <div className="mt-3 grid gap-3 md:grid-cols-[1.6fr,1fr,120px,160px,auto]">
-            <div className="space-y-1">
+          <div className="mt-2 grid grid-cols-2 gap-2 sm:mt-3 sm:gap-3 md:grid-cols-2 2xl:grid-cols-[minmax(0,1.7fr),minmax(0,1fr),120px,160px,auto]">
+            <div className="col-span-2 space-y-1 min-w-0 2xl:col-span-1">
               <input
                 value={drugSearch}
                 onChange={(event) => {
                   const nextValue = event.target.value
                   setDrugSearch(nextValue)
 
-                  const pickedDrug = resolveDrugFromSearch(nextValue)
+                  const pickedDrug = findDrugByExactSearch(nextValue)
                   if (pickedDrug) setSelectedDrugId(pickedDrug.id)
                 }}
                 onBlur={() => {
-                  const pickedDrug = resolveDrugFromSearch(drugSearch)
+                  const pickedDrug = findDrugByExactSearch(drugSearch) ?? resolveDrugFromSearch(drugSearch)
                   if (!pickedDrug) return
 
                   setSelectedDrugId(pickedDrug.id)
-                  setDrugSearch(`${pickedDrug.code} - ${pickedDrug.name}`)
+                  setDrugSearch(buildDrugSearchLabel(pickedDrug))
                 }}
                 onKeyDown={(event) => {
                   if (event.key !== 'Enter') return
                   event.preventDefault()
 
                   const pickedDrug =
-                    resolveDrugFromSearch(drugSearch) ?? filteredDrugs[0] ?? null
+                    findDrugByExactSearch(drugSearch) ??
+                    resolveDrugFromSearch(drugSearch) ??
+                    filteredDrugs[0] ??
+                    null
                   if (!pickedDrug) return
 
                   setSelectedDrugId(pickedDrug.id)
-                  setDrugSearch(`${pickedDrug.code} - ${pickedDrug.name}`)
+                  setDrugSearch(buildDrugSearchLabel(pickedDrug))
                 }}
                 list="pos-drug-suggestions"
-                className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+                className="w-full min-w-0 rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-sm sm:rounded-2xl sm:px-4 sm:py-2"
                 placeholder="Tìm và chọn thuốc (mã/tên)"
               />
               <datalist id="pos-drug-suggestions">
@@ -2586,7 +3416,7 @@ export function Pos() {
             <select
               value={selectedUnitId}
               onChange={(event) => setSelectedUnitId(event.target.value)}
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+              className="w-full min-w-0 rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-sm sm:rounded-2xl sm:px-4 sm:py-2"
               disabled={!selectedDrug}
             >
               {(selectedDrug?.units ?? []).map((unit) => (
@@ -2599,14 +3429,14 @@ export function Pos() {
             <input
               value={selectedQuantity}
               onChange={(event) => setSelectedQuantity(event.target.value)}
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+              className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-sm sm:rounded-2xl sm:px-4 sm:py-2"
               placeholder="SL"
             />
 
             <input
               value={selectedUnit ? formatCurrency(selectedUnit.price) : ''}
               readOnly
-              className="w-full rounded-2xl border border-ink-900/10 bg-white/70 px-4 py-2 text-sm text-ink-500"
+              className="hidden w-full rounded-xl border border-ink-900/10 bg-white/70 px-3 py-1.5 text-sm text-ink-500 sm:block sm:rounded-2xl sm:px-4 sm:py-2"
               placeholder="Giá đơn vị"
               title="Giá đơn vị tham khảo"
             />
@@ -2616,17 +3446,68 @@ export function Pos() {
               onClick={() => {
                 void handleAddByDrug()
               }}
-              disabled={addingByDrug || !activeOrder || !selectedDrug || !selectedUnit}
-              className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
+              disabled={addingByDrug || !activeOrder || !selectedDrug || !selectedUnit || selectedDrugOutOfStock}
+              className="rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink-900 disabled:opacity-60 col-span-2 sm:rounded-2xl sm:px-4 sm:py-2 sm:text-sm md:col-span-2 2xl:col-span-1"
             >
               {addingByDrug ? 'Đang thêm...' : 'Thêm theo gợi ý'}
             </button>
           </div>
 
+          {!sellByLot && templates.length > 0 && (
+            <div className="relative mt-2" ref={templateDropdownRef}>
+              <button
+                type="button"
+                onClick={() => setTemplateDropdownOpen((prev) => !prev)}
+                disabled={applyingTemplate || !activeOrder}
+                className="rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink-900 disabled:opacity-60 sm:rounded-2xl sm:px-4 sm:py-2 sm:text-sm"
+              >
+                {applyingTemplate ? 'Đang áp dụng...' : 'Đơn thuốc mẫu ▾'}
+              </button>
+              {templateDropdownOpen && (
+                <ul className="absolute left-0 top-full z-30 mt-1 min-w-[220px] rounded-2xl border border-ink-900/10 bg-white shadow-lift overflow-hidden">
+                  {templates.map((t) => (
+                    <li key={t.id}>
+                      <button
+                        type="button"
+                        className="w-full px-4 py-2.5 text-left hover:bg-fog-50"
+                        onClick={() => void applyTemplate(t)}
+                      >
+                        <span className="block text-sm font-semibold text-ink-900">{t.name}</span>
+                        <span className="block text-xs text-ink-600">{t.items.length} loại thuốc</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
           {loading ? <p className="mt-3 text-sm text-ink-600">Đang tải danh mục thuốc...</p> : null}
           {loadError ? <p className="mt-3 text-sm text-coral-500">{loadError}</p> : null}
+          {!loading && !loadError && !availableDrugs.length ? (
+            <p className="mt-3 text-sm text-amber-700">
+              Chưa có thuốc còn tồn kho để bán. Vui lòng nhập hàng trước khi tạo đơn.
+            </p>
+          ) : null}
+          {!loading && !loadError && selectedDrug ? (
+            <div className="mt-2 space-y-1">
+              <p className="text-xs text-ink-600">
+                Tồn khả dụng: {Math.max(0, selectedDrug.totalQty).toLocaleString('vi-VN')} đơn vị gốc.
+              </p>
+              {selectedDrug.instructions ? (
+                <p className="text-xs text-ink-600">
+                  <span className="font-semibold text-ink-800">HDSD:</span> {selectedDrug.instructions}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          {!loading && !loadError && selectedDrugOutOfStock ? (
+            <p className="mt-1 text-xs text-coral-500">
+              Thuốc này hiện hết tồn kho, không thể thêm vào đơn.
+            </p>
+          ) : null}
 
-          <div className="mt-4 space-y-3">
+          <div className="mt-3 space-y-2 sm:space-y-3">
             {!activeOrder?.items.length ? (
               <p className="rounded-2xl border border-dashed border-ink-900/20 bg-white/70 px-4 py-6 text-sm text-ink-600">
                 Chưa có mặt hàng trong đơn này.
@@ -2635,21 +3516,38 @@ export function Pos() {
 
             {activeOrder?.items.map((item) => {
               const drug = drugsById.get(item.drugId)
-              const availableInUnit = Math.floor(item.batchQtyRemaining / Math.max(item.conversion, 1))
+              const availableInUnit = Math.floor(
+                getItemAvailableBaseQty(item) / Math.max(item.conversion, 1),
+              )
               const unitRefPrice =
                 drug?.units.find((unit) => unit.id === item.unitId)?.price ?? item.unitPrice
               const quantity = parsePositiveInt(item.quantity, 0)
               const lineTotal = quantity * item.unitPrice
-              const quantityInvalid = quantity <= 0 || quantity > availableInUnit
+              const quantityValidationMessage = validateOrderItemQuantityMessage(item, quantity)
+              const quantityInvalid = Boolean(quantityValidationMessage)
+              const autoFillDescription = buildAutoFillPolicyLabel(fefoEnabled, fefoThresholdDays)
+              const allocationSummary = item.plannedAllocations
+                .map((allocation) => `${allocation.batchCode} (${allocation.baseQuantity.toLocaleString('vi-VN')})`)
+                .join(' · ')
 
               return (
-                <div key={item.id} className="rounded-2xl border border-ink-900/10 bg-white p-4">
+                <div key={item.id} className="rounded-xl border border-ink-900/10 bg-white p-2.5 sm:rounded-2xl sm:p-4">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
                       <p className="font-semibold text-ink-900">{item.drugName}</p>
                       <p className="text-xs text-ink-600">
-                        {item.drugCode} · Lô {item.batchCode} · HSD {item.expDate || '-'}
+                        {isAutoFillAllocationMode(item.allocationMode)
+                          ? `${item.drugCode} · ${autoFillDescription}`
+                          : `${item.drugCode} · Lô ${item.batchCode} · HSD ${item.expDate || '-'}`}
                       </p>
+                      {isAutoFillAllocationMode(item.allocationMode) && allocationSummary ? (
+                        <p className="mt-1 text-xs text-ink-500">Dự kiến xuất: {allocationSummary}</p>
+                      ) : null}
+                      {drug?.instructions ? (
+                        <p className="mt-1 text-xs text-ink-600">
+                          <span className="font-semibold text-ink-800">HDSD:</span> {drug.instructions}
+                        </p>
+                      ) : null}
                     </div>
                     <button
                       type="button"
@@ -2660,13 +3558,13 @@ export function Pos() {
                     </button>
                   </div>
 
-                  <div className="mt-3 grid gap-3 md:grid-cols-5">
+                  <div className="mt-2 grid grid-cols-2 gap-2 sm:mt-3 sm:gap-3 md:grid-cols-5">
                     <label className="space-y-1 text-xs text-ink-600">
-                      Đơn vị bán
+                      Đơn vị
                       <select
                         value={item.unitId}
                         onChange={(event) => handleItemUnitChange(item.id, event.target.value)}
-                        className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
+                        className="w-full rounded-lg border border-ink-900/10 bg-white px-2 py-1.5 text-sm text-ink-900 sm:rounded-xl sm:px-3 sm:py-2"
                       >
                         {(drug?.units ?? []).map((unit) => (
                           <option key={unit.id} value={unit.id}>
@@ -2681,12 +3579,12 @@ export function Pos() {
                       <input
                         value={item.quantity}
                         onChange={(event) => handleItemQuantityChange(item.id, event.target.value)}
-                        className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
+                        className="w-full rounded-lg border border-ink-900/10 bg-white px-2 py-1.5 text-sm text-ink-900 sm:rounded-xl sm:px-3 sm:py-2"
                       />
                     </label>
 
-                    <label className="space-y-1 text-xs text-ink-600">
-                      Giá đơn vị tham khảo
+                    <label className="hidden space-y-1 text-xs text-ink-600 sm:block">
+                      Giá tham khảo
                       <input
                         value={formatCurrency(unitRefPrice)}
                         readOnly
@@ -2695,34 +3593,38 @@ export function Pos() {
                     </label>
 
                     <label className="space-y-1 text-xs text-ink-600">
-                      Giá bán ({item.unitName})
+                      Giá bán
                       <input
                         value={String(item.unitPrice)}
                         onChange={(event) => {
                           const nextPrice = parseNonNegativeNumber(event.target.value)
                           updateItemField(item.id, (current) => ({ ...current, unitPrice: nextPrice }))
                         }}
-                        className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
+                        className="w-full rounded-lg border border-ink-900/10 bg-white px-2 py-1.5 text-sm text-ink-900 sm:rounded-xl sm:px-3 sm:py-2"
                       />
                     </label>
 
                     <div className="space-y-1 text-xs text-ink-600">
                       <p>Tạm tính</p>
-                      <p className="rounded-xl border border-ink-900/10 bg-fog-50 px-3 py-2 text-sm font-semibold text-ink-900">
+                      <p className="rounded-lg border border-ink-900/10 bg-fog-50 px-2 py-1.5 text-sm font-semibold text-ink-900 sm:rounded-xl sm:px-3 sm:py-2">
                         {formatCurrency(lineTotal)}
                       </p>
                     </div>
                   </div>
 
-                  <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-ink-600">
-                    <span>Tồn khả dụng: {availableInUnit.toLocaleString('vi-VN')} {item.unitName}</span>
-                    <span>({item.batchQtyRemaining.toLocaleString('vi-VN')} đơn vị gốc)</span>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-ink-600 sm:mt-2 sm:gap-3">
+                    <span>
+                      {isAutoFillAllocationMode(item.allocationMode) ? 'Tồn khả dụng' : 'Tồn'}:{' '}
+                      {availableInUnit.toLocaleString('vi-VN')} {item.unitName}
+                    </span>
+                    <span>({getItemAvailableBaseQty(item).toLocaleString('vi-VN')} đơn vị gốc)</span>
                   </div>
 
                   {quantityInvalid ? (
-                    <p className="mt-2 text-xs text-coral-500">
-                      Số lượng không hợp lệ hoặc vượt tồn kho lô hiện tại.
-                    </p>
+                    <p className="mt-2 text-xs text-coral-500">{quantityValidationMessage}</p>
+                  ) : null}
+                  {!quantityInvalid && isAutoFillAllocationMode(item.allocationMode) && item.allocationWarning ? (
+                    <p className="mt-2 text-xs text-amber-700">{item.allocationWarning}</p>
                   ) : null}
                   {sellByLot && item.lotPolicyWarning ? (
                     <p className="mt-2 text-xs text-amber-700">{item.lotPolicyWarning}</p>
@@ -2733,12 +3635,12 @@ export function Pos() {
           </div>
         </article>
 
-        <aside className="glass-card rounded-3xl p-4 sm:p-6">
+        <aside className="glass-card rounded-2xl p-3 sm:rounded-3xl sm:p-5">
           <p className="text-xs uppercase tracking-[0.25em] text-ink-600">Thanh toán</p>
-          <h3 className="mt-2 text-2xl font-semibold text-ink-900">Đơn đang chọn</h3>
+          <h3 className="mt-1 text-xl font-semibold text-ink-900 sm:mt-2 sm:text-2xl">Đơn đang chọn</h3>
 
           {activeOrder ? (
-            <div className="mt-4 space-y-4">
+            <div className="mt-3 space-y-2 sm:mt-4 sm:space-y-3">
               <label className="space-y-2 text-sm text-ink-700">
                 <span>Phí dịch vụ</span>
                 <input
@@ -2746,10 +3648,39 @@ export function Pos() {
                   onChange={(event) =>
                     updateActiveOrder((order) => ({ ...order, serviceFee: event.target.value }))
                   }
-                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                   placeholder="0"
                 />
               </label>
+
+              {activeOrder.customerMode === 'member' && activeOrder.customerPoints !== null && activeOrder.customerPoints > 0 ? (
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Sử dụng điểm (Tối đa: {activeOrder.customerPoints.toLocaleString('vi-VN')})</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max={maxRedeemablePoints}
+                    value={activeOrder.pointsToRedeem}
+                    onChange={(event) => {
+                      let nextVal = event.target.value
+                      const parsed = parseInt(nextVal, 10)
+                      if (!isNaN(parsed)) {
+                        if (parsed < 0) nextVal = '0'
+                        if (parsed > maxRedeemablePoints) {
+                          nextVal = String(maxRedeemablePoints)
+                        }
+                      }
+                      updateActiveOrder((order) => ({ ...order, pointsToRedeem: nextVal }))
+                    }}
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
+                    placeholder="0"
+                  />
+                  <p className="text-xs text-ink-500">
+                    1 diem = {customerPointValue.toLocaleString('vi-VN')}d. Co the ap toi da {maxRedeemablePoints.toLocaleString('vi-VN')} diem cho don nay.
+                  </p>
+                  <p className="text-xs text-ink-500">1 điểm = {customerPointValue.toLocaleString('vi-VN')}đ</p>
+                </label>
+              ) : null}
 
               <label className="space-y-2 text-sm text-ink-700">
                 <span>Cách tính phí dịch vụ</span>
@@ -2761,14 +3692,14 @@ export function Pos() {
                       serviceFeeMode: event.target.value as ServiceFeeMode,
                     }))
                   }
-                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                 >
                   <option value="split">Chia đều vào các dòng thuốc</option>
                   <option value="separate">Mục riêng trong hóa đơn</option>
                 </select>
               </label>
 
-              <div className="rounded-2xl border border-ink-900/10 bg-white p-4 text-sm text-ink-700">
+              <div className="rounded-xl border border-ink-900/10 bg-white p-3 text-sm text-ink-700 sm:rounded-2xl sm:p-4">
                 <div className="flex items-center justify-between py-1">
                   <span>Tam tinh thuoc</span>
                   <span className="font-semibold text-ink-900">{formatCurrency(subtotal)}</span>
@@ -2777,9 +3708,29 @@ export function Pos() {
                   <span>Phi dich vu</span>
                   <span className="font-semibold text-ink-900">{formatCurrency(serviceFee)}</span>
                 </div>
+                {tierDiscountAmount > 0 ? (
+                  <div className="flex items-center justify-between py-1 text-emerald-600">
+                    <span>
+                      Chiết khấu hạng thẻ {activeOrder.customerTier ? `(${activeOrder.customerTier})` : ''}
+                    </span>
+                    <span className="font-semibold">-{formatCurrency(tierDiscountAmount)}</span>
+                  </div>
+                ) : null}
+                {pointsDiscountAmount > 0 ? (
+                  <div className="flex items-center justify-between py-1 text-emerald-600">
+                    <span>Trừ điểm ({pointsToRedeem} điểm)</span>
+                    <span className="font-semibold">-{formatCurrency(pointsDiscountAmount)}</span>
+                  </div>
+                ) : null}
+                {displayRoundingAdjustmentAmount !== 0 ? (
+                  <div className="flex items-center justify-between py-1">
+                    <span>Điều chỉnh làm tròn</span>
+                    <span className="font-semibold text-ink-900">{formatCurrency(displayRoundingAdjustmentAmount)}</span>
+                  </div>
+                ) : null}
                 <div className="mt-2 flex items-center justify-between border-t border-ink-900/10 pt-2">
                   <span className="font-semibold">Thanh tien</span>
-                  <span className="text-lg font-semibold text-ink-900">{formatCurrency(grandTotal)}</span>
+                  <span className="text-lg font-semibold text-ink-900">{formatCurrency(displayGrandTotal)}</span>
                 </div>
               </div>
 
@@ -2793,7 +3744,7 @@ export function Pos() {
                       paymentMode: event.target.value as PaymentMode,
                     }))
                   }
-                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                 >
                   <option value="cash">Tiền mặt</option>
                   <option value="debt">Mua nợ</option>
@@ -2807,12 +3758,12 @@ export function Pos() {
                   onChange={(event) =>
                     updateActiveOrder((order) => ({ ...order, cashReceived: event.target.value }))
                   }
-                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
                   placeholder="0"
                 />
               </label>
 
-              <div className="rounded-2xl border border-ink-900/10 bg-white p-4">
+              <div className="rounded-xl border border-ink-900/10 bg-white p-3 sm:rounded-2xl sm:p-4">
                 <p className="text-sm text-ink-600">
                   {activeOrder.paymentMode === 'debt' ? 'Con no' : 'Tien tra lai'}
                 </p>
@@ -2834,9 +3785,13 @@ export function Pos() {
                   void handleCheckout()
                 }}
                 disabled={checkingOut || !activeOrder.items.length || (activeOrder.paymentMode === 'cash' && changeAmount < 0)}
-                className="w-full rounded-2xl bg-ink-900 px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
+                className="w-full rounded-xl bg-ink-900 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60 sm:rounded-2xl sm:py-3"
               >
-                {checkingOut ? 'Đang thanh toán...' : 'Thanh toán tiền mặt'}
+                {checkingOut
+                  ? 'Đang thanh toán...'
+                  : activeOrder.paymentMode === 'debt'
+                    ? 'Chốt mua nợ'
+                    : 'Thanh toán tiền mặt'}
               </button>
               <button
                 type="button"
@@ -2849,7 +3804,7 @@ export function Pos() {
                   !activeOrder.items.length ||
                   activeOrder.paymentMode === 'debt'
                 }
-                className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm font-semibold text-ink-900 disabled:opacity-60"
+                className="w-full rounded-xl border border-ink-900/10 bg-white px-4 py-2.5 text-sm font-semibold text-ink-900 disabled:opacity-60 sm:rounded-2xl sm:py-3"
               >
                 {generatingBankQr ? 'Đang tạo QR ngân hàng...' : 'Thanh toán QR ngân hàng'}
               </button>
@@ -2998,6 +3953,7 @@ export function Pos() {
                       <tr key={`${line.name}-${index}`}>
                         <td className="px-4 py-3">
                           <p className="font-semibold text-ink-900">{line.name}</p>
+                          {line.lotNumber ? <p className="text-xs text-ink-500">Lô: {line.lotNumber}</p> : null}
                           {line.isService ? <p className="text-xs text-ink-500">Mục dịch vụ riêng</p> : null}
                         </td>
                         <td className="px-4 py-3 text-ink-700">{line.unit}</td>
@@ -3015,6 +3971,24 @@ export function Pos() {
                   <div className="flex items-center justify-between">
                     <span>Phí dịch vụ</span>
                     <span className="font-semibold text-ink-900">{formatCurrency(invoicePreview.serviceFee)}</span>
+                  </div>
+                ) : null}
+                {invoicePreview.tierDiscountAmount ? (
+                  <div className="flex items-center justify-between text-emerald-600">
+                    <span>Chiết khấu hạng thẻ</span>
+                    <span className="font-semibold">-{formatCurrency(invoicePreview.tierDiscountAmount)}</span>
+                  </div>
+                ) : null}
+                {invoicePreview.pointsDiscountAmount ? (
+                  <div className="flex items-center justify-between text-emerald-600">
+                    <span>Điểm thưởng (-{invoicePreview.pointsUsed} điểm)</span>
+                    <span className="font-semibold">-{formatCurrency(invoicePreview.pointsDiscountAmount)}</span>
+                  </div>
+                ) : null}
+                {invoicePreview.roundingAdjustmentAmount !== 0 ? (
+                  <div className="flex items-center justify-between">
+                    <span>Điều chỉnh làm tròn</span>
+                    <span className="font-semibold text-ink-900">{formatCurrency(invoicePreview.roundingAdjustmentAmount)}</span>
                   </div>
                 ) : null}
                 <div className="flex items-center justify-between border-t border-ink-900/10 pt-2">

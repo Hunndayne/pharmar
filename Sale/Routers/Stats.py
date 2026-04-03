@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
@@ -8,7 +8,7 @@ from sqlalchemy import and_, func, select
 
 from Source.db.models import Invoice, Return, Shift
 from Source.dependencies import ROLE_MANAGER, ROLE_OWNER, DbSession, TokenUser, get_current_user, require_roles
-from Source.sale import get_shift_or_404, quantize_money
+from Source.sale import build_utc_range_for_local_dates, get_shift_or_404, get_store_timezone, quantize_money
 from Source.schemas.sale import CashierStatsItemResponse, CashierStatsResponse, StatsTodayResponse
 
 
@@ -54,9 +54,14 @@ def _collect_cashier_stats(invoices: list[Invoice]) -> list[dict]:
 
 @router.get("/stats/today", response_model=StatsTodayResponse)
 async def stats_today(_: AnyUser, db: DbSession) -> StatsTodayResponse:
-    today = date.today()
+    store_timezone = await get_store_timezone()
+    today = datetime.now(store_timezone).date()
+    range_start_at, range_end_at = build_utc_range_for_local_dates(today, today, store_timezone)
     rows = await db.scalars(
-        select(Invoice).where(func.date(Invoice.created_at) == today)
+        select(Invoice).where(
+            Invoice.created_at >= range_start_at,
+            Invoice.created_at < range_end_at,
+        )
     )
     invoices = list(rows.all())
 
@@ -66,7 +71,8 @@ async def stats_today(_: AnyUser, db: DbSession) -> StatsTodayResponse:
     total_returns_raw = await db.scalar(
         select(func.coalesce(func.sum(Return.total_return_amount), 0)).where(
             and_(
-                func.date(Return.created_at) == today,
+                Return.created_at >= range_start_at,
+                Return.created_at < range_end_at,
                 Return.status == "completed",
             )
         )
@@ -108,11 +114,12 @@ async def stats_by_cashier(
     date_from: date,
     date_to: date,
 ) -> CashierStatsResponse:
+    range_start_at, range_end_at = build_utc_range_for_local_dates(date_from, date_to, await get_store_timezone())
     rows = await db.scalars(
         select(Invoice).where(
             and_(
-                func.date(Invoice.created_at) >= date_from,
-                func.date(Invoice.created_at) <= date_to,
+                Invoice.created_at >= range_start_at,
+                Invoice.created_at < range_end_at,
             )
         )
     )
@@ -144,12 +151,13 @@ async def stats_by_single_cashier(
     date_from: date,
     date_to: date,
 ):
+    range_start_at, range_end_at = build_utc_range_for_local_dates(date_from, date_to, await get_store_timezone())
     rows = await db.scalars(
         select(Invoice).where(
             and_(
                 Invoice.created_by == user_id,
-                func.date(Invoice.created_at) >= date_from,
-                func.date(Invoice.created_at) <= date_to,
+                Invoice.created_at >= range_start_at,
+                Invoice.created_at < range_end_at,
             )
         )
     )
@@ -180,11 +188,12 @@ async def stats_commission(
     date_from: date,
     date_to: date,
 ):
+    range_start_at, range_end_at = build_utc_range_for_local_dates(date_from, date_to, await get_store_timezone())
     rows = await db.scalars(
         select(Invoice).where(
             and_(
-                func.date(Invoice.created_at) >= date_from,
-                func.date(Invoice.created_at) <= date_to,
+                Invoice.created_at >= range_start_at,
+                Invoice.created_at < range_end_at,
                 Invoice.status.in_(["completed", "returned"]),
             )
         )

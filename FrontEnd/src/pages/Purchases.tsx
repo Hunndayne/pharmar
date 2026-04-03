@@ -13,7 +13,7 @@ import {
   type InventoryReceiptLineUnitPrice,
 } from '../api/inventoryService'
 import { catalogApi } from '../api/catalogService'
-import { ApiError } from '../api/usersService'
+import { ApiError, type ApiValidationDetailItem } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
 import { downloadCsv } from '../utils/csv'
@@ -59,7 +59,9 @@ type LineRetailPrice = {
 
 type LineItemForm = {
   id: string
+  batchId: string
   batchCode: string
+  originalBatchCode: string
   drugId: string
   lotNumber: string
   quantity: string
@@ -245,7 +247,12 @@ const parseNumber = (value: string) => {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-const formatCurrency = (value: number) => `${value.toLocaleString('vi-VN')}đ`
+const formatCurrency = (value: number) => `${Math.round(Number(value) || 0).toLocaleString('vi-VN')}đ`
+const DATE_ORDER_RULE_TEXT = 'exp_date must be later than mfg_date'
+const DATE_ORDER_MFG_ERROR = 'Kiểm tra lại NSX'
+const DATE_ORDER_EXP_ERROR = 'HSD phải lớn hơn NSX'
+const INVALID_MFG_DATE_ERROR = 'NSX không hợp lệ'
+const INVALID_EXP_DATE_ERROR = 'HSD không hợp lệ'
 const paymentMethods: PaymentMethod[] = ['Ngân hàng', 'Ví điện tử Momo/ZaloPay', 'Thanh toán thẻ']
 const shippingCarriers: ShippingCarrier[] = ['GHN', 'J&T']
 const STORE_NAME = 'Nhà thuốc Thanh Huy'
@@ -254,6 +261,52 @@ const LABEL_HEIGHT_MM = 25.4
 
 const sanitizeDigits = (value: string) => value.replace(/\D+/g, '')
 const normalizeBatchCode = (value: string) => value.trim().toUpperCase()
+const isLineDateOrderInvalid = (mfgDate: string, expDate: string) =>
+  Boolean(mfgDate && expDate && expDate <= mfgDate)
+const applyLineDateOrderErrors = (nextErrors: Record<string, string>, index: number) => {
+  nextErrors[`line-mfg-${index}`] = DATE_ORDER_MFG_ERROR
+  nextErrors[`line-exp-${index}`] = DATE_ORDER_EXP_ERROR
+}
+const normalizeLineValidationMessage = (
+  field: 'mfg_date' | 'exp_date',
+  message: string | undefined,
+) => {
+  const fallback = field === 'mfg_date' ? INVALID_MFG_DATE_ERROR : INVALID_EXP_DATE_ERROR
+  const trimmed = String(message ?? '').trim()
+  if (!trimmed) return fallback
+  if (trimmed.includes(DATE_ORDER_RULE_TEXT)) {
+    return field === 'mfg_date' ? DATE_ORDER_MFG_ERROR : DATE_ORDER_EXP_ERROR
+  }
+  return trimmed.replace(/^Value error,\s*/i, '')
+}
+const buildLineValidationErrors = (detail: ApiValidationDetailItem[] | undefined) => {
+  const nextErrors: Record<string, string> = {}
+
+  detail?.forEach((item) => {
+    const loc = Array.isArray(item?.loc) ? item.loc : []
+    if (loc[0] !== 'body' || loc[1] !== 'lines' || typeof loc[2] !== 'number') return
+
+    const lineIndex = loc[2]
+    const field = typeof loc[3] === 'string' ? loc[3] : undefined
+    const message = String(item?.msg ?? '').trim()
+
+    if (message.includes(DATE_ORDER_RULE_TEXT)) {
+      applyLineDateOrderErrors(nextErrors, lineIndex)
+      return
+    }
+
+    if (field === 'mfg_date') {
+      nextErrors[`line-mfg-${lineIndex}`] = normalizeLineValidationMessage(field, message)
+      return
+    }
+
+    if (field === 'exp_date') {
+      nextErrors[`line-exp-${lineIndex}`] = normalizeLineValidationMessage(field, message)
+    }
+  })
+
+  return nextErrors
+}
 const escapeHtml = (value: string) =>
   value
     .replace(/&/g, '&amp;')
@@ -295,7 +348,9 @@ const createLine = (
   const runningIndex = Math.max(1, index)
   return {
     id: `line-${Date.now()}-${runningIndex}`,
+    batchId: '',
     batchCode: '',
+    originalBatchCode: '',
     drugId: '',
     lotNumber: '',
     quantity: '',
@@ -382,6 +437,87 @@ const formatRetailPrices = (line: LineItemForm) =>
   line.unitRetailPrices
     .map((item) => `${item.unitName}: ${formatCurrency(parseNumber(item.price))}`)
     .join(' · ')
+
+const ReceiptMetaItem = ({
+  label,
+  value,
+}: {
+  label: string
+  value: string
+}) => (
+  <div className="rounded-2xl border border-ink-900/10 bg-fog-50/80 px-3 py-3">
+    <p className="text-[11px] uppercase tracking-[0.22em] text-ink-500">{label}</p>
+    <p className="mt-1 text-sm font-medium text-ink-900 break-words">{value || '-'}</p>
+  </div>
+)
+
+const ReceiptStatCard = ({
+  label,
+  value,
+  helper,
+  tone = 'default',
+}: {
+  label: string
+  value: string
+  helper?: string
+  tone?: 'default' | 'primary'
+}) => (
+  <div
+    className={`rounded-2xl border px-4 py-4 ${
+      tone === 'primary'
+        ? 'border-brand-500/20 bg-brand-500/10'
+        : 'border-ink-900/10 bg-white'
+    }`}
+  >
+    <p className="text-[11px] uppercase tracking-[0.22em] text-ink-500">{label}</p>
+    <p className="mt-2 text-lg font-semibold text-ink-900">{value}</p>
+    {helper ? <p className="mt-1 text-xs text-ink-600">{helper}</p> : null}
+  </div>
+)
+
+const ReceiptLineCard = ({
+  line,
+  drug,
+  index,
+}: {
+  line: LineItemForm
+  drug: Drug | undefined
+  index: number
+}) => {
+  const pricing = calcLinePricing(line)
+
+  return (
+    <div className="rounded-2xl border border-ink-900/10 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-ink-500">Dòng {index}</p>
+          <p className="mt-1 text-sm font-semibold text-ink-900">{drug?.name ?? '-'}</p>
+          <p className="mt-1 text-xs text-ink-600">
+            {[drug?.code, drug?.maker].filter(Boolean).join(' · ') || 'Chưa có thông tin thuốc'}
+          </p>
+        </div>
+        <div className="min-w-[128px] rounded-2xl bg-fog-50 px-3 py-2 text-right">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-ink-500">Giá trị dòng</p>
+          <p className="mt-1 text-base font-semibold text-ink-900">{formatCurrency(calcLineTotal(line))}</p>
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        <ReceiptMetaItem label="Số lô" value={line.lotNumber || '-'} />
+        <ReceiptMetaItem label="QR lô" value={line.batchCode || '-'} />
+        <ReceiptMetaItem label="HSD" value={formatDate(line.expDate)} />
+        <ReceiptMetaItem label="SL sau KM" value={pricing.quantityAfterPromo.toLocaleString('vi-VN')} />
+        <ReceiptMetaItem label="Giá sau KM" value={formatCurrency(pricing.unitPriceAfterPromo)} />
+        <ReceiptMetaItem label="Khuyến mãi" value={describePromo(line)} />
+      </div>
+
+      <div className="mt-3 rounded-2xl bg-fog-50/80 px-3 py-3">
+        <p className="text-[11px] uppercase tracking-[0.22em] text-ink-500">Giá bán theo đơn vị</p>
+        <p className="mt-1 text-xs leading-6 text-ink-700 break-words">{formatRetailPrices(line) || '-'}</p>
+      </div>
+    </div>
+  )
+}
 
 const getLotLabelPrice = (line: LineItemForm) => {
   const highestUnit = line.unitRetailPrices
@@ -581,7 +717,9 @@ const mapInventoryReceiptLineToFormLine = (
 
   return {
     id: line.id,
+    batchId: line.batch_id,
     batchCode: line.batch_code,
+    originalBatchCode: line.batch_code,
     drugId: resolvedDrugId,
     lotNumber: line.lot_number,
     quantity: String(line.quantity),
@@ -638,7 +776,7 @@ const buildReceiptExtraFromOrder = (order: OrderFormState): ReceiptExtra => ({
   paymentStatus: order.paymentStatus,
   paymentMethod: order.paymentMethod,
   lineExtras: order.lines.reduce<Record<string, ReceiptLineExtra>>((acc, line) => {
-    const key = line.batchCode.trim()
+    const key = line.batchCode.trim() || line.originalBatchCode.trim()
     if (!key) return acc
     acc[key] = {
       promoType: line.promoType,
@@ -668,36 +806,39 @@ const buildInventoryPayloadFromForm = (
   note: order.note.trim() || null,
   lines: order.lines.map((line) => {
     const selectedDrug = drugMap.get(line.drugId)
+    const resolvedBatchCode = options?.includeBatchCode
+      ? normalizeBatchCode(line.batchCode) || normalizeBatchCode(line.originalBatchCode) || undefined
+      : undefined
     return {
       drug_id: line.drugId || undefined,
       drug_code: selectedDrug?.code || undefined,
-    batch_code: options?.includeBatchCode ? normalizeBatchCode(line.batchCode) || undefined : undefined,
-    lot_number: line.lotNumber.trim(),
-    quantity: Math.max(1, Math.floor(parseNumber(line.quantity))),
-    mfg_date: line.mfgDate,
-    exp_date: line.expDate,
-    import_price: Math.max(0, parseNumber(line.price)),
-    barcode: line.barcode.trim() || null,
-    promo_type: line.promoType,
-    promo_buy_qty:
-      line.promoType === 'buy_x_get_y'
-        ? Math.max(1, Math.floor(parseNumber(line.promoBuyQty)))
-        : null,
-    promo_get_qty:
-      line.promoType === 'buy_x_get_y'
-        ? Math.max(1, Math.floor(parseNumber(line.promoGetQty)))
-        : null,
-    promo_discount_percent:
-      line.promoType === 'discount_percent'
-        ? Math.max(0, parseNumber(line.promoDiscountPercent))
-        : null,
-    unit_prices: line.unitRetailPrices.map((unitPrice) => ({
-      unit_id: unitPrice.unitId,
-      unit_name: unitPrice.unitName,
-      conversion: unitPrice.conversion,
-      price: Math.max(0, parseNumber(unitPrice.price)),
-    })),
-    promo_note: toPromoNote(line),
+      batch_code: resolvedBatchCode,
+      lot_number: line.lotNumber.trim(),
+      quantity: Math.max(1, Math.floor(parseNumber(line.quantity))),
+      mfg_date: line.mfgDate,
+      exp_date: line.expDate,
+      import_price: Math.max(0, parseNumber(line.price)),
+      barcode: line.barcode.trim() || null,
+      promo_type: line.promoType,
+      promo_buy_qty:
+        line.promoType === 'buy_x_get_y'
+          ? Math.max(1, Math.floor(parseNumber(line.promoBuyQty)))
+          : null,
+      promo_get_qty:
+        line.promoType === 'buy_x_get_y'
+          ? Math.max(1, Math.floor(parseNumber(line.promoGetQty)))
+          : null,
+      promo_discount_percent:
+        line.promoType === 'discount_percent'
+          ? Math.max(0, parseNumber(line.promoDiscountPercent))
+          : null,
+      unit_prices: line.unitRetailPrices.map((unitPrice) => ({
+        unit_id: unitPrice.unitId,
+        unit_name: unitPrice.unitName,
+        conversion: unitPrice.conversion,
+        price: Math.max(0, parseNumber(unitPrice.price)),
+      })),
+      promo_note: toPromoNote(line),
     }
   }),
 })
@@ -932,6 +1073,25 @@ export function Purchases() {
     return fallback
   }, [])
 
+  const getLockedReceiptConflictMessage = useCallback((detail: string) => {
+    if (detail.includes('requires existing batch_code for every line')) {
+      return 'Không thể cập nhật vì một số lô cũ thiếu mã batch để đối chiếu.'
+    }
+    if (detail.includes('cannot add/remove lines')) {
+      return 'Phiếu đã phát sinh giao dịch nên không thể thêm hoặc xóa dòng thuốc.'
+    }
+    if (detail.includes('cannot remove existing lines')) {
+      return 'Phiếu đã phát sinh giao dịch nên không thể xóa các dòng thuốc cũ.'
+    }
+    if (detail.includes('cannot change drug of existing line')) {
+      return 'Phiếu đã phát sinh giao dịch nên không thể đổi thuốc của dòng đã có.'
+    }
+    if (detail.includes('cannot change quantity')) {
+      return 'Phiếu đã phát sinh giao dịch nên không thể thay đổi số lượng nhập.'
+    }
+    return detail
+  }, [])
+
   const loadPurchasesData = useCallback(
     async (extrasOverride?: Record<string, ReceiptExtra>) => {
       setLoadingOrders(true)
@@ -1095,6 +1255,24 @@ export function Purchases() {
     return index
   }, [drugOptions, normalizeBarcodeLookupKey])
 
+  const editingOrder = useMemo(
+    () => (editingId ? orders.find((order) => order.id === editingId) ?? null : null),
+    [editingId, orders],
+  )
+  const isLockedReceiptEdit = Boolean(editingId && editingOrder?.canEdit === false)
+  const isLockedExistingLine = useCallback(
+    (lineId: string) =>
+      Boolean(
+        isLockedReceiptEdit &&
+        form.lines.some(
+          (line) =>
+            line.id === lineId &&
+            Boolean(line.batchId.trim() || line.originalBatchCode.trim()),
+        ),
+      ),
+    [form.lines, isLockedReceiptEdit],
+  )
+
   const buildRetailPrices = useCallback(
     (drugId: string, existing?: LineRetailPrice[]) =>
       buildLineRetailPrices(drugId, existing, drugOptions, defaultRetailPrices),
@@ -1138,7 +1316,7 @@ export function Purchases() {
     async (lineId: string, rawBarcode: string) => {
       const barcodeKey = normalizeBarcodeLookupKey(rawBarcode)
       const matchedDrugId = barcodeKey ? await resolveDrugIdByBarcode(barcodeKey) : ''
-      if (matchedDrugId) {
+      if (matchedDrugId && !isLockedExistingLine(lineId)) {
         const matchedDrugName = drugMap.get(matchedDrugId)?.name
         if (matchedDrugName) {
           setLineDrugSearch((prev) => ({
@@ -1152,7 +1330,7 @@ export function Purchases() {
         lines: prev.lines.map((line) => {
           if (line.id !== lineId) return line
           const nextLine = { ...line, barcode: barcodeKey || rawBarcode.trim() }
-          if (matchedDrugId) {
+          if (matchedDrugId && !isLockedExistingLine(lineId)) {
             nextLine.drugId = matchedDrugId
             nextLine.unitRetailPrices = buildRetailPrices(matchedDrugId, line.unitRetailPrices)
           }
@@ -1161,7 +1339,7 @@ export function Purchases() {
       }))
       return matchedDrugId
     },
-    [buildRetailPrices, drugMap, normalizeBarcodeLookupKey, resolveDrugIdByBarcode],
+    [buildRetailPrices, drugMap, isLockedExistingLine, normalizeBarcodeLookupKey, resolveDrugIdByBarcode],
   )
 
   const stats = useMemo(() => {
@@ -1384,6 +1562,9 @@ export function Purchases() {
       paymentMethod: order.paymentMethod,
       lines: order.lines.map((line) => ({
         ...line,
+        batchId: line.batchId ?? '',
+        batchCode: line.batchCode ?? '',
+        originalBatchCode: line.originalBatchCode ?? line.batchCode ?? '',
         promoType: line.promoType ?? 'none',
         promoBuyQty: line.promoBuyQty ?? '',
         promoGetQty: line.promoGetQty ?? '',
@@ -1419,10 +1600,25 @@ export function Purchases() {
   }
 
   const updateLine = (id: string, field: keyof LineItemForm, value: string) => {
+    if (field === 'quantity' && isLockedExistingLine(id)) return
     setForm((prev) => ({
       ...prev,
       lines: prev.lines.map((line) => (line.id === id ? { ...line, [field]: value } : line)),
     }))
+    if (field === 'mfgDate' || field === 'expDate') {
+      const lineIndex = form.lines.findIndex((line) => line.id === id)
+      if (lineIndex >= 0) {
+        setErrors((prev) => {
+          const mfgKey = `line-mfg-${lineIndex}`
+          const expKey = `line-exp-${lineIndex}`
+          if (!(mfgKey in prev) && !(expKey in prev)) return prev
+          const next = { ...prev }
+          delete next[mfgKey]
+          delete next[expKey]
+          return next
+        })
+      }
+    }
   }
   const handleLineBarcodeBlur = useCallback(
     (lineId: string, rawBarcode: string) => {
@@ -1432,6 +1628,7 @@ export function Purchases() {
   )
 
   const handleLineDrugSearchChange = (lineId: string, value: string) => {
+    if (isLockedExistingLine(lineId)) return
     setLineDrugSearch((prev) => ({
       ...prev,
       [lineId]: value,
@@ -1461,6 +1658,7 @@ export function Purchases() {
   }
 
   const handleDrugChange = (id: string, drugId: string) => {
+    if (isLockedExistingLine(id)) return
     const drug = drugMap.get(drugId)
     setLineDrugSearch((prev) => ({
       ...prev,
@@ -1560,6 +1758,7 @@ export function Purchases() {
   }
 
   const removeLine = (id: string) => {
+    if (isLockedExistingLine(id)) return
     setLineDrugSearch((prev) => {
       if (!(id in prev)) return prev
       const next = { ...prev }
@@ -1603,6 +1802,9 @@ export function Purchases() {
       if (line.quantity.trim() && parseNumber(line.quantity) <= 0) next[`line-qty-${index}`] = 'Phải lớn hơn 0'
       if (!line.mfgDate) next[`line-mfg-${index}`] = 'Bắt buộc'
       if (!line.expDate) next[`line-exp-${index}`] = 'Bắt buộc'
+      if (isLineDateOrderInvalid(line.mfgDate, line.expDate)) {
+        applyLineDateOrderErrors(next, index)
+      }
       if (!line.price.trim()) next[`line-price-${index}`] = 'Bắt buộc'
       if (line.price.trim() && parseNumber(line.price) <= 0) next[`line-price-${index}`] = 'Phải lớn hơn 0'
       if (!line.unitRetailPrices.length) {
@@ -1639,6 +1841,62 @@ export function Purchases() {
     }
   }
 
+  const hydrateBatchCodesForLockedReceipt = useCallback(
+    async (order: OrderFormState) => {
+      if (!isLockedReceiptEdit) return order
+
+      const nextLines = await Promise.all(
+        order.lines.map(async (line) => {
+          const existingBatchCode = normalizeBatchCode(line.batchCode) || normalizeBatchCode(line.originalBatchCode)
+          if (existingBatchCode || !line.batchId) return line
+
+          try {
+            const detail = await inventoryApi.getBatchDetail(line.batchId)
+            const hydratedBatchCode = normalizeBatchCode(detail.batch.batch_code)
+            if (!hydratedBatchCode) return line
+            return {
+              ...line,
+              batchCode: hydratedBatchCode,
+              originalBatchCode: hydratedBatchCode,
+            }
+          } catch {
+            return line
+          }
+        }),
+      )
+
+      const missingBatchCode = nextLines.some(
+        (line) =>
+          Boolean(line.batchId.trim() || line.originalBatchCode.trim()) &&
+          !normalizeBatchCode(line.batchCode) &&
+          !normalizeBatchCode(line.originalBatchCode),
+      )
+      if (missingBatchCode) {
+        setAlert('Không thể cập nhật vì một số lô cũ thiếu mã batch để đối chiếu.')
+        return null
+      }
+
+      const hasHydratedChanges = nextLines.some(
+        (line, index) =>
+          line.batchCode !== order.lines[index]?.batchCode ||
+          line.originalBatchCode !== order.lines[index]?.originalBatchCode,
+      )
+
+      if (hasHydratedChanges) {
+        setForm((prev) => ({
+          ...prev,
+          lines: prev.lines.map((line) => {
+            const hydrated = nextLines.find((item) => item.id === line.id)
+            return hydrated ?? line
+          }),
+        }))
+      }
+
+      return hasHydratedChanges ? { ...order, lines: nextLines } : order
+    },
+    [isLockedReceiptEdit],
+  )
+
   const saveOrder = async () => {
     const validation = validate()
     if (!validation.ok) {
@@ -1654,7 +1912,10 @@ export function Purchases() {
     const isCreating = !editingId
     setSavingOrder(true)
     try {
-      const payload = buildInventoryPayloadFromForm(form, drugMap, {
+      const effectiveForm = editingId ? await hydrateBatchCodesForLockedReceipt(form) : form
+      if (!effectiveForm) return
+
+      const payload = buildInventoryPayloadFromForm(effectiveForm, drugMap, {
         includeBatchCode: Boolean(editingId),
       })
       const receipt = editingId
@@ -1663,7 +1924,7 @@ export function Purchases() {
 
       const nextExtras = {
         ...receiptExtrasRef.current,
-        [receipt.id]: buildReceiptExtraFromOrder(form),
+        [receipt.id]: buildReceiptExtraFromOrder(effectiveForm),
       }
       persistReceiptExtras(nextExtras)
 
@@ -1685,11 +1946,25 @@ export function Purchases() {
       await loadPurchasesData(nextExtras)
       setAlert(isCreating ? 'Đã tạo phiếu nhập.' : 'Đã cập nhật phiếu nhập.')
     } catch (error) {
+      if (error instanceof ApiError && error.status === 422) {
+        const mappedValidationErrors = buildLineValidationErrors(error.validationDetail)
+        if (Object.keys(mappedValidationErrors).length > 0) {
+          setErrors(mappedValidationErrors)
+          setAlert(null)
+          focusFirstInvalidField(mappedValidationErrors)
+          return
+        }
+      }
+      if (error instanceof ApiError && error.status === 409) {
+        console.error('Update import receipt conflict', error)
+      }
       setAlert(
-        getApiErrorMessage(
-          error,
-          isCreating ? 'Không thể tạo phiếu nhập.' : 'Không thể cập nhật phiếu nhập.',
-        ),
+        error instanceof ApiError && error.status === 409 && !isCreating
+          ? getLockedReceiptConflictMessage(error.message)
+          : getApiErrorMessage(
+              error,
+              isCreating ? 'Không thể tạo phiếu nhập.' : 'Không thể cập nhật phiếu nhập.',
+            ),
       )
     } finally {
       setSavingOrder(false)
@@ -2629,55 +2904,94 @@ export function Purchases() {
                           >
                             Sửa
                           </button>
-                          <button
-                            onClick={() => removeOrder(order.id)}
-                            title={canCancelOrder ? 'Hủy phiếu nhập' : 'Phiếu này đã phát sinh giao dịch, không thể hủy'}
-                            className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500"
-                          >
-                            Xóa
-                          </button>
                         </div>
                       </td>
                     </tr>
                     {expandedId === order.id ? (
                       <tr className="bg-white/50">
                         <td colSpan={9} className="px-6 pb-6">
-                          <div className="rounded-2xl bg-white/80 p-4 space-y-4">
-                            <div className="grid gap-4 md:grid-cols-[1.1fr,1fr]">
-                              <div className="space-y-2 text-sm text-ink-700">
-                                <p><span className="font-semibold text-ink-900">Nhà phân phối:</span> {supplierMap.get(order.supplierId)?.name}</p>
-                                <p><span className="font-semibold text-ink-900">Liên hệ nhà phân phối:</span> {supplierMap.get(order.supplierId)?.contactName}</p>
-                                <p><span className="font-semibold text-ink-900">Liên hệ:</span> {supplierMap.get(order.supplierId)?.phone}</p>
-                                <p><span className="font-semibold text-ink-900">Địa chỉ:</span> {supplierMap.get(order.supplierId)?.address}</p>
-                                <p><span className="font-semibold text-ink-900">Đơn vị vận chuyển:</span> {order.shippingCarrier}</p>
-                                <p><span className="font-semibold text-ink-900">Trạng thái thanh toán:</span> {order.paymentStatus}</p>
-                                <p><span className="font-semibold text-ink-900">Phương thức thanh toán:</span> {order.paymentMethod}</p>
-                                <p><span className="font-semibold text-ink-900">Ghi chú:</span> {order.note || '-'}</p>
+                          <div className="space-y-4 rounded-3xl border border-ink-900/10 bg-gradient-to-br from-white via-white to-fog-50/70 p-5">
+                            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_340px]">
+                              <div className="rounded-3xl border border-ink-900/10 bg-white/90 p-4">
+                                <div className="flex items-start justify-between gap-4">
+                                  <div>
+                                    <p className="text-xs uppercase tracking-[0.3em] text-ink-500">Thông tin phiếu</p>
+                                    <h4 className="mt-2 text-lg font-semibold text-ink-900">{order.code}</h4>
+                                    <p className="mt-1 text-sm text-ink-600">Ngày nhập {formatDate(order.date)}</p>
+                                  </div>
+                                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${paymentStatusStyles[order.paymentStatus]}`}>
+                                    {order.paymentStatus}
+                                  </span>
+                                </div>
+                                <div className="mt-4 grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+                                  <ReceiptMetaItem label="Nhà phân phối" value={supplierMap.get(order.supplierId)?.name || '-'} />
+                                  <ReceiptMetaItem label="Người liên hệ" value={supplierMap.get(order.supplierId)?.contactName || '-'} />
+                                  <ReceiptMetaItem label="Số điện thoại" value={supplierMap.get(order.supplierId)?.phone || '-'} />
+                                  <ReceiptMetaItem label="Địa chỉ" value={supplierMap.get(order.supplierId)?.address || '-'} />
+                                  <ReceiptMetaItem label="Vận chuyển" value={order.shippingCarrier || '-'} />
+                                  <ReceiptMetaItem label="PT thanh toán" value={order.paymentMethod || '-'} />
+                                </div>
+                                <div className="mt-3 rounded-2xl bg-fog-50/90 px-4 py-3">
+                                  <p className="text-[11px] uppercase tracking-[0.22em] text-ink-500">Ghi chú</p>
+                                  <p className="mt-1 text-sm text-ink-700 break-words">{order.note || 'Không có ghi chú'}</p>
+                                </div>
                               </div>
-                              <div className="rounded-2xl bg-white px-4 py-3 text-sm text-ink-700">
-                                <p className="text-xs uppercase tracking-[0.25em] text-ink-500">Tổng hợp</p>
-                                <p className="mt-2 text-lg font-semibold text-ink-900">{formatCurrency(calcOrderTotal(order.lines))}</p>
-                                <p className="mt-1 text-xs text-ink-600">{order.lines.length} dòng thuốc</p>
+
+                              <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
+                                <ReceiptStatCard
+                                  label="Tổng tiền"
+                                  value={formatCurrency(calcOrderTotal(order.lines))}
+                                  helper={`${order.lines.length} dòng thuốc`}
+                                  tone="primary"
+                                />
+                                <ReceiptStatCard
+                                  label="Thanh toán"
+                                  value={order.paymentStatus}
+                                  helper={order.paymentMethod || 'Chưa chọn phương thức'}
+                                />
+                                <ReceiptStatCard
+                                  label="Nhà vận chuyển"
+                                  value={order.shippingCarrier || '-'}
+                                  helper={supplierMap.get(order.supplierId)?.name || 'Chưa có NPP'}
+                                />
                               </div>
                             </div>
-                            <div className="space-y-2 text-sm text-ink-700">
-                              {order.lines.map((line) => {
-                                const drug = drugMap.get(line.drugId)
-                                const pricing = calcLinePricing(line)
-                                return (
-                                  <div key={line.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white px-3 py-2">
-                                    <span className="font-semibold text-ink-900">{drug?.name ?? '-'}</span>
-                                    <span>Lô {line.lotNumber || '-'}</span>
-                                    <span>SL sau KM {pricing.quantityAfterPromo.toLocaleString('vi-VN')}</span>
-                                    <span>Giá sau KM {formatCurrency(pricing.unitPriceAfterPromo)}</span>
-                                    <span className="text-xs text-ink-700">Giá bẻ: {formatRetailPrices(line) || '-'}</span>
-                                    <span>{describePromo(line)}</span>
-                                    <span>HSD {formatDate(line.expDate)}</span>
-                                    <span>{formatCurrency(calcLineTotal(line))}</span>
-                                    <span className="text-xs text-ink-600">QR: {line.batchCode}</span>
-                                  </div>
-                                )
-                              })}
+
+                            <div className="space-y-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <p className="text-xs uppercase tracking-[0.3em] text-ink-500">Dòng thuốc</p>
+                                  <p className="mt-1 text-sm text-ink-700">Hiển thị chi tiết lô, giá sau khuyến mãi và giá bán theo đơn vị.</p>
+                                </div>
+                                <span className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-700">
+                                  {order.lines.length} dòng
+                                </span>
+                              </div>
+                              <div className="grid gap-3 xl:grid-cols-2">
+                                {order.lines.map((line, lineIndex) => (
+                                  <ReceiptLineCard
+                                    key={line.id}
+                                    line={line}
+                                    drug={drugMap.get(line.drugId)}
+                                    index={lineIndex + 1}
+                                  />
+                                ))}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center justify-between gap-3 rounded-2xl border border-coral-500/15 bg-coral-500/5 px-4 py-3">
+                              <p className="text-sm text-ink-600">
+                                Hủy phiếu sẽ đưa toàn bộ lô trong phiếu này về trạng thái đã hủy nếu phiếu chưa phát sinh giao dịch.
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => removeOrder(order.id)}
+                                disabled={!canCancelOrder}
+                                title={canCancelOrder ? 'Hủy phiếu nhập' : 'Phiếu này đã phát sinh giao dịch, không thể hủy'}
+                                className="shrink-0 rounded-full border border-coral-500/30 bg-coral-500/10 px-4 py-2 text-sm font-semibold text-coral-500 disabled:cursor-not-allowed disabled:opacity-45"
+                              >
+                                Hủy phiếu
+                              </button>
                             </div>
                           </div>
                         </td>
@@ -2735,39 +3049,43 @@ export function Purchases() {
                   >
                     Sửa
                   </button>
-                  <button
-                    onClick={() => removeOrder(order.id)}
-                    title={canCancelOrder ? 'Hủy phiếu nhập' : 'Phiếu này đã phát sinh giao dịch, không thể hủy'}
-                    className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500"
-                  >
-                    Xóa
-                  </button>
                 </div>
 
                 {isExpanded ? (
-                  <div className="mt-3 rounded-xl border border-ink-900/10 bg-white p-3 text-xs text-ink-700">
-                    <div className="space-y-1.5">
-                      <p><span className="font-semibold text-ink-900">Liên hệ NPP:</span> {supplierMap.get(order.supplierId)?.contactName || '-'}</p>
-                      <p><span className="font-semibold text-ink-900">SĐT:</span> {supplierMap.get(order.supplierId)?.phone || '-'}</p>
-                      <p><span className="font-semibold text-ink-900">Địa chỉ:</span> {supplierMap.get(order.supplierId)?.address || '-'}</p>
-                      <p><span className="font-semibold text-ink-900">Vận chuyển:</span> {order.shippingCarrier || '-'}</p>
-                      <p><span className="font-semibold text-ink-900">Ghi chú:</span> {order.note || '-'}</p>
+                  <div className="mt-3 space-y-3 rounded-2xl border border-ink-900/10 bg-gradient-to-br from-white via-white to-fog-50/80 p-3 text-xs text-ink-700">
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <ReceiptMetaItem label="Người liên hệ" value={supplierMap.get(order.supplierId)?.contactName || '-'} />
+                      <ReceiptMetaItem label="Số điện thoại" value={supplierMap.get(order.supplierId)?.phone || '-'} />
+                      <ReceiptMetaItem label="Địa chỉ" value={supplierMap.get(order.supplierId)?.address || '-'} />
+                      <ReceiptMetaItem label="Vận chuyển" value={order.shippingCarrier || '-'} />
                     </div>
-                    <div className="mt-3 space-y-2">
-                      {order.lines.map((line) => {
-                        const drug = drugMap.get(line.drugId)
-                        const pricing = calcLinePricing(line)
-                        return (
-                          <div key={line.id} className="rounded-lg bg-fog-50 px-3 py-2">
-                            <p className="font-semibold text-ink-900">{drug?.name ?? '-'}</p>
-                            <p className="mt-1">Lô {line.lotNumber || '-'} · HSD {formatDate(line.expDate)}</p>
-                            <p>SL sau KM {pricing.quantityAfterPromo.toLocaleString('vi-VN')} · Giá sau KM {formatCurrency(pricing.unitPriceAfterPromo)}</p>
-                            <p className="text-ink-600">Giá bẻ: {formatRetailPrices(line) || '-'}</p>
-                            <p>{describePromo(line)} · {formatCurrency(calcLineTotal(line))}</p>
-                            <p className="text-ink-600">QR: {line.batchCode}</p>
-                          </div>
-                        )
-                      })}
+                    <div className="rounded-2xl bg-fog-50/90 px-3 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.22em] text-ink-500">Ghi chú</p>
+                      <p className="mt-1 text-sm text-ink-700 break-words">{order.note || 'Không có ghi chú'}</p>
+                    </div>
+                    <div className="grid gap-3">
+                      {order.lines.map((line, lineIndex) => (
+                        <ReceiptLineCard
+                          key={line.id}
+                          line={line}
+                          drug={drugMap.get(line.drugId)}
+                          index={lineIndex + 1}
+                        />
+                      ))}
+                    </div>
+                    <div className="flex flex-col gap-2 rounded-2xl border border-coral-500/15 bg-coral-500/5 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="text-sm text-ink-600">
+                        Hủy phiếu sẽ đưa toàn bộ lô trong phiếu này về trạng thái đã hủy nếu phiếu chưa phát sinh giao dịch.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => removeOrder(order.id)}
+                        disabled={!canCancelOrder}
+                        title={canCancelOrder ? 'Hủy phiếu nhập' : 'Phiếu này đã phát sinh giao dịch, không thể hủy'}
+                        className="rounded-full border border-coral-500/30 bg-coral-500/10 px-4 py-2 text-sm font-semibold text-coral-500 disabled:cursor-not-allowed disabled:opacity-45"
+                      >
+                        Hủy phiếu
+                      </button>
                     </div>
                   </div>
                 ) : null}
@@ -2913,6 +3231,11 @@ export function Purchases() {
                     <p className="text-xs text-ink-500">Quét barcode hoặc chọn thuốc để tự điền thông tin.</p>
                   </div>
                 </div>
+                {isLockedReceiptEdit ? (
+                  <div className="rounded-2xl border border-amber-500/30 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+                    Phiếu này đã phát sinh giao dịch. Bạn có thể thêm dòng thuốc mới, nhưng không thể đổi thuốc, số lượng hoặc xóa các dòng cũ.
+                  </div>
+                ) : null}
                 {errors.lines ? <p className="text-xs text-coral-500">{errors.lines}</p> : null}
 
                 <div className="space-y-4">
@@ -2940,6 +3263,7 @@ export function Purchases() {
                             <button
                               type="button"
                               onClick={() => removeLine(line.id)}
+                              disabled={isLockedExistingLine(line.id)}
                               className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-xs font-semibold text-coral-500"
                             >
                               Xóa dòng
@@ -2955,6 +3279,7 @@ export function Purchases() {
                               list={`line-drug-options-${line.id}`}
                               value={lineDrugSearch[line.id] ?? ''}
                               onChange={(event) => handleLineDrugSearchChange(line.id, event.target.value)}
+                              disabled={isLockedExistingLine(line.id)}
                               className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
                               placeholder="Tìm tên thuốc"
                             />
@@ -3012,6 +3337,7 @@ export function Purchases() {
                               ref={setFormFieldRef(`line-qty-${line.id}`)}
                               value={line.quantity}
                               onChange={(event) => updateLine(line.id, 'quantity', event.target.value)}
+                              disabled={isLockedExistingLine(line.id)}
                               className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
                               placeholder="0"
                             />
@@ -3160,7 +3486,11 @@ export function Purchases() {
                               value={line.mfgDate}
                               onChange={(event) => updateLine(line.id, 'mfgDate', event.target.value)}
                               type="date"
-                              className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
+                              className={`mt-1 w-full rounded-xl border px-3 py-2 text-sm text-ink-900 ${
+                                errors[`line-mfg-${index}`]
+                                  ? 'border-coral-500 bg-coral-50/40'
+                                  : 'border-ink-900/10 bg-white'
+                              }`}
                             />
                             {errors[`line-mfg-${index}`] ? (
                               <span className="text-xs text-coral-500">{errors[`line-mfg-${index}`]}</span>
@@ -3174,7 +3504,11 @@ export function Purchases() {
                               value={line.expDate}
                               onChange={(event) => updateLine(line.id, 'expDate', event.target.value)}
                               type="date"
-                              className="mt-1 w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900"
+                              className={`mt-1 w-full rounded-xl border px-3 py-2 text-sm text-ink-900 ${
+                                errors[`line-exp-${index}`]
+                                  ? 'border-coral-500 bg-coral-50/40'
+                                  : 'border-ink-900/10 bg-white'
+                              }`}
                             />
                             {errors[`line-exp-${index}`] ? (
                               <span className="text-xs text-coral-500">{errors[`line-exp-${index}`]}</span>
