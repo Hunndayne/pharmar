@@ -108,3 +108,7 @@ class StockAuditUpdateItemRequest(BaseModel):
 
 class StockAuditUpdateRequest(BaseModel):
     items: list[StockAuditUpdateItemRequest] = Field(min_length=1)
+
+
+class BatchCostLookupRequest(BaseModel):
+    batch_ids: list[str] = Field(min_length=1)
