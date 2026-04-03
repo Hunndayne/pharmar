@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx-js-style'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
+import { registerVietnameseFont, FONT_FAMILY } from './pdfFont'
 
 export type ExportValue = string | number | boolean | null | undefined
 
@@ -33,13 +34,67 @@ export const exportToExcel = (
 
 // ── PDF Export ───────────────────────────────────────────────────────────────
 
+export type PdfStoreHeader = {
+  name: string
+  address?: string | null
+  phone?: string | null
+}
+
 export type PdfExportOptions = {
   orientation?: 'portrait' | 'landscape'
   subtitle?: string
   footerText?: string
+  storeHeader?: PdfStoreHeader
 }
 
-export const exportToPdf = (
+const formatExportDate = () => {
+  const now = new Date()
+  return `Ngày ${now.getDate()} tháng ${now.getMonth() + 1} năm ${now.getFullYear()}`
+}
+
+const drawStoreHeader = (
+  doc: jsPDF,
+  title: string,
+  store: PdfStoreHeader,
+  pageWidth: number,
+): number => {
+  const cx = pageWidth / 2
+  let y = 12
+
+  doc.setFont(FONT_FAMILY, 'bold', 'italic')
+  doc.setFontSize(14)
+  doc.text(store.name, cx, y, { align: 'center' })
+  y += 7
+
+  if (store.address) {
+    doc.setFont(FONT_FAMILY, 'normal', 'italic')
+    doc.setFontSize(10)
+    doc.text(`Địa chỉ: ${store.address}`, cx, y, { align: 'center' })
+    y += 5
+  }
+
+  if (store.phone) {
+    doc.setFont(FONT_FAMILY, 'normal', 'italic')
+    doc.setFontSize(10)
+    doc.text(`SDT: ${store.phone}`, cx, y, { align: 'center' })
+    y += 5
+  }
+
+  y += 2
+  doc.setFont(FONT_FAMILY, 'bold')
+  doc.setFontSize(14)
+  doc.text(title, cx, y, { align: 'center' })
+  y += 6
+
+  doc.setFont(FONT_FAMILY, 'normal')
+  doc.setFontSize(10)
+  doc.text(`Ngày xuất:  ${formatExportDate()}`, cx, y, { align: 'center' })
+  y += 8
+
+  return y
+}
+
+export const exportToPdf = async (
   filename: string,
   title: string,
   headers: string[],
@@ -48,38 +103,50 @@ export const exportToPdf = (
 ) => {
   const orientation = options?.orientation ?? 'landscape'
   const doc = new jsPDF({ orientation, unit: 'mm', format: 'a4' })
+  const pageWidth = doc.internal.pageSize.width
 
-  // Title
-  doc.setFontSize(16)
-  doc.text(title, 14, 15)
+  await registerVietnameseFont(doc)
+  doc.setFont(FONT_FAMILY, 'normal')
 
-  if (options?.subtitle) {
-    doc.setFontSize(10)
-    doc.text(options.subtitle, 14, 22)
+  let startY: number
+
+  if (options?.storeHeader) {
+    startY = drawStoreHeader(doc, title, options.storeHeader, pageWidth)
+  } else {
+    doc.setFont(FONT_FAMILY, 'bold')
+    doc.setFontSize(14)
+    doc.text(title, 14, 14)
+    startY = 22
+
+    if (options?.subtitle) {
+      doc.setFont(FONT_FAMILY, 'normal')
+      doc.setFontSize(10)
+      doc.text(options.subtitle, 14, startY)
+      startY += 6
+    }
   }
-
-  const startY = options?.subtitle ? 28 : 22
 
   // Table
   autoTable(doc, {
     head: [headers],
     body: rows.map((row) => row.map((cell) => String(cell ?? ''))),
     startY,
-    styles: { fontSize: 8, cellPadding: 2 },
-    headStyles: { fillColor: [41, 41, 41], textColor: 255, fontSize: 8 },
+    styles: { fontSize: 8, cellPadding: 2, font: FONT_FAMILY },
+    headStyles: { fillColor: [41, 41, 41], textColor: 255, fontSize: 8, font: FONT_FAMILY, fontStyle: 'bold' },
     alternateRowStyles: { fillColor: [245, 245, 245] },
     margin: { left: 14, right: 14 },
   })
 
-  // Footer
-  if (options?.footerText) {
-    const pageCount = doc.getNumberOfPages()
-    for (let i = 1; i <= pageCount; i++) {
-      doc.setPage(i)
-      doc.setFontSize(8)
+  // Footer with page numbers
+  const pageCount = doc.getNumberOfPages()
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i)
+    doc.setFont(FONT_FAMILY, 'normal')
+    doc.setFontSize(8)
+    if (options?.footerText) {
       doc.text(options.footerText, 14, doc.internal.pageSize.height - 10)
-      doc.text(`Trang ${i}/${pageCount}`, doc.internal.pageSize.width - 30, doc.internal.pageSize.height - 10)
     }
+    doc.text(`Trang ${i}/${pageCount}`, doc.internal.pageSize.width - 30, doc.internal.pageSize.height - 10)
   }
 
   doc.save(filename.endsWith('.pdf') ? filename : `${filename}.pdf`)
@@ -299,44 +366,52 @@ export const exportInvoiceExcel = (data: InvoiceExcelData) => {
   XLSX.writeFile(wb, `hoa-don-${data.invoiceCode}.xlsx`)
 }
 
-export const exportInvoicePdf = (data: InvoicePdfData) => {
+export const exportInvoicePdf = async (data: InvoicePdfData) => {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [80, 200] })
+  await registerVietnameseFont(doc)
+  doc.setFont(FONT_FAMILY, 'normal')
 
   let y = 8
   const centerX = 40
 
   // Store header
+  doc.setFont(FONT_FAMILY, 'bold', 'italic')
   doc.setFontSize(10)
   doc.text(data.storeName, centerX, y, { align: 'center' })
   y += 4
   if (data.storeAddress) {
+    doc.setFont(FONT_FAMILY, 'normal', 'italic')
     doc.setFontSize(7)
-    doc.text(data.storeAddress, centerX, y, { align: 'center' })
+    doc.text(`Địa chỉ: ${data.storeAddress}`, centerX, y, { align: 'center' })
     y += 3
   }
   if (data.storePhone) {
-    doc.text(`DT: ${data.storePhone}`, centerX, y, { align: 'center' })
+    doc.setFont(FONT_FAMILY, 'normal')
+    doc.setFontSize(7)
+    doc.text(`ĐT: ${data.storePhone}`, centerX, y, { align: 'center' })
     y += 3
   }
 
   // Invoice title
   y += 2
+  doc.setFont(FONT_FAMILY, 'bold')
   doc.setFontSize(11)
-  doc.text('HOA DON BAN HANG', centerX, y, { align: 'center' })
+  doc.text('HÓA ĐƠN BÁN HÀNG', centerX, y, { align: 'center' })
   y += 5
 
   // Invoice info
+  doc.setFont(FONT_FAMILY, 'normal')
   doc.setFontSize(7)
-  doc.text(`Ma HD: ${data.invoiceCode}`, 4, y)
+  doc.text(`Mã HĐ: ${data.invoiceCode}`, 4, y)
   y += 3
-  doc.text(`Ngay: ${data.createdAt}`, 4, y)
+  doc.text(`Ngày: ${data.createdAt}`, 4, y)
   y += 3
   if (data.cashierName) {
-    doc.text(`Thu ngan: ${data.cashierName}`, 4, y)
+    doc.text(`Thu ngân: ${data.cashierName}`, 4, y)
     y += 3
   }
   if (data.customerName) {
-    doc.text(`Khach hang: ${data.customerName}`, 4, y)
+    doc.text(`Khách hàng: ${data.customerName}`, 4, y)
     y += 3
   }
 
@@ -347,7 +422,7 @@ export const exportInvoicePdf = (data: InvoicePdfData) => {
 
   autoTable(doc, {
     startY: y,
-    head: [['STT', 'San pham', 'SL', 'Don gia', 'T.Tien']],
+    head: [['STT', 'Sản phẩm', 'SL', 'Đơn giá', 'T.Tiền']],
     body: data.items.map((item, i) => [
       i + 1,
       item.name,
@@ -355,8 +430,8 @@ export const exportInvoicePdf = (data: InvoicePdfData) => {
       Math.round(item.unitPrice).toLocaleString('vi-VN'),
       Math.round(item.lineTotal).toLocaleString('vi-VN'),
     ]),
-    styles: { fontSize: 6, cellPadding: 1 },
-    headStyles: { fillColor: [255, 255, 255], textColor: 0, fontSize: 6, fontStyle: 'bold' },
+    styles: { fontSize: 6, cellPadding: 1, font: FONT_FAMILY },
+    headStyles: { fillColor: [255, 255, 255], textColor: 0, fontSize: 6, fontStyle: 'bold', font: FONT_FAMILY },
     columnStyles: {
       0: { cellWidth: 6 },
       1: { cellWidth: 30 },
@@ -377,22 +452,26 @@ export const exportInvoicePdf = (data: InvoicePdfData) => {
   // Totals
   const fmt = (v: number) => Math.round(v).toLocaleString('vi-VN')
   doc.setFontSize(7)
-  doc.text(`Tam tinh: ${fmt(data.subtotal)}`, 76, y, { align: 'right' })
+  doc.setFont(FONT_FAMILY, 'normal')
+  doc.setFontSize(7)
+  doc.text(`Tạm tính: ${fmt(data.subtotal)}`, 76, y, { align: 'right' })
   y += 3
   if (data.discountTotal > 0) {
-    doc.text(`Giam gia: -${fmt(data.discountTotal)}`, 76, y, { align: 'right' })
+    doc.text(`Giảm giá: -${fmt(data.discountTotal)}`, 76, y, { align: 'right' })
     y += 3
   }
+  doc.setFont(FONT_FAMILY, 'bold')
   doc.setFontSize(9)
-  doc.text(`TONG CONG: ${fmt(data.total)}`, 76, y, { align: 'right' })
+  doc.text(`TỔNG CỘNG: ${fmt(data.total)}`, 76, y, { align: 'right' })
   y += 4
+  doc.setFont(FONT_FAMILY, 'normal')
   doc.setFontSize(7)
-  doc.text(`Thanh toan: ${fmt(data.amountPaid)}`, 76, y, { align: 'right' })
+  doc.text(`Đã thanh toán: ${fmt(data.amountPaid)}`, 76, y, { align: 'right' })
   y += 3
-  doc.text(`Tien thua: ${fmt(data.changeAmount)}`, 76, y, { align: 'right' })
+  doc.text(`Tiền thừa: ${fmt(data.changeAmount)}`, 76, y, { align: 'right' })
   y += 5
 
-  doc.text('Cam on quy khach!', centerX, y, { align: 'center' })
+  doc.text('Cảm ơn quý khách!', centerX, y, { align: 'center' })
 
   doc.save(`hoa-don-${data.invoiceCode}.pdf`)
 }

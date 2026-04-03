@@ -14,6 +14,7 @@ import {
   storeApi,
   type OperatingExpense,
   type CreateExpensePayload,
+  type StoreInfo,
 } from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
@@ -160,6 +161,8 @@ export function Reports() {
   const [tab, setTab] = useState<ReportTab>('revenue')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
+
+  const [storeInfo, setStoreInfo] = useState<StoreInfo | null>(null)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -362,6 +365,10 @@ export function Reports() {
     void loadReport(tab)
   }, [tab, loadReport])
 
+  useEffect(() => {
+    storeApi.getInfo().then(setStoreInfo).catch(() => null)
+  }, [])
+
   const getExportData = useCallback(() => {
     const dateKey = new Date().toISOString().slice(0, 10)
 
@@ -505,8 +512,14 @@ export function Reports() {
 
   const exportCurrentTabPdf = useCallback(() => {
     const data = getExportData()
-    if (data) exportToPdf(data.filename, data.title, data.headers, data.rows, { subtitle: `Ngày xuất: ${new Date().toLocaleDateString('vi-VN')}` })
-  }, [getExportData])
+    if (data) {
+      void exportToPdf(data.filename, data.title, data.headers, data.rows, {
+        storeHeader: storeInfo
+          ? { name: storeInfo.name, address: storeInfo.address, phone: storeInfo.phone }
+          : undefined,
+      })
+    }
+  }, [getExportData, storeInfo])
 
   const exportCurrentTabCsv = useCallback(() => {
     const data = getExportData()
