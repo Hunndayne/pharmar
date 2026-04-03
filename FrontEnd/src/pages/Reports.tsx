@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { catalogApi, type SupplierItem } from '../api/catalogService'
-import { customerApi, type CustomerRecord } from '../api/customerService'
 import { inventoryApi, type InventoryStockSummary } from '../api/inventoryService'
 import {
   reportApi,
@@ -10,9 +8,7 @@ import {
   type ProfitProductBreakdownRow,
   type ProfitSummaryResponse,
   type ReportPageResponse,
-  type ReportEvent,
 } from '../api/reportService'
-import { saleApi, type SaleInvoiceListItem } from '../api/saleService'
 import {
   storeApi,
   type OperatingExpense,
@@ -82,8 +78,8 @@ type CustomerReportData = {
   newCustomers: number
   totalPoints: number
   totalSpent: number
-  topSpenders: CustomerRecord[]
-  rows: CustomerRecord[]
+  topSpenders: Record<string, unknown>[]
+  rows: Record<string, unknown>[]
 }
 
 type ProfitReportData = {
@@ -102,8 +98,6 @@ const tabs: Array<{ id: ReportTab; label: string }> = [
   { id: 'customer', label: 'Khách hàng' },
 ]
 
-const MAX_REPORT_PAGES = 5
-const PAGE_SIZE = 50
 const PROFIT_PAGE_SIZE = 20
 const REPORT_TIME_ZONE = 'Asia/Ho_Chi_Minh'
 const REPORT_DATE_KEY_FORMATTER = new Intl.DateTimeFormat('en-CA', {
@@ -122,10 +116,6 @@ const toNumber = (value: string | number | null | undefined) => {
   return parsed
 }
 
-const toNumberLoose = (value: unknown) => {
-  if (typeof value === 'number' || typeof value === 'string') return toNumber(value)
-  return 0
-}
 
 const formatCurrency = (value: number) => `${Math.round(value || 0).toLocaleString('vi-VN')}đ`
 
@@ -163,60 +153,6 @@ const toDateKey = (value: string) => {
   return `${year}-${month}-${day}`
 }
 
-const shiftDateKey = (value: string, days: number) => {
-  const normalized = value.trim()
-  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/)
-  if (!match) return normalized
-  const shifted = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
-  shifted.setUTCDate(shifted.getUTCDate() + days)
-  return shifted.toISOString().slice(0, 10)
-}
-
-const firstString = (...values: unknown[]) => {
-  for (const value of values) {
-    if (typeof value === 'string' && value.trim()) return value.trim()
-  }
-  return ''
-}
-
-const eventDateKey = (event: ReportEvent) =>
-  toDateKey(
-    firstString(
-      event.created_at,
-      event.createdAt,
-      event.sale_created_at,
-      event.timestamp,
-      event.date,
-    ),
-  )
-
-const eventPaymentMethod = (event: ReportEvent) =>
-  firstString(event.payment_method, event.paymentMethod, event.method, event.payment)
-
-const eventCode = (event: ReportEvent) =>
-  firstString(event.invoice_code, event.code, event.invoiceId, event.id)
-
-const eventCustomerName = (event: ReportEvent) =>
-  firstString(event.customer_name, event.customerName, event.customer)
-
-const inDateRange = (value: string, from: string, to: string) => {
-  const key = toDateKey(value)
-  if (!key) return false
-  if (from && key < from) return false
-  if (to && key > to) return false
-  return true
-}
-
-const paymentLabel = (method: string) => {
-  const key = method.trim().toLowerCase()
-  if (!key) return 'Khác'
-  if (key === 'cash') return 'Tiền mặt'
-  if (key === 'card') return 'Thẻ'
-  if (key === 'bank') return 'Ngân hàng'
-  if (key === 'ewallet') return 'Ví điện tử'
-  if (key === 'debt') return 'Mua nợ'
-  return method
-}
 
 const stockStatusLabel = (status: string) => {
   switch (status) {
@@ -241,92 +177,6 @@ const getErrorMessage = (error: unknown, fallback: string) => {
   return fallback
 }
 
-const buildRevenueFromInvoices = (
-  invoices: SaleInvoiceListItem[],
-  from = '',
-  to = '',
-): RevenueReportData => {
-  const dailyMap = new Map<string, RevenueDailyRow>()
-  const paymentMap = new Map<string, { method: string; invoiceCount: number; amount: number }>()
-
-  let canceledCount = 0
-  let totalAmount = 0
-  let paidAmount = 0
-  let debtAmount = 0
-  let validCount = 0
-
-  const debtInvoices: Array<{ code: string; customerName: string; createdAt: string; debtAmount: number }> = []
-
-  invoices.forEach((invoice) => {
-    const status = invoice.status.trim().toLowerCase()
-    const isCanceled = status === 'cancelled' || status === 'canceled'
-    const invoiceTotal = toNumber(invoice.total_amount)
-    const invoicePaid = toNumber(invoice.amount_paid)
-    const invoiceDebt = Math.max(0, invoiceTotal - invoicePaid)
-    const localDateKey = toDateKey(invoice.created_at)
-
-    if (isCanceled) {
-      canceledCount += 1
-      return
-    }
-    if (!localDateKey) return
-    if (from && localDateKey < from) return
-    if (to && localDateKey > to) return
-
-    validCount += 1
-    totalAmount += invoiceTotal
-    paidAmount += invoicePaid
-    debtAmount += invoiceDebt
-
-    const current = dailyMap.get(localDateKey) ?? {
-      date: localDateKey,
-      invoiceCount: 0,
-      totalAmount: 0,
-      paidAmount: 0,
-      debtAmount: 0,
-    }
-    current.invoiceCount += 1
-    current.totalAmount += invoiceTotal
-    current.paidAmount += invoicePaid
-    current.debtAmount += invoiceDebt
-    dailyMap.set(localDateKey, current)
-
-    const method = paymentLabel(invoice.payment_method)
-    const payment = paymentMap.get(method) ?? { method, invoiceCount: 0, amount: 0 }
-    payment.invoiceCount += 1
-    payment.amount += invoiceTotal
-    paymentMap.set(method, payment)
-
-    if (invoiceDebt > 0) {
-      debtInvoices.push({
-        code: invoice.code,
-        customerName: invoice.customer_name || 'Khách vãng lai',
-        createdAt: invoice.created_at,
-        debtAmount: invoiceDebt,
-      })
-    }
-  })
-
-  const dailyRows = Array.from(dailyMap.values()).sort((left, right) =>
-    right.date.localeCompare(left.date),
-  )
-  const paymentRows = Array.from(paymentMap.values()).sort((left, right) => right.amount - left.amount)
-  const averageAmount = validCount > 0 ? totalAmount / validCount : 0
-
-  return {
-    invoiceCount: validCount,
-    canceledCount,
-    totalAmount,
-    paidAmount,
-    debtAmount,
-    averageAmount,
-    dailyRows,
-    paymentRows,
-    debtInvoices: debtInvoices
-      .sort((left, right) => right.debtAmount - left.debtAmount)
-      .slice(0, 12),
-  }
-}
 
 export function Reports() {
   const { token } = useAuth()
@@ -358,209 +208,41 @@ export function Reports() {
   })
   const [expenseSaving, setExpenseSaving] = useState(false)
 
-  const fetchInvoices = useCallback(
-    async (accessToken: string) => {
-      const invoices: SaleInvoiceListItem[] = []
-      let page = 1
-      let totalPages = 1
-      const requestDateFrom = dateFrom ? shiftDateKey(dateFrom, -1) : undefined
-      const requestDateTo = dateTo ? shiftDateKey(dateTo, 1) : undefined
-
-      while (page <= totalPages && page <= MAX_REPORT_PAGES) {
-        const response = await saleApi.listInvoices(accessToken, {
-          page,
-          size: PAGE_SIZE,
-          date_from: requestDateFrom,
-          date_to: requestDateTo,
-        })
-        invoices.push(...response.items)
-        totalPages = Math.max(1, response.pages || 1)
-        page += 1
-      }
-
-      return invoices.filter((invoice) => inDateRange(invoice.created_at, dateFrom, dateTo))
-    },
-    [dateFrom, dateTo],
-  )
-
-  const fetchSuppliers = useCallback(async (accessToken: string) => {
-    const suppliers: SupplierItem[] = []
-    let page = 1
-    let totalPages = 1
-
-    while (page <= totalPages && page <= MAX_REPORT_PAGES) {
-      const response = await catalogApi.listSuppliers(accessToken, {
-        page,
-        size: PAGE_SIZE,
-      })
-      suppliers.push(...response.items)
-      totalPages = Math.max(1, response.pages || 1)
-      page += 1
-    }
-
-    return suppliers
-  }, [])
-
-  const fetchCustomers = useCallback(async (accessToken: string) => {
-    const customers: CustomerRecord[] = []
-    let page = 1
-    let totalPages = 1
-
-    while (page <= totalPages && page <= MAX_REPORT_PAGES) {
-      const response = await customerApi.listCustomers(accessToken, {
-        page,
-        size: PAGE_SIZE,
-      })
-      customers.push(...response.items)
-      totalPages = Math.max(1, response.pages || 1)
-      page += 1
-    }
-
-    return customers
-  }, [])
 
   const loadRevenueReport = useCallback(
     async (accessToken: string) => {
-      const fallbackFromSaleInvoices = async () => {
-        const invoices = await fetchInvoices(accessToken)
-        setRevenueData(buildRevenueFromInvoices(invoices, dateFrom, dateTo))
-      }
-
-      // When date filters are set, always use Sale Service (full data with server-side filtering).
-      // Report Service only keeps the last 100 events in Redis, so client-side filtering
-      // on a limited window produces incomplete results.
-      if (dateFrom || dateTo) {
-        await fallbackFromSaleInvoices()
-        return
-      }
-
-      try {
-        const [summary, events] = await Promise.all([
-          reportApi.getSummary(accessToken),
-          reportApi.listEvents(accessToken),
-        ])
-
-        const filteredEvents = events.filter((event) => {
-          const key = eventDateKey(event)
-          if (!key) return false
-          if (dateFrom && key < dateFrom) return false
-          if (dateTo && key > dateTo) return false
-          return true
-        })
-
-        const hasSummaryOnly =
-          !dateFrom &&
-          !dateTo &&
-          filteredEvents.length === 0 &&
-          (toNumber(summary.total_sales) > 0 || toNumber(summary.total_revenue) > 0)
-
-        if (!filteredEvents.length && !hasSummaryOnly) {
-          await fallbackFromSaleInvoices()
-          return
-        }
-
-        if (hasSummaryOnly) {
-          const invoiceCount = Math.max(0, Math.round(toNumber(summary.total_sales)))
-          const totalAmount = Math.max(0, toNumber(summary.total_revenue))
-          setRevenueData({
-            invoiceCount,
-            canceledCount: 0,
-            totalAmount,
-            paidAmount: totalAmount,
-            debtAmount: 0,
-            averageAmount: invoiceCount > 0 ? totalAmount / invoiceCount : 0,
-            dailyRows: [],
-            paymentRows: [],
-            debtInvoices: [],
-          })
-          return
-        }
-
-        const dailyMap = new Map<string, RevenueDailyRow>()
-        const paymentMap = new Map<string, { method: string; invoiceCount: number; amount: number }>()
-        const debtInvoices: Array<{ code: string; customerName: string; createdAt: string; debtAmount: number }> = []
-
-        let canceledCount = 0
-        let totalAmount = 0
-        let paidAmount = 0
-        let debtAmount = 0
-        let validCount = 0
-
-        filteredEvents.forEach((event) => {
-          const status = firstString(event.status, event.invoice_status).toLowerCase()
-          const isCanceled = status === 'cancelled' || status === 'canceled'
-          if (isCanceled) {
-            canceledCount += 1
-            return
-          }
-
-          const eventTotal = toNumberLoose(event.total_amount ?? event.totalAmount ?? event.amount)
-          const hasAmountPaidField = event.amount_paid !== undefined || event.amountPaid !== undefined
-          const eventPaid = hasAmountPaidField
-            ? toNumberLoose(event.amount_paid ?? event.amountPaid)
-            : eventTotal
-          const eventDebt = Math.max(0, eventTotal - eventPaid)
-
-          validCount += 1
-          totalAmount += eventTotal
-          paidAmount += eventPaid
-          debtAmount += eventDebt
-
-          const dayKey = eventDateKey(event)
-          if (dayKey) {
-            const current = dailyMap.get(dayKey) ?? {
-              date: dayKey,
-              invoiceCount: 0,
-              totalAmount: 0,
-              paidAmount: 0,
-              debtAmount: 0,
-            }
-            current.invoiceCount += 1
-            current.totalAmount += eventTotal
-            current.paidAmount += eventPaid
-            current.debtAmount += eventDebt
-            dailyMap.set(dayKey, current)
-          }
-
-          const method = paymentLabel(eventPaymentMethod(event))
-          const payment = paymentMap.get(method) ?? { method, invoiceCount: 0, amount: 0 }
-          payment.invoiceCount += 1
-          payment.amount += eventTotal
-          paymentMap.set(method, payment)
-
-          if (eventDebt > 0) {
-            debtInvoices.push({
-              code: eventCode(event) || '-',
-              customerName: eventCustomerName(event) || 'Khách vãng lai',
-              createdAt: firstString(event.created_at, event.createdAt, event.date) || '',
-              debtAmount: eventDebt,
-            })
-          }
-        })
-
-        const dailyRows = Array.from(dailyMap.values()).sort((left, right) =>
-          right.date.localeCompare(left.date),
-        )
-        const paymentRows = Array.from(paymentMap.values()).sort((left, right) => right.amount - left.amount)
-
-        setRevenueData({
-          invoiceCount: validCount,
-          canceledCount,
-          totalAmount,
-          paidAmount,
-          debtAmount,
-          averageAmount: validCount > 0 ? totalAmount / validCount : 0,
-          dailyRows,
-          paymentRows,
-          debtInvoices: debtInvoices
-            .sort((left, right) => right.debtAmount - left.debtAmount)
-            .slice(0, 12),
-        })
-      } catch {
-        await fallbackFromSaleInvoices()
-      }
+      const data = await reportApi.getRevenueSummary(accessToken, {
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+      })
+      setRevenueData({
+        invoiceCount: data.invoice_count,
+        canceledCount: data.cancelled_count,
+        totalAmount: data.total_amount,
+        paidAmount: data.paid_amount,
+        debtAmount: data.debt_amount,
+        averageAmount: data.average_amount,
+        dailyRows: data.daily_rows.map((r) => ({
+          date: r.date,
+          invoiceCount: r.invoice_count,
+          totalAmount: r.total_amount,
+          paidAmount: r.paid_amount,
+          debtAmount: r.debt_amount,
+        })),
+        paymentRows: data.payment_rows.map((r) => ({
+          method: r.method,
+          invoiceCount: r.invoice_count,
+          amount: r.amount,
+        })),
+        debtInvoices: data.debt_invoices.map((r) => ({
+          code: r.code,
+          customerName: r.customer_name,
+          createdAt: r.created_at,
+          debtAmount: r.debt_amount,
+        })),
+      })
     },
-    [dateFrom, dateTo, fetchInvoices],
+    [dateFrom, dateTo],
   )
 
   const loadProfitReport = useCallback(
@@ -620,76 +302,46 @@ export function Reports() {
 
   const loadDebtReport = useCallback(
     async (accessToken: string) => {
-      const [invoices, suppliers] = await Promise.all([
-        fetchInvoices(accessToken),
-        fetchSuppliers(accessToken),
-      ])
-
-      const debtInvoiceRows = invoices
-        .map((invoice) => {
-          const status = invoice.status.trim().toLowerCase()
-          if (status === 'cancelled' || status === 'canceled') return null
-          const total = toNumber(invoice.total_amount)
-          const paid = toNumber(invoice.amount_paid)
-          const debt = Math.max(0, total - paid)
-          if (debt <= 0) return null
-          return {
-            code: invoice.code,
-            customerName: invoice.customer_name || 'Khách vãng lai',
-            createdAt: invoice.created_at,
-            debtAmount: debt,
-          }
-        })
-        .filter((item): item is { code: string; customerName: string; createdAt: string; debtAmount: number } => item !== null)
-        .sort((left, right) => right.debtAmount - left.debtAmount)
-
-      const supplierRows = suppliers
-        .map((supplier) => ({
-          name: supplier.name,
-          phone: supplier.phone || '-',
-          debtAmount: Math.max(0, toNumber(supplier.current_debt)),
-        }))
-        .filter((supplier) => supplier.debtAmount > 0)
-        .sort((left, right) => right.debtAmount - left.debtAmount)
-
-      const customerDebtTotal = debtInvoiceRows.reduce((sum, item) => sum + item.debtAmount, 0)
-      const supplierDebtTotal = supplierRows.reduce((sum, item) => sum + item.debtAmount, 0)
-
+      const data = await reportApi.getDebtSummary(accessToken, {
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+      })
       setDebtData({
-        customerDebtTotal,
-        supplierDebtTotal,
-        debtInvoiceRows: debtInvoiceRows.slice(0, 20),
-        supplierRows: supplierRows.slice(0, 20),
+        customerDebtTotal: data.customer_debt_total,
+        supplierDebtTotal: data.supplier_debt_total,
+        debtInvoiceRows: data.debt_invoice_rows.map((r) => ({
+          code: r.code,
+          customerName: r.customer_name,
+          createdAt: r.created_at,
+          debtAmount: r.debt_amount,
+        })),
+        supplierRows: data.supplier_rows.map((r) => ({
+          name: r.name,
+          phone: r.phone,
+          debtAmount: r.debt_amount,
+        })),
       })
     },
-    [fetchInvoices, fetchSuppliers],
+    [dateFrom, dateTo],
   )
 
   const loadCustomerReport = useCallback(
     async (accessToken: string) => {
-      const rows = await fetchCustomers(accessToken)
-
-      const totalCustomers = rows.length
-      const activeCustomers = rows.filter((item) => item.is_active).length
-      const newCustomers = rows.filter((item) => inDateRange(item.created_at, dateFrom, dateTo)).length
-      const totalPoints = rows.reduce((sum, item) => sum + Math.max(0, item.current_points), 0)
-      const totalSpent = rows.reduce((sum, item) => sum + Math.max(0, toNumber(item.total_spent)), 0)
-      const topSpenders = rows
-        .slice()
-        .sort((left, right) => toNumber(right.total_spent) - toNumber(left.total_spent))
-        .slice(0, 12)
-
+      const data = await reportApi.getCustomerSummary(accessToken, {
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+      })
       setCustomerData({
-        totalCustomers,
-        activeCustomers,
-        newCustomers,
-        totalPoints,
-        totalSpent,
-        topSpenders,
-        rows,
+        totalCustomers: data.total_customers,
+        activeCustomers: data.active_customers,
+        newCustomers: data.new_customers,
+        totalPoints: data.total_points,
+        totalSpent: data.total_spent,
+        topSpenders: data.top_spenders,
+        rows: data.rows,
       })
     },
-    [fetchCustomers, dateFrom, dateTo],
+    [dateFrom, dateTo],
   )
 
   const loadReport = useCallback(
