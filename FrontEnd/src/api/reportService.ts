@@ -122,6 +122,69 @@ export type DashboardAiInsightsResponse = {
   items: DashboardAiInsightItem[]
 }
 
+export type RevenueDailySummaryRow = {
+  date: string
+  invoice_count: number
+  total_amount: number
+  paid_amount: number
+  debt_amount: number
+}
+
+export type RevenuePaymentRow = {
+  method: string
+  invoice_count: number
+  amount: number
+}
+
+export type RevenueDebtInvoiceRow = {
+  code: string
+  customer_name: string
+  created_at: string
+  debt_amount: number
+}
+
+export type RevenueSummaryResponse = {
+  invoice_count: number
+  cancelled_count: number
+  total_amount: number
+  paid_amount: number
+  debt_amount: number
+  average_amount: number
+  daily_rows: RevenueDailySummaryRow[]
+  payment_rows: RevenuePaymentRow[]
+  debt_invoices: RevenueDebtInvoiceRow[]
+}
+
+export type DebtInvoiceRow = {
+  code: string
+  customer_name: string
+  created_at: string
+  debt_amount: number
+}
+
+export type DebtSupplierRow = {
+  name: string
+  phone: string
+  debt_amount: number
+}
+
+export type DebtSummaryResponse = {
+  customer_debt_total: number
+  supplier_debt_total: number
+  debt_invoice_rows: DebtInvoiceRow[]
+  supplier_rows: DebtSupplierRow[]
+}
+
+export type CustomerSummaryResponse = {
+  total_customers: number
+  active_customers: number
+  new_customers: number
+  total_points: number
+  total_spent: number
+  top_spenders: Record<string, unknown>[]
+  rows: Record<string, unknown>[]
+}
+
 const toNumberSafe = (value: unknown) => {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return 0
@@ -342,6 +405,71 @@ export const reportApi = {
           } satisfies RestockHighlightItem
         }),
     } satisfies RestockHighlightResponse
+  },
+
+  getRevenueSummary: async (
+    token: string,
+    params?: { date_from?: string; date_to?: string },
+  ) => {
+    const payload = await requestReportJson<unknown>(
+      '/report/revenue/summary',
+      token,
+      { method: 'GET' },
+      params,
+    )
+    const row = typeof payload === 'object' && payload !== null ? (payload as Record<string, unknown>) : {}
+    return {
+      invoice_count: Math.max(0, Math.round(toNumberSafe(row.invoice_count))),
+      cancelled_count: Math.max(0, Math.round(toNumberSafe(row.cancelled_count))),
+      total_amount: Math.max(0, toNumberSafe(row.total_amount)),
+      paid_amount: Math.max(0, toNumberSafe(row.paid_amount)),
+      debt_amount: Math.max(0, toNumberSafe(row.debt_amount)),
+      average_amount: Math.max(0, toNumberSafe(row.average_amount)),
+      daily_rows: Array.isArray(row.daily_rows) ? (row.daily_rows as RevenueDailySummaryRow[]) : [],
+      payment_rows: Array.isArray(row.payment_rows) ? (row.payment_rows as RevenuePaymentRow[]) : [],
+      debt_invoices: Array.isArray(row.debt_invoices) ? (row.debt_invoices as RevenueDebtInvoiceRow[]) : [],
+    } satisfies RevenueSummaryResponse
+  },
+
+  getDebtSummary: async (
+    token: string,
+    params?: { date_from?: string; date_to?: string },
+  ) => {
+    const payload = await requestReportJson<unknown>(
+      '/report/debt/summary',
+      token,
+      { method: 'GET' },
+      params,
+    )
+    const row = typeof payload === 'object' && payload !== null ? (payload as Record<string, unknown>) : {}
+    return {
+      customer_debt_total: Math.max(0, toNumberSafe(row.customer_debt_total)),
+      supplier_debt_total: Math.max(0, toNumberSafe(row.supplier_debt_total)),
+      debt_invoice_rows: Array.isArray(row.debt_invoice_rows) ? (row.debt_invoice_rows as DebtInvoiceRow[]) : [],
+      supplier_rows: Array.isArray(row.supplier_rows) ? (row.supplier_rows as DebtSupplierRow[]) : [],
+    } satisfies DebtSummaryResponse
+  },
+
+  getCustomerSummary: async (
+    token: string,
+    params?: { date_from?: string; date_to?: string },
+  ) => {
+    const payload = await requestReportJson<unknown>(
+      '/report/customer/summary',
+      token,
+      { method: 'GET' },
+      params,
+    )
+    const row = typeof payload === 'object' && payload !== null ? (payload as Record<string, unknown>) : {}
+    return {
+      total_customers: Math.max(0, Math.round(toNumberSafe(row.total_customers))),
+      active_customers: Math.max(0, Math.round(toNumberSafe(row.active_customers))),
+      new_customers: Math.max(0, Math.round(toNumberSafe(row.new_customers))),
+      total_points: Math.max(0, Math.round(toNumberSafe(row.total_points))),
+      total_spent: Math.max(0, toNumberSafe(row.total_spent)),
+      top_spenders: Array.isArray(row.top_spenders) ? row.top_spenders as Record<string, unknown>[] : [],
+      rows: Array.isArray(row.rows) ? row.rows as Record<string, unknown>[] : [],
+    } satisfies CustomerSummaryResponse
   },
 
   getDashboardAiInsights: async (

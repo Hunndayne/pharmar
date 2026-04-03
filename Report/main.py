@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     SALE_SERVICE_URL: str = "http://sale-service:8003"
     INVENTORY_SERVICE_URL: str = "http://inventory-service:8002"
     STORE_SERVICE_URL: str = "http://store-service:8005"
+    CATALOG_SERVICE_URL: str = "http://catalog-service:8006"
+    CUSTOMER_SERVICE_URL: str = "http://customer-service:8007"
     REPORT_CACHE_TTL_SECONDS: int = 120
     JWT_SECRET_KEY: str = "change-this-secret"
     JWT_ALGORITHM: str = "HS256"
@@ -2267,3 +2269,350 @@ async def refresh_ai_dashboard_insights(
 ) -> dict[str, Any]:
     token = _require_authorization(authorization)
     return await _refresh_dashboard_ai_snapshot_now(token)
+
+
+# ---------------------------------------------------------------------------
+# Revenue / Debt / Customer report helpers
+# ---------------------------------------------------------------------------
+
+_PAYMENT_METHOD_LABELS: dict[str, str] = {
+    "cash": "Tiền mặt",
+    "card": "Thẻ",
+    "bank": "Ngân hàng",
+    "ewallet": "Ví điện tử",
+    "debt": "Mua nợ",
+}
+
+
+def _payment_label(method: Any) -> str:
+    key = str(method or "").strip().lower()
+    return _PAYMENT_METHOD_LABELS.get(key, str(method or "").strip() or "Khác")
+
+
+async def _fetch_invoices_list(
+    authorization: str,
+    date_from: date | None,
+    date_to: date | None,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    page = 1
+    pages = 1
+    query_from = (date_from - timedelta(days=1)).isoformat() if date_from else None
+    query_to = (date_to + timedelta(days=1)).isoformat() if date_to else None
+
+    while page <= pages:
+        payload = await _request_service_json(
+            "GET",
+            f"{settings.SALE_SERVICE_URL}/api/v1/sale/invoices",
+            authorization,
+            params={"page": page, "size": 200, "date_from": query_from, "date_to": query_to},
+        )
+        rows = payload.get("items") if isinstance(payload, dict) else []
+        if isinstance(rows, list):
+            items.extend(r for r in rows if isinstance(r, dict))
+        pages = max(1, int((payload or {}).get("pages", 1) or 1))
+        page += 1
+
+    return items
+
+
+async def _fetch_all_suppliers(authorization: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    page = 1
+    pages = 1
+
+    while page <= pages:
+        payload = await _request_service_json(
+            "GET",
+            f"{settings.CATALOG_SERVICE_URL}/api/v1/catalog/suppliers",
+            authorization,
+            params={"page": page, "size": 200},
+        )
+        rows = payload.get("items") if isinstance(payload, dict) else []
+        if isinstance(rows, list):
+            items.extend(r for r in rows if isinstance(r, dict))
+        pages = max(1, int((payload or {}).get("pages", 1) or 1))
+        page += 1
+
+    return items
+
+
+async def _fetch_all_customers(authorization: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    page = 1
+    pages = 1
+
+    while page <= pages:
+        payload = await _request_service_json(
+            "GET",
+            f"{settings.CUSTOMER_SERVICE_URL}/api/v1/customer/customers",
+            authorization,
+            params={"page": page, "size": 200},
+        )
+        rows = payload.get("items") if isinstance(payload, dict) else []
+        if isinstance(rows, list):
+            items.extend(r for r in rows if isinstance(r, dict))
+        pages = max(1, int((payload or {}).get("pages", 1) or 1))
+        page += 1
+
+    return items
+
+
+def _build_revenue_dataset(
+    invoices: list[dict[str, Any]],
+    date_from: date | None,
+    date_to: date | None,
+) -> dict[str, Any]:
+    daily: dict[str, dict[str, Any]] = {}
+    payments: dict[str, dict[str, Any]] = {}
+    debt_invoices: list[dict[str, Any]] = []
+
+    invoice_count = 0
+    cancelled_count = 0
+    total_amount = Decimal("0")
+    paid_amount = Decimal("0")
+    debt_amount = Decimal("0")
+
+    for inv in invoices:
+        status = str(inv.get("status") or "").strip().lower()
+        is_cancelled = status in ("cancelled", "canceled")
+        created_at = str(inv.get("created_at") or "")
+
+        if is_cancelled:
+            cancelled_count += 1
+            continue
+
+        if not _in_local_date_range(created_at, date_from, date_to):
+            continue
+
+        inv_total = _to_decimal(inv.get("total_amount"))
+        inv_paid = _to_decimal(inv.get("amount_paid"))
+        inv_debt = max(Decimal("0"), inv_total - inv_paid)
+
+        invoice_count += 1
+        total_amount += inv_total
+        paid_amount += inv_paid
+        debt_amount += inv_debt
+
+        day_key = _period_day_key(created_at)
+        if day_key:
+            row = daily.setdefault(day_key, {
+                "date": day_key, "invoice_count": 0,
+                "total_amount": Decimal("0"), "paid_amount": Decimal("0"), "debt_amount": Decimal("0"),
+            })
+            row["invoice_count"] += 1
+            row["total_amount"] += inv_total
+            row["paid_amount"] += inv_paid
+            row["debt_amount"] += inv_debt
+
+        method = _payment_label(inv.get("payment_method"))
+        pm = payments.setdefault(method, {"method": method, "invoice_count": 0, "amount": Decimal("0")})
+        pm["invoice_count"] += 1
+        pm["amount"] += inv_total
+
+        if inv_debt > 0:
+            debt_invoices.append({
+                "code": str(inv.get("code") or ""),
+                "customer_name": str(inv.get("customer_name") or "") or "Khách vãng lai",
+                "created_at": created_at,
+                "debt_amount": _to_money(inv_debt),
+            })
+
+    average_amount = _to_money(total_amount / invoice_count) if invoice_count > 0 else 0
+
+    daily_rows = sorted(
+        [
+            {
+                "date": r["date"],
+                "invoice_count": r["invoice_count"],
+                "total_amount": _to_money(r["total_amount"]),
+                "paid_amount": _to_money(r["paid_amount"]),
+                "debt_amount": _to_money(r["debt_amount"]),
+            }
+            for r in daily.values()
+        ],
+        key=lambda r: r["date"],
+        reverse=True,
+    )
+    payment_rows = sorted(
+        [
+            {
+                "method": p["method"],
+                "invoice_count": p["invoice_count"],
+                "amount": _to_money(p["amount"]),
+            }
+            for p in payments.values()
+        ],
+        key=lambda p: p["amount"],
+        reverse=True,
+    )
+    top_debt = sorted(debt_invoices, key=lambda d: d["debt_amount"], reverse=True)[:20]
+
+    return {
+        "invoice_count": invoice_count,
+        "cancelled_count": cancelled_count,
+        "total_amount": _to_money(total_amount),
+        "paid_amount": _to_money(paid_amount),
+        "debt_amount": _to_money(debt_amount),
+        "average_amount": average_amount,
+        "daily_rows": daily_rows,
+        "payment_rows": payment_rows,
+        "debt_invoices": top_debt,
+    }
+
+
+def _build_debt_dataset(
+    invoices: list[dict[str, Any]],
+    suppliers: list[dict[str, Any]],
+    date_from: date | None,
+    date_to: date | None,
+) -> dict[str, Any]:
+    debt_invoice_rows: list[dict[str, Any]] = []
+    customer_debt_total = Decimal("0")
+
+    for inv in invoices:
+        status = str(inv.get("status") or "").strip().lower()
+        if status in ("cancelled", "canceled"):
+            continue
+        created_at = str(inv.get("created_at") or "")
+        if not _in_local_date_range(created_at, date_from, date_to):
+            continue
+
+        inv_total = _to_decimal(inv.get("total_amount"))
+        inv_paid = _to_decimal(inv.get("amount_paid"))
+        inv_debt = max(Decimal("0"), inv_total - inv_paid)
+        if inv_debt <= 0:
+            continue
+
+        customer_debt_total += inv_debt
+        debt_invoice_rows.append({
+            "code": str(inv.get("code") or ""),
+            "customer_name": str(inv.get("customer_name") or "") or "Khách vãng lai",
+            "created_at": created_at,
+            "debt_amount": _to_money(inv_debt),
+        })
+
+    supplier_rows: list[dict[str, Any]] = []
+    supplier_debt_total = Decimal("0")
+
+    for sup in suppliers:
+        debt = max(Decimal("0"), _to_decimal(sup.get("current_debt")))
+        if debt <= 0:
+            continue
+        supplier_debt_total += debt
+        supplier_rows.append({
+            "name": str(sup.get("name") or ""),
+            "phone": str(sup.get("phone") or "") or "-",
+            "debt_amount": _to_money(debt),
+        })
+
+    return {
+        "customer_debt_total": _to_money(customer_debt_total),
+        "supplier_debt_total": _to_money(supplier_debt_total),
+        "debt_invoice_rows": sorted(debt_invoice_rows, key=lambda r: r["debt_amount"], reverse=True)[:20],
+        "supplier_rows": sorted(supplier_rows, key=lambda r: r["debt_amount"], reverse=True)[:20],
+    }
+
+
+def _build_customer_dataset(
+    customers: list[dict[str, Any]],
+    date_from: date | None,
+    date_to: date | None,
+) -> dict[str, Any]:
+    total_customers = len(customers)
+    active_customers = sum(1 for c in customers if c.get("is_active"))
+    new_customers = sum(
+        1 for c in customers
+        if _in_local_date_range(str(c.get("created_at") or ""), date_from, date_to)
+    )
+    total_points = sum(max(0, int(float(c.get("current_points") or 0))) for c in customers)
+    total_spent = sum(max(Decimal("0"), _to_decimal(c.get("total_spent"))) for c in customers)
+
+    top_spenders = sorted(
+        customers,
+        key=lambda c: _to_decimal(c.get("total_spent")),
+        reverse=True,
+    )[:12]
+
+    return {
+        "total_customers": total_customers,
+        "active_customers": active_customers,
+        "new_customers": new_customers,
+        "total_points": total_points,
+        "total_spent": _to_money(total_spent),
+        "top_spenders": top_spenders,
+        "rows": customers,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Revenue / Debt / Customer endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/report/revenue/summary")
+async def revenue_summary(
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    token = _require_authorization(authorization)
+    await _refresh_report_timezone(token)
+    start_date = _parse_optional_date(date_from, "date_from")
+    end_date = _parse_optional_date(date_to, "date_to")
+
+    cache_key = _cache_key("report:revenue:summary:v1", {"df": date_from, "dt": date_to})
+    cached = await _get_cached_json(cache_key)
+    if cached is not None:
+        return cached
+
+    invoices = await _fetch_invoices_list(token, start_date, end_date)
+    result = _build_revenue_dataset(invoices, start_date, end_date)
+    await _set_cached_json(cache_key, result, settings.REPORT_CACHE_TTL_SECONDS)
+    return result
+
+
+@app.get("/api/v1/report/debt/summary")
+async def debt_summary(
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    token = _require_authorization(authorization)
+    await _refresh_report_timezone(token)
+    start_date = _parse_optional_date(date_from, "date_from")
+    end_date = _parse_optional_date(date_to, "date_to")
+
+    cache_key = _cache_key("report:debt:summary:v1", {"df": date_from, "dt": date_to})
+    cached = await _get_cached_json(cache_key)
+    if cached is not None:
+        return cached
+
+    invoices, suppliers = await asyncio.gather(
+        _fetch_invoices_list(token, start_date, end_date),
+        _fetch_all_suppliers(token),
+    )
+    result = _build_debt_dataset(invoices, suppliers, start_date, end_date)
+    await _set_cached_json(cache_key, result, settings.REPORT_CACHE_TTL_SECONDS)
+    return result
+
+
+@app.get("/api/v1/report/customer/summary")
+async def customer_summary(
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    token = _require_authorization(authorization)
+    await _refresh_report_timezone(token)
+    start_date = _parse_optional_date(date_from, "date_from")
+    end_date = _parse_optional_date(date_to, "date_to")
+
+    cache_key = _cache_key("report:customer:summary:v1", {"df": date_from, "dt": date_to})
+    cached = await _get_cached_json(cache_key)
+    if cached is not None:
+        return cached
+
+    customers = await _fetch_all_customers(token)
+    result = _build_customer_dataset(customers, start_date, end_date)
+    await _set_cached_json(cache_key, result, settings.REPORT_CACHE_TTL_SECONDS)
+    return result
