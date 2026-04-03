@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { type CustomerRecord } from '../api/customerService'
 import { inventoryApi, type InventoryStockSummary } from '../api/inventoryService'
 import {
   reportApi,
@@ -78,8 +79,8 @@ type CustomerReportData = {
   newCustomers: number
   totalPoints: number
   totalSpent: number
-  topSpenders: Record<string, unknown>[]
-  rows: Record<string, unknown>[]
+  topSpenders: CustomerRecord[]
+  rows: CustomerRecord[]
 }
 
 type ProfitReportData = {
@@ -100,12 +101,6 @@ const tabs: Array<{ id: ReportTab; label: string }> = [
 
 const PROFIT_PAGE_SIZE = 20
 const REPORT_TIME_ZONE = 'Asia/Ho_Chi_Minh'
-const REPORT_DATE_KEY_FORMATTER = new Intl.DateTimeFormat('en-CA', {
-  timeZone: REPORT_TIME_ZONE,
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-})
 const REPORT_DATE_DISPLAY_FORMATTER = new Intl.DateTimeFormat('vi-VN', {
   timeZone: REPORT_TIME_ZONE,
 })
@@ -118,14 +113,6 @@ const toNumber = (value: string | number | null | undefined) => {
 
 
 const formatCurrency = (value: number) => `${Math.round(value || 0).toLocaleString('vi-VN')}đ`
-
-const toDateParts = (date: Date) => {
-  const parts = REPORT_DATE_KEY_FORMATTER.formatToParts(date)
-  const year = parts.find((part) => part.type === 'year')?.value ?? ''
-  const month = parts.find((part) => part.type === 'month')?.value ?? ''
-  const day = parts.find((part) => part.type === 'day')?.value ?? ''
-  return { year, month, day }
-}
 
 const formatDateKey = (value: string) => {
   const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/)
@@ -140,17 +127,6 @@ const formatDate = (value: string) => {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value.slice(0, 10)
   return REPORT_DATE_DISPLAY_FORMATTER.format(date)
-}
-
-const toDateKey = (value: string) => {
-  if (!value) return ''
-  const normalized = value.trim()
-  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return normalized
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value.slice(0, 10)
-  const { year, month, day } = toDateParts(date)
-  if (!year || !month || !day) return value.slice(0, 10)
-  return `${year}-${month}-${day}`
 }
 
 
@@ -338,7 +314,7 @@ export function Reports() {
         totalPoints: data.total_points,
         totalSpent: data.total_spent,
         topSpenders: data.top_spenders,
-        rows: data.rows,
+      rows: data.rows,
       })
     },
     [dateFrom, dateTo],
