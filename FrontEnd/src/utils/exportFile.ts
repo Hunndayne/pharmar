@@ -61,20 +61,20 @@ const drawStoreHeader = (
   const cx = pageWidth / 2
   let y = 12
 
-  doc.setFont(FONT_FAMILY, 'bold', 'italic')
+  doc.setFont(FONT_FAMILY, 'bolditalic')
   doc.setFontSize(14)
   doc.text(store.name, cx, y, { align: 'center' })
   y += 7
 
   if (store.address) {
-    doc.setFont(FONT_FAMILY, 'normal', 'italic')
+    doc.setFont(FONT_FAMILY, 'italic')
     doc.setFontSize(10)
     doc.text(`Địa chỉ: ${store.address}`, cx, y, { align: 'center' })
     y += 5
   }
 
   if (store.phone) {
-    doc.setFont(FONT_FAMILY, 'normal', 'italic')
+    doc.setFont(FONT_FAMILY, 'italic')
     doc.setFontSize(10)
     doc.text(`SDT: ${store.phone}`, cx, y, { align: 'center' })
     y += 5
@@ -375,18 +375,18 @@ export const exportInvoicePdf = async (data: InvoicePdfData) => {
   const centerX = 40
 
   // Store header
-  doc.setFont(FONT_FAMILY, 'bold', 'italic')
+  doc.setFont(FONT_FAMILY, 'bolditalic')
   doc.setFontSize(10)
   doc.text(data.storeName, centerX, y, { align: 'center' })
   y += 4
   if (data.storeAddress) {
-    doc.setFont(FONT_FAMILY, 'normal', 'italic')
+    doc.setFont(FONT_FAMILY, 'italic')
     doc.setFontSize(7)
     doc.text(`Địa chỉ: ${data.storeAddress}`, centerX, y, { align: 'center' })
     y += 3
   }
   if (data.storePhone) {
-    doc.setFont(FONT_FAMILY, 'normal')
+    doc.setFont(FONT_FAMILY, 'italic')
     doc.setFontSize(7)
     doc.text(`ĐT: ${data.storePhone}`, centerX, y, { align: 'center' })
     y += 3
