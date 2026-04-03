@@ -327,6 +327,14 @@ export function Reports() {
         setRevenueData(buildRevenueFromInvoices(invoices))
       }
 
+      // When date filters are set, always use Sale Service (full data with server-side filtering).
+      // Report Service only keeps the last 100 events in Redis, so client-side filtering
+      // on a limited window produces incomplete results.
+      if (dateFrom || dateTo) {
+        await fallbackFromSaleInvoices()
+        return
+      }
+
       try {
         const [summary, events] = await Promise.all([
           reportApi.getSummary(accessToken),
