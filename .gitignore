@@ -44,3 +44,5 @@ FrontEnd/nginx.conf
 Users/.env
 FrontEnd/nginx.conf
 .claude/settings.local.json
+
+.claude
