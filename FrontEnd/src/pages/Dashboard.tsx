@@ -21,7 +21,6 @@ import {
   normalizeTimeZone,
   persistAppTimeZone,
   readStoredAppTimeZone,
-  shiftDateKey,
   toDateKeyInTimeZone,
 } from '../utils/timezone'
 
@@ -180,8 +179,6 @@ export function Dashboard() {
     const now = new Date()
     const today = getCurrentDateKeyInTimeZone(timeZone, now)
     const firstDayOfMonth = getMonthStartDateKeyInTimeZone(timeZone, now)
-    const trendStart = shiftDateKey(today, -13)
-
     const [todayStats, revenueSummary, stockSummary, topProductsRaw] = await Promise.all([
       saleApi.getStatsToday(accessToken),
       reportApi.getRevenueSummary(accessToken, { date_from: firstDayOfMonth, date_to: today }),
