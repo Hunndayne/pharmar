@@ -434,8 +434,35 @@ export function StoreSettings() {
     void loadAdsFiles()
   }, [loadAdsFiles])
 
-  const uploadBackupToR2KeepLatest = useCallback(
-    async (accessToken: string, backupRecord: BackupRecord) => {
+  const listRemoteBackupFiles = useCallback(async (accessToken: string) => {
+    const perPage = 100
+    const firstPage = await fileApi.list(accessToken, {
+      category: 'backup',
+      ref_type: 'store_backup',
+      per_page: perPage,
+      page: 1,
+    })
+
+    const files = [...firstPage.files]
+    const totalPages = Math.max(1, firstPage.total_pages || 1)
+
+    for (let page = 2; page <= totalPages; page += 1) {
+      const nextPage = await fileApi.list(accessToken, {
+        category: 'backup',
+        ref_type: 'store_backup',
+        per_page: perPage,
+        page,
+      })
+      files.push(...nextPage.files)
+    }
+
+    return files.sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    )
+  }, [])
+
+  const uploadBackupToR2WithRetention = useCallback(
+    async (accessToken: string, backupRecord: BackupRecord, keepCount: number) => {
       const { blob, filename } = await storeApi.downloadBackup(accessToken, backupRecord.id)
       const backupFile = new File([blob], filename || backupRecord.filename, {
         type: blob.type || 'application/gzip',
@@ -446,14 +473,13 @@ export function StoreSettings() {
         refId: backupRecord.id,
       })
 
-      // Keep only the latest backup on R2.
+      const safeKeepCount = Math.max(1, Math.trunc(keepCount) || 10)
+
       try {
-        const remoteBackups = await fileApi.list(accessToken, {
-          category: 'backup',
-          ref_type: 'store_backup',
-          per_page: 200,
-        })
-        const staleFiles = remoteBackups.files.filter((item) => item.id !== uploaded.id)
+        const remoteBackups = await listRemoteBackupFiles(accessToken)
+        const staleFiles = remoteBackups.filter(
+          (item, index) => index >= safeKeepCount && item.id !== uploaded.id,
+        )
         await Promise.all(
           staleFiles.map((item) =>
             fileApi.delete(accessToken, item.id).catch(() => undefined),
@@ -463,7 +489,7 @@ export function StoreSettings() {
         // Best effort cleanup only.
       }
     },
-    [],
+    [listRemoteBackupFiles],
   )
 
   const onCreateBackup = async () => {
@@ -472,24 +498,25 @@ export function StoreSettings() {
     setBackupError(null)
     setBackupMessage(null)
     try {
-      const created = await storeApi.createBackup(token.access_token, 'Thủ công')
+      const created = await storeApi.createBackup(token.access_token, 'Th\u1ee7 c\u00f4ng')
       const backupRecord = created.data
+      const keepCount = Math.max(1, Math.trunc(Number(bkMaxFiles) || 10))
       let uploadedToR2 = false
       try {
-        await uploadBackupToR2KeepLatest(token.access_token, backupRecord)
+        await uploadBackupToR2WithRetention(token.access_token, backupRecord, keepCount)
         uploadedToR2 = true
       } catch {
         uploadedToR2 = false
       }
       setBackupMessage(
         uploadedToR2
-          ? 'Đã tạo bản sao lưu. R2 chỉ giữ bản mới nhất.'
-          : 'Đã tạo bản sao lưu local. Chưa đồng bộ R2 được, vui lòng thử lại.',
+          ? `\u0110\u00e3 t\u1ea1o b\u1ea3n sao l\u01b0u. R2 gi\u1eef t\u1ed1i \u0111a ${keepCount} b\u1ea3n theo c\u1ea5u h\u00ecnh.`
+          : '\u0110\u00e3 t\u1ea1o b\u1ea3n sao l\u01b0u local. Ch\u01b0a \u0111\u1ed3ng b\u1ed9 R2 \u0111\u01b0\u1ee3c, vui l\u00f2ng th\u1eed l\u1ea1i.',
       )
       void loadBackups()
     } catch (err) {
       if (err instanceof ApiError) setBackupError(err.message)
-      else setBackupError('Không thể tạo bản sao lưu.')
+      else setBackupError('Kh\u00f4ng th\u1ec3 t\u1ea1o b\u1ea3n sao l\u01b0u.')
     } finally {
       setBackupCreating(false)
     }
@@ -590,19 +617,20 @@ export function StoreSettings() {
 
   const onSyncPush = async () => {
     if (!token?.access_token) return
-    if (!window.confirm('Tạo bản sao lưu mới và đồng bộ lên R2?')) return
+    if (!window.confirm('T\u1ea1o b\u1ea3n sao l\u01b0u m\u1edbi v\u00e0 \u0111\u1ed3ng b\u1ed9 l\u00ean R2?')) return
     setBackupSyncing('push')
     setBackupError(null)
     setBackupMessage(null)
     try {
-      const created = await storeApi.createBackup(token.access_token, 'Đồng bộ R2')
+      const created = await storeApi.createBackup(token.access_token, '\u0110\u1ed3ng b\u1ed9 R2')
       const backupRecord = created.data
-      await uploadBackupToR2KeepLatest(token.access_token, backupRecord)
-      setBackupMessage('Đã đồng bộ lên R2. R2 chỉ giữ bản mới nhất.')
+      const keepCount = Math.max(1, Math.trunc(Number(bkMaxFiles) || 10))
+      await uploadBackupToR2WithRetention(token.access_token, backupRecord, keepCount)
+      setBackupMessage(`\u0110\u00e3 \u0111\u1ed3ng b\u1ed9 l\u00ean R2. R2 gi\u1eef t\u1ed1i \u0111a ${keepCount} b\u1ea3n theo c\u1ea5u h\u00ecnh.`)
       void loadBackups()
     } catch (err) {
       if (err instanceof ApiError) setBackupError(err.message)
-      else setBackupError('Không thể đồng bộ.')
+      else setBackupError('Kh\u00f4ng th\u1ec3 \u0111\u1ed3ng b\u1ed9.')
     } finally {
       setBackupSyncing(null)
     }
@@ -1833,58 +1861,11 @@ export function StoreSettings() {
             </div>
           ) : null}
 
-          {/* Auto backup settings */}
-          <div className="mt-6 border-t border-ink-900/10 pt-4">
-            <h4 className="text-sm font-semibold uppercase tracking-wider text-ink-500">Sao lưu tự động</h4>
-            <div className="mt-3 grid gap-4 md:grid-cols-4">
-              <label className="flex items-center gap-2 text-sm text-ink-700">
-                <input
-                  type="checkbox"
-                  checked={bkAutoEnabled}
-                  onChange={(e) => setBkAutoEnabled(e.target.checked)}
-                  disabled={!pgDumpOk}
-                />
-                Bật sao lưu tự động
-              </label>
-              <label className="space-y-1 text-sm text-ink-700">
-                <span>Chu kỳ (giờ)</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={bkAutoInterval}
-                  onChange={(e) => setBkAutoInterval(e.target.value)}
-                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-                  disabled={!bkAutoEnabled}
-                />
-              </label>
-              <label className="space-y-1 text-sm text-ink-700">
-                <span>Số bản tối đa</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={bkMaxFiles}
-                  onChange={(e) => setBkMaxFiles(e.target.value)}
-                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-                />
-              </label>
-              <label className="space-y-1 text-sm text-ink-700">
-                <span>Hết hạn token nội bộ (phút)</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={bkInternalTokenTtlMinutes}
-                  onChange={(e) => setBkInternalTokenTtlMinutes(e.target.value)}
-                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-                />
-              </label>
-            </div>
-          </div>
-
           {/* Sync settings */}
           <div className="mt-6 border-t border-ink-900/10 pt-4">
             <h4 className="text-sm font-semibold uppercase tracking-wider text-ink-500">Đồng bộ với R2</h4>
             <p className="mt-1 text-xs text-ink-500">
-              Đẩy bản sao lưu mới nhất lên R2 hoặc kéo bản sao lưu mới nhất từ R2 về danh sách local.
+              {`Đẩy bản sao lưu mới lên R2, R2 sẽ giữ tối đa ${Math.max(1, Math.trunc(Number(bkMaxFiles) || 10))} bản theo cấu hình. Vẫn có thể kéo bản sao lưu mới nhất từ R2 về danh sách local.`}
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
               <button

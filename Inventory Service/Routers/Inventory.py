@@ -1835,6 +1835,11 @@ async def startup_event() -> None:
         "data": normalize_inventory_settings(DEFAULT_INVENTORY_SETTINGS),
         "fetched_at": datetime.fromtimestamp(0, tz=timezone.utc),
     }
+    await reload_runtime_state_from_storage()
+    runtime_state.consumer_task = asyncio.create_task(consume_sale_events())
+
+
+async def reload_runtime_state_from_storage() -> bool:
     loaded = await load_runtime_state_safe()
     if loaded:
         if cleanup_legacy_seed_data():
@@ -1843,7 +1848,7 @@ async def startup_event() -> None:
         seed_demo_data()
         await save_runtime_state_safe()
     await fetch_inventory_settings(force=True)
-    runtime_state.consumer_task = asyncio.create_task(consume_sale_events())
+    return loaded
 
 
 async def shutdown_event() -> None:
@@ -1853,6 +1858,22 @@ async def shutdown_event() -> None:
     await runtime_state.redis.aclose()
     if getattr(runtime_state, "pg_pool", None) is not None:
         await runtime_state.pg_pool.close()
+
+
+@router.post("/admin/runtime-state/reload")
+async def reload_runtime_state_admin(token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+    actor, role, username = get_current_actor(token)
+    if not can_override_receipt_lock(role, username):
+        raise HTTPException(status_code=403, detail="Only owner/admin can reload runtime state")
+
+    async with runtime_state.lock:
+        loaded = await reload_runtime_state_from_storage()
+
+    return {
+        "message": "Inventory runtime state reloaded successfully",
+        "loaded_from_storage": loaded,
+        "actor": actor,
+    }
 
 @router.get("/events")
 async def get_events() -> list[dict[str, Any]]:

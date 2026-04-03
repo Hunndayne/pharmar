@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +51,9 @@ type fileListResponse struct {
 	Files []struct {
 		ID string `json:"id"`
 	} `json:"files"`
+	Page       int `json:"page"`
+	PerPage    int `json:"per_page"`
+	TotalPages int `json:"total_pages"`
 }
 
 func parsePgConnInfo(databaseURL string) (pgConnInfo, error) {
@@ -321,6 +325,10 @@ func (s *Service) RestoreBackup(ctx context.Context, reader io.Reader, filename 
 		}
 	}
 
+	if err := s.reloadInventoryRuntimeState(ctx); err != nil {
+		return fmt.Errorf("reload inventory runtime state after restore: %w", err)
+	}
+
 	return nil
 }
 
@@ -447,7 +455,7 @@ func (s *Service) createFileServiceToken(ctx context.Context) (string, error) {
 	return signed, nil
 }
 
-func (s *Service) syncBackupToR2KeepLatest(ctx context.Context, record domain.BackupRecord) error {
+func (s *Service) syncBackupToR2WithRetention(ctx context.Context, record domain.BackupRecord) error {
 	fileServiceURL := strings.TrimSpace(s.cfg.FileServiceURL)
 	if fileServiceURL == "" {
 		return fmt.Errorf("FILE_SERVICE_URL is not configured")
@@ -542,34 +550,16 @@ func (s *Service) syncBackupToR2KeepLatest(ctx context.Context, record domain.Ba
 		return fmt.Errorf("file-service upload response missing file id")
 	}
 
-	// Keep only latest backup on R2.
-	listURL := fmt.Sprintf(
-		"%s/api/v1/file/list?category=backup&ref_type=store_backup&per_page=200&page=1",
-		strings.TrimRight(fileServiceURL, "/"),
-	)
-	listReq, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
+	maxFiles := s.getBackupMaxFiles(ctx)
+	listed, err := s.listRemoteBackupFiles(ctx, client, token, fileServiceURL)
 	if err != nil {
-		return fmt.Errorf("create list request: %w", err)
-	}
-	listReq.Header.Set("Authorization", "Bearer "+token)
-
-	listResp, err := client.Do(listReq)
-	if err != nil {
-		return fmt.Errorf("list backup files from file-service: %w", err)
-	}
-	defer listResp.Body.Close()
-
-	if listResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(listResp.Body, 1024))
-		return fmt.Errorf("file-service list failed (%d): %s", listResp.StatusCode, string(body))
+		return err
 	}
 
-	var listed fileListResponse
-	if err := json.NewDecoder(listResp.Body).Decode(&listed); err != nil {
-		return fmt.Errorf("decode list response: %w", err)
-	}
-
-	for _, f := range listed.Files {
+	for idx, f := range listed {
+		if idx < maxFiles {
+			continue
+		}
 		fileID := strings.TrimSpace(f.ID)
 		if fileID == "" || fileID == uploaded.ID {
 			continue
@@ -594,6 +584,100 @@ func (s *Service) syncBackupToR2KeepLatest(ctx context.Context, record domain.Ba
 		}
 	}
 
+	return nil
+}
+
+func (s *Service) listRemoteBackupFiles(
+	ctx context.Context,
+	client *http.Client,
+	token string,
+	fileServiceURL string,
+) ([]struct {
+	ID string `json:"id"`
+}, error) {
+	const perPage = 100
+
+	baseURL := strings.TrimRight(fileServiceURL, "/")
+	page := 1
+	totalPages := 1
+	var files []struct {
+		ID string `json:"id"`
+	}
+
+	for page <= totalPages {
+		listURL := fmt.Sprintf(
+			"%s/api/v1/file/list?category=backup&ref_type=store_backup&per_page=%d&page=%d",
+			baseURL,
+			perPage,
+			page,
+		)
+		listReq, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create list request: %w", err)
+		}
+		listReq.Header.Set("Authorization", "Bearer "+token)
+
+		listResp, err := client.Do(listReq)
+		if err != nil {
+			return nil, fmt.Errorf("list backup files from file-service: %w", err)
+		}
+
+		if listResp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(listResp.Body, 1024))
+			listResp.Body.Close()
+			return nil, fmt.Errorf("file-service list failed (%d): %s", listResp.StatusCode, string(body))
+		}
+
+		var listed fileListResponse
+		if err := json.NewDecoder(listResp.Body).Decode(&listed); err != nil {
+			listResp.Body.Close()
+			return nil, fmt.Errorf("decode list response: %w", err)
+		}
+		listResp.Body.Close()
+
+		files = append(files, listed.Files...)
+		if listed.TotalPages > 0 {
+			totalPages = listed.TotalPages
+		} else if len(listed.Files) < perPage {
+			totalPages = page
+		} else {
+			totalPages = page + 1
+		}
+		page++
+	}
+
+	return files, nil
+}
+
+func (s *Service) reloadInventoryRuntimeState(ctx context.Context) error {
+	inventoryServiceURL := strings.TrimSpace(s.cfg.InventoryServiceURL)
+	if inventoryServiceURL == "" {
+		return fmt.Errorf("INVENTORY_SERVICE_URL is not configured")
+	}
+
+	token, err := s.createFileServiceToken(ctx)
+	if err != nil {
+		return err
+	}
+
+	reloadURL := fmt.Sprintf("%s/api/v1/inventory/admin/runtime-state/reload", strings.TrimRight(inventoryServiceURL, "/"))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reloadURL, nil)
+	if err != nil {
+		return fmt.Errorf("create inventory reload request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 2 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("call inventory reload endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("inventory reload failed (%d): %s", resp.StatusCode, string(body))
+	}
 	return nil
 }
 
@@ -743,16 +827,35 @@ func (s *Service) getSyncAPIKey(ctx context.Context) string {
 	return strings.TrimSpace(key)
 }
 
-func (s *Service) cleanupOldBackups(ctx context.Context) {
+func (s *Service) getBackupMaxFiles(ctx context.Context) int {
 	maxFiles := 10
 	settings, err := s.GetSettingsByGroup(ctx, "backup")
 	if err == nil {
 		if v, ok := settings["backup.max_files"]; ok {
-			if n, ok := v.(float64); ok && n > 0 {
-				maxFiles = int(n)
+			switch typed := v.(type) {
+			case float64:
+				if typed > 0 {
+					maxFiles = int(typed)
+				}
+			case int:
+				if typed > 0 {
+					maxFiles = typed
+				}
+			case string:
+				if n, convErr := strconv.Atoi(strings.TrimSpace(typed)); convErr == nil && n > 0 {
+					maxFiles = n
+				}
 			}
 		}
 	}
+	if maxFiles < 1 {
+		return 1
+	}
+	return maxFiles
+}
+
+func (s *Service) cleanupOldBackups(ctx context.Context) {
+	maxFiles := s.getBackupMaxFiles(ctx)
 
 	rows, err := s.pool.Query(ctx,
 		`SELECT id::text, filename FROM store.backups ORDER BY created_at DESC`,
@@ -832,10 +935,10 @@ func (s *Service) checkAndRunAutoBackup(ctx context.Context, lastBackup *time.Ti
 		return
 	}
 
-	if err := s.syncBackupToR2KeepLatest(ctx, record); err != nil {
+	if err := s.syncBackupToR2WithRetention(ctx, record); err != nil {
 		log.Printf("auto-backup: sync to R2 failed: %v", err)
 	} else {
-		log.Printf("auto-backup: synced latest backup to R2")
+		log.Printf("auto-backup: synced backup to R2 with retention")
 	}
 	*lastBackup = time.Now()
 	log.Printf("auto-backup: completed successfully")
