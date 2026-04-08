@@ -269,6 +269,8 @@ export type InventoryAdjustStockPayload = {
   note?: string | null
   quantity_delta?: number
   new_quantity?: number
+  disposal_method?: string | null
+  witness?: string | null
 }
 
 export type InventoryAdjustStockResponse = {
@@ -354,6 +356,7 @@ export type InventoryAlerts = {
   totals: {
     low_stock: number
     expiring_soon: number
+    warning: number
     near_date: number
     expired: number
   }
@@ -365,8 +368,25 @@ export type InventoryAlerts = {
     threshold: number
   }>
   expiring_soon: InventoryAlertEntry[]
+  warning: InventoryAlertEntry[]
   near_date: InventoryAlertEntry[]
   expired: InventoryAlertEntry[]
+}
+
+export type DisposalLogEntry = {
+  id: string
+  batch_id: string
+  drug_id: string
+  drug_name: string
+  drug_code: string
+  batch_code: string
+  exp_date: string
+  qty_disposed: number
+  disposal_method: string
+  witness: string | null
+  note: string | null
+  actor: string
+  disposed_at: string
 }
 
 const requestInventoryJson = async <T>(
@@ -626,4 +646,12 @@ export const inventoryApi = {
 
   getInventoryAlerts: (token?: string) =>
     requestInventoryJson<InventoryAlerts>('/inventory/inventory-alerts', { method: 'GET' }, token),
+
+  getDisposalLog: (token: string, params?: { date_from?: string; date_to?: string }) =>
+    requestInventoryJson<{ total: number; entries: DisposalLogEntry[] }>(
+      '/inventory/disposal-log',
+      { method: 'GET' },
+      token,
+      params,
+    ),
 }

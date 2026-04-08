@@ -44,6 +44,7 @@ optional_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", aut
 DEFAULT_INVENTORY_SETTINGS: dict[str, Any] = {
     "inventory.low_stock_threshold": 10,
     "inventory.expiry_warning_days": 30,
+    "inventory.warning_days": 60,
     "inventory.near_date_days": 90,
     "inventory.enable_fefo": True,
     "inventory.fefo_threshold_days": settings.FEFO_THRESHOLD_DAYS,
@@ -96,12 +97,18 @@ def normalize_inventory_settings(raw: dict[str, Any]) -> dict[str, Any]:
         raw.get("inventory.expiry_warning_days"),
         _to_non_negative_int(DEFAULT_INVENTORY_SETTINGS["inventory.expiry_warning_days"], 30),
     )
+    warning_days = _to_non_negative_int(
+        raw.get("inventory.warning_days"),
+        _to_non_negative_int(DEFAULT_INVENTORY_SETTINGS["inventory.warning_days"], 60),
+    )
+    if warning_days < expiry_warning_days:
+        warning_days = expiry_warning_days
     near_date_days = _to_non_negative_int(
         raw.get("inventory.near_date_days"),
         _to_non_negative_int(DEFAULT_INVENTORY_SETTINGS["inventory.near_date_days"], 90),
     )
-    if near_date_days < expiry_warning_days:
-        near_date_days = expiry_warning_days
+    if near_date_days < warning_days:
+        near_date_days = warning_days
 
     enable_fefo = _to_bool(
         raw.get("inventory.enable_fefo"),
@@ -115,6 +122,7 @@ def normalize_inventory_settings(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "inventory.low_stock_threshold": low_stock_threshold,
         "inventory.expiry_warning_days": expiry_warning_days,
+        "inventory.warning_days": warning_days,
         "inventory.near_date_days": near_date_days,
         "inventory.enable_fefo": enable_fefo,
         "inventory.fefo_threshold_days": fefo_threshold_days,
@@ -808,6 +816,7 @@ def save_runtime_state() -> None:
         "movements": runtime_state.movements,
         "reservations": runtime_state.reservations,
         "sale_events": runtime_state.sale_events,
+        "disposal_log": runtime_state.disposal_log,
         "catalog_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
         "catalog_drugs_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
         "catalog_suppliers_last_sync_at": runtime_state.catalog_suppliers_last_sync_at,
@@ -834,6 +843,7 @@ async def save_runtime_state_safe() -> None:
                 "reservations": runtime_state.reservations,
                 "sale_events": runtime_state.sale_events,
                 "audits": runtime_state.audits,
+                "disposal_log": runtime_state.disposal_log,
                 "catalog_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
                 "catalog_drugs_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
                 "catalog_suppliers_last_sync_at": runtime_state.catalog_suppliers_last_sync_at,
@@ -919,7 +929,7 @@ def load_runtime_state_from_payload(payload: dict[str, Any]) -> bool:
             return False
 
         runtime_state.counters = dict(payload.get("counters") or {})
-        for key in ("receipt", "receipt_line", "batch", "movement", "reservation", "audit"):
+        for key in ("receipt", "receipt_line", "batch", "movement", "reservation", "audit", "disposal"):
             runtime_state.counters.setdefault(key, 0)
         runtime_state.suppliers = dict(payload.get("suppliers") or {})
         runtime_state.drugs = dict(payload.get("drugs") or {})
@@ -929,6 +939,7 @@ def load_runtime_state_from_payload(payload: dict[str, Any]) -> bool:
         runtime_state.reservations = list(payload.get("reservations") or [])
         runtime_state.sale_events = list(payload.get("sale_events") or [])
         runtime_state.audits = dict(payload.get("audits") or {})
+        runtime_state.disposal_log = list(payload.get("disposal_log") or [])
         legacy_catalog_sync = payload.get("catalog_last_sync_at")
         runtime_state.catalog_drugs_last_sync_at = _parse_iso_datetime(
             payload.get("catalog_drugs_last_sync_at")
@@ -1752,7 +1763,7 @@ def extract_qr_candidates(raw_value: str) -> list[str]:
 
 
 def seed_demo_data() -> None:
-    runtime_state.counters = {"receipt": 0, "receipt_line": 0, "batch": 0, "movement": 0, "reservation": 0, "audit": 0}
+    runtime_state.counters = {"receipt": 0, "receipt_line": 0, "batch": 0, "movement": 0, "reservation": 0, "audit": 0, "disposal": 0}
     runtime_state.suppliers = {}
     runtime_state.drugs = {}
     runtime_state.receipts = {}
@@ -1761,6 +1772,7 @@ def seed_demo_data() -> None:
     runtime_state.reservations = []
     runtime_state.sale_events = []
     runtime_state.audits = {}
+    runtime_state.disposal_log = []
     runtime_state.catalog_drugs_last_sync_at = datetime.fromtimestamp(0, tz=timezone.utc)
     runtime_state.catalog_suppliers_last_sync_at = datetime.fromtimestamp(0, tz=timezone.utc)
 
@@ -2860,12 +2872,51 @@ async def adjust_stock(payload: StockAdjustmentRequest, token: str = Depends(oau
         if next_qty < 0:
             raise HTTPException(status_code=409, detail="Adjustment would make stock negative")
 
+        qty_disposed = abs(quantity_delta) if quantity_delta < 0 else (batch["qty_remaining"] - next_qty if payload.new_quantity is not None else 0)
         batch["qty_remaining"] = next_qty
         batch["updated_at"] = utc_now()
         movement = add_movement(MovementType.STOCK_ADJUSTMENT, batch["drug_id"], batch["id"], quantity_delta, "stock_adjustment", next_id("reservation", "adj"), actor, f"{payload.reason}: {payload.note or ''}".strip())
+
+        disposal_entry = None
+        if payload.reason == "expired_disposal":
+            runtime_state.counters["disposal"] += 1
+            drug = runtime_state.drugs.get(batch["drug_id"], {})
+            disposal_entry = {
+                "id": f"disp-{runtime_state.counters['disposal']}",
+                "batch_id": batch["id"],
+                "drug_id": batch["drug_id"],
+                "drug_name": drug.get("name", ""),
+                "drug_code": drug.get("code", ""),
+                "batch_code": batch["batch_code"],
+                "exp_date": batch["exp_date"].isoformat() if hasattr(batch["exp_date"], "isoformat") else str(batch["exp_date"]),
+                "qty_disposed": qty_disposed,
+                "disposal_method": payload.disposal_method or "Tiêu hủy thông thường",
+                "witness": payload.witness,
+                "note": payload.note,
+                "actor": actor,
+                "disposed_at": utc_now().isoformat(),
+            }
+            runtime_state.disposal_log.append(disposal_entry)
+
         await save_runtime_state_safe()
 
-    return {"message": "Stock adjusted", "batch": batch_to_view(batch), "adjustment": movement_to_view(movement)}
+    return {"message": "Stock adjusted", "batch": batch_to_view(batch), "adjustment": movement_to_view(movement), "disposal": disposal_entry}
+
+
+@router.get("/disposal-log")
+async def get_disposal_log(
+    token: str = Depends(oauth2_scheme),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+) -> dict[str, Any]:
+    entries = list(runtime_state.disposal_log)
+    if date_from:
+        entries = [e for e in entries if e.get("disposed_at", "") >= date_from.isoformat()]
+    if date_to:
+        cutoff = f"{date_to.isoformat()}T23:59:59"
+        entries = [e for e in entries if e.get("disposed_at", "") <= cutoff]
+    entries.sort(key=lambda e: e.get("disposed_at", ""), reverse=True)
+    return {"total": len(entries), "entries": entries}
 
 
 @router.get("/reports/movement")
@@ -2929,6 +2980,10 @@ async def inventory_alerts(
         inventory_settings.get("inventory.expiry_warning_days"),
         30,
     )
+    warning_days = _to_non_negative_int(
+        inventory_settings.get("inventory.warning_days"),
+        60,
+    )
     near_date_days = _to_non_negative_int(
         inventory_settings.get("inventory.near_date_days"),
         90,
@@ -2936,6 +2991,7 @@ async def inventory_alerts(
     low_stock: list[dict[str, Any]] = []
     expired: list[dict[str, Any]] = []
     expiring_soon: list[dict[str, Any]] = []
+    warning: list[dict[str, Any]] = []
     near_date: list[dict[str, Any]] = []
 
     for drug in runtime_state.drugs.values():
@@ -2965,6 +3021,8 @@ async def inventory_alerts(
             expired.append(entry)
         elif days < expiry_warning_days:
             expiring_soon.append(entry)
+        elif days < warning_days:
+            warning.append(entry)
         elif days < near_date_days:
             near_date.append(entry)
 
@@ -2973,11 +3031,13 @@ async def inventory_alerts(
         "totals": {
             "low_stock": len(low_stock),
             "expiring_soon": len(expiring_soon),
+            "warning": len(warning),
             "near_date": len(near_date),
             "expired": len(expired),
         },
         "low_stock": low_stock,
         "expiring_soon": expiring_soon,
+        "warning": warning,
         "near_date": near_date,
         "expired": expired,
     }

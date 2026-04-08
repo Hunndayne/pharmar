@@ -84,6 +84,9 @@ class StockAdjustmentRequest(BaseModel):
     note: str | None = Field(default=None, max_length=500)
     quantity_delta: int | None = None
     new_quantity: int | None = Field(default=None, ge=0)
+    # GPP disposal fields (required when reason == "expired_disposal")
+    disposal_method: str | None = Field(default=None, max_length=100)
+    witness: str | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
     def validate_qty(self):
