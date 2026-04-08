@@ -645,7 +645,7 @@ export const inventoryApi = {
     ),
 
   getInventoryAlerts: (token?: string) =>
-    requestInventoryJson<InventoryAlerts>('/inventory/inventory-alerts', { method: 'GET' }, token),
+    requestInventoryJson<InventoryAlerts>('/inventory/alerts', { method: 'GET' }, token),
 
   getDisposalLog: (token: string, params?: { date_from?: string; date_to?: string }) =>
     requestInventoryJson<{ total: number; entries: DisposalLogEntry[] }>(
