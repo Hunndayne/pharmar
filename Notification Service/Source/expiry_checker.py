@@ -15,6 +15,7 @@ from .core.config import get_settings
 from .db.models import AlertRule, Notification
 from .db.session import SessionLocal
 from .email_sender import send_email
+from .email_templates import build_expiry_email, build_low_stock_email
 
 from sqlalchemy import select
 
@@ -48,12 +49,7 @@ async def _get_rule(code: str) -> AlertRule | None:
         return result.scalar_one_or_none()
 
 
-def _to_html(body: str) -> str:
-    lines = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return f"<pre style=\"font-family:sans-serif;font-size:14px;line-height:1.6;white-space:pre-wrap\">{lines}</pre>"
-
-
-async def _create_notification(title: str, body: str, category: str, rule: AlertRule) -> None:
+async def _create_notification(title: str, body: str, category: str, rule: AlertRule, email_html: str | None = None) -> None:
     async with SessionLocal() as db:
         notification = Notification(
             title=title,
@@ -62,9 +58,9 @@ async def _create_notification(title: str, body: str, category: str, rule: Alert
             is_read=False,
             email_sent=False,
         )
-        if rule.send_email:
+        if rule.send_email and email_html:
             try:
-                sent = await send_email(db, "", title, _to_html(body))
+                sent = await send_email(db, "", title, email_html)
                 notification.email_sent = sent
             except Exception:
                 logger.exception("Failed to send %s alert email", category)
@@ -108,38 +104,20 @@ async def _handle_expiry(alerts_data: dict) -> None:
     if not new_expired and not new_expiring_soon and not new_warning:
         return
 
-    # Build notification body
+    total = len(new_expired) + len(new_expiring_soon) + len(new_warning)
     parts = []
     if new_expired:
-        parts.append(f"{len(new_expired)} lô đã hết hạn")
+        parts.append(f"{len(new_expired)} lô hết hạn")
     if new_expiring_soon:
-        parts.append(f"{len(new_expiring_soon)} lô sắp hết hạn (< 30 ngày)")
+        parts.append(f"{len(new_expiring_soon)} lô sắp hết hạn")
     if new_warning:
-        parts.append(f"{len(new_warning)} lô cảnh báo (30–60 ngày)")
+        parts.append(f"{len(new_warning)} lô cảnh báo")
 
     title = "Cảnh báo hạn sử dụng thuốc"
-    lines = [f"Phát hiện {', '.join(parts)}:"]
+    body_text = f"Phát hiện {total} lô cần xử lý: {', '.join(parts)}."
+    email_html = build_expiry_email(new_expired, new_expiring_soon, new_warning, settings.FRONTEND_URL)
 
-    for entry in new_expired[:4]:
-        b = entry.get("batch", {})
-        lines.append(f"  • [HẾT HẠN] {b.get('drug_name', '?')} — lô {b.get('batch_code', '?')}, tồn: {b.get('qty_remaining', 0)}")
-
-    for entry in new_expiring_soon[:3]:
-        b = entry.get("batch", {})
-        days = entry.get("days_to_expiry", 0)
-        lines.append(f"  • [SẮP HẾT] {b.get('drug_name', '?')} — lô {b.get('batch_code', '?')}, còn {days} ngày")
-
-    for entry in new_warning[:3]:
-        b = entry.get("batch", {})
-        days = entry.get("days_to_expiry", 0)
-        lines.append(f"  • [CẢNH BÁO] {b.get('drug_name', '?')} — lô {b.get('batch_code', '?')}, còn {days} ngày")
-
-    total = len(new_expired) + len(new_expiring_soon) + len(new_warning)
-    shown = min(total, 10)
-    if total > shown:
-        lines.append(f"  ... và {total - shown} lô khác")
-
-    await _create_notification(title, "\n".join(lines), "expiry_warning", rule)
+    await _create_notification(title, body_text, "expiry_warning", rule, email_html)
     logger.info(
         "Expiry notification: %d expired, %d expiring soon, %d warning",
         len(new_expired), len(new_expiring_soon), len(new_warning),
@@ -172,16 +150,10 @@ async def _handle_low_stock(alerts_data: dict) -> None:
         return
 
     title = "Cảnh báo tồn kho thấp"
-    lines = [f"Có {len(new_items)} sản phẩm dưới mức tồn kho tối thiểu:"]
-    for item in new_items[:8]:
-        name = item.get("drug_name", "?")
-        qty = item.get("current_qty", 0)
-        threshold = item.get("threshold", 0)
-        lines.append(f"  • {name}: còn {qty} (ngưỡng {threshold})")
-    if len(new_items) > 8:
-        lines.append(f"  ... và {len(new_items) - 8} sản phẩm khác")
+    body_text = f"Có {len(new_items)} sản phẩm dưới mức tồn kho tối thiểu."
+    email_html = build_low_stock_email(new_items, settings.FRONTEND_URL)
 
-    await _create_notification(title, "\n".join(lines), "low_stock", rule)
+    await _create_notification(title, body_text, "low_stock", rule, email_html)
     logger.info("Low stock notification: %d new items", len(new_items))
 
 
@@ -204,10 +176,13 @@ async def _handle_system_alert(fetch_ok: bool) -> None:
         if rule and rule.is_active:
             title = "Lỗi kết nối dịch vụ kho"
             body = (
-                f"Hệ thống không thể kết nối đến Inventory Service sau {_inventory_fail_count} lần thử liên tiếp.\n"
+                f"Hệ thống không thể kết nối đến Inventory Service "
+                f"sau {_inventory_fail_count} lần thử liên tiếp.\n"
                 "Vui lòng kiểm tra trạng thái dịch vụ kho hàng."
             )
-            await _create_notification(title, body, "system", rule)
+            from .email_templates import build_generic_email
+            email_html = build_generic_email(title, body)
+            await _create_notification(title, body, "system", rule, email_html)
             _system_alert_sent = True
             logger.warning("System alert sent: inventory service unreachable after %d failures", _inventory_fail_count)
 
