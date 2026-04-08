@@ -45,10 +45,14 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str = ""
     SMTP_FROM_NAME: str = "Pharmar"
 
-    # Expiry checker
+    # Inventory checker (expiry + low stock + system alerts)
     INVENTORY_SERVICE_URL: str = "http://inventory-service:8002"
     EXPIRY_CHECK_INTERVAL_HOURS: int = 24
     ENABLE_EXPIRY_CHECK_JOB: bool = True
+    # Number of consecutive inventory fetch failures before a system alert is raised
+    INVENTORY_FAIL_ALERT_THRESHOLD: int = 3
+
+    FRONTEND_URL: str = "https://pharmar.hunn.io.vn"
 
     CORS_ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
