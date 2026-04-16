@@ -10,6 +10,7 @@ import { navItems } from '../routes/navigation'
 
 const titleByPath: Record<string, string> = {
   '/': 'Dashboard',
+  '/goi-y-nhap-hang': 'Chi tiết nhập hàng',
   '/thuoc': 'Danh mục thuốc',
   '/nhom-thuoc': 'Nhóm thuốc',
   '/cua-hang': 'Cửa hàng',

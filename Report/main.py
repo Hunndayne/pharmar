@@ -1483,7 +1483,7 @@ async def _build_dashboard_ai_payload(authorization: str, slot_at: datetime) -> 
     )
     stock_summary, restock_highlights, expenses_dataset = await asyncio.gather(
         _fetch_stock_summary(authorization),
-        _load_restock_highlights(authorization, 20),
+        _load_restock_highlights(authorization),
         _fetch_expense_summary(authorization, month_from, as_of),
     )
 
@@ -1811,7 +1811,6 @@ def _build_restock_highlights(
     date_to: date,
     sales_window_days: int,
     target_cover_days: int,
-    limit: int,
 ) -> dict[str, Any]:
     sold_qty_by_drug: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
 
@@ -1913,7 +1912,7 @@ def _build_restock_highlights(
         "total_actionable": len(actionable_rows),
         "critical_count": critical_count,
         "high_count": high_count,
-        "items": actionable_rows[:limit],
+        "items": actionable_rows,
     }
 
 
@@ -1976,7 +1975,6 @@ async def _load_profit_dataset(
 
 async def _load_restock_highlights(
     authorization: str,
-    limit: int,
 ) -> dict[str, Any]:
     inventory_settings = await _fetch_inventory_settings(authorization)
     sales_window_days = _to_int_with_minimum(
@@ -1994,7 +1992,6 @@ async def _load_restock_highlights(
     cache_key = _cache_key(
         "report:restock:highlights",
         {
-            "limit": limit,
             "sales_window_days": sales_window_days,
             "target_cover_days": target_cover_days,
             "as_of": as_of.isoformat(),
@@ -2017,7 +2014,6 @@ async def _load_restock_highlights(
         date_to=as_of,
         sales_window_days=sales_window_days,
         target_cover_days=target_cover_days,
-        limit=limit,
     )
     await _set_cached_json(cache_key, dataset, settings.REPORT_CACHE_TTL_SECONDS)
     return dataset
@@ -2252,7 +2248,74 @@ async def restock_highlights(
 ) -> dict[str, Any]:
     token = _require_authorization(authorization)
     await _refresh_report_timezone(token)
-    return await _load_restock_highlights(token, limit)
+    dataset = await _load_restock_highlights(token)
+    return {
+        **dataset,
+        "items": list(dataset.get("items", []))[:limit],
+    }
+
+
+@app.get("/api/v1/report/restock/items")
+async def restock_items(
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None),
+    urgency: str = Query(default="all"),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    token = _require_authorization(authorization)
+    await _refresh_report_timezone(token)
+    dataset = await _load_restock_highlights(token)
+
+    raw_items = dataset.get("items", [])
+    items = raw_items if isinstance(raw_items, list) else []
+
+    normalized_search = str(search or "").strip().lower()
+    normalized_urgency = urgency.strip().lower()
+    if normalized_urgency not in {"all", "critical", "high", "normal"}:
+        raise HTTPException(status_code=422, detail="urgency must be one of: all, critical, high, normal")
+
+    filtered_items: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_urgency = str(item.get("urgency") or "").strip().lower()
+        if normalized_urgency != "all" and item_urgency != normalized_urgency:
+            continue
+
+        if normalized_search:
+            search_blob = " ".join(
+                [
+                    str(item.get("drug_code") or ""),
+                    str(item.get("drug_name") or ""),
+                    str(item.get("base_unit") or ""),
+                ]
+            ).strip().lower()
+            if normalized_search not in search_blob:
+                continue
+
+        filtered_items.append(item)
+
+    total = len(filtered_items)
+    pages = max(1, math.ceil(total / size)) if total > 0 else 1
+    start = (page - 1) * size
+    page_items = filtered_items[start : start + size]
+
+    return {
+        "generated_at": dataset.get("generated_at"),
+        "sales_window_days": dataset.get("sales_window_days"),
+        "target_cover_days": dataset.get("target_cover_days"),
+        "total_actionable": _to_non_negative_int(dataset.get("total_actionable")),
+        "critical_count": _to_non_negative_int(dataset.get("critical_count")),
+        "high_count": _to_non_negative_int(dataset.get("high_count")),
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": pages,
+        "urgency": normalized_urgency,
+        "search": str(search or "").strip(),
+        "items": page_items,
+    }
 
 
 @app.get("/api/v1/report/ai/dashboard-insights")

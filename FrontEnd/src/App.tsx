@@ -8,6 +8,7 @@ import { Login } from './pages/Login'
 import { setDocumentFavicon } from './utils/assets'
 
 const Dashboard = lazy(() => import('./pages/Dashboard').then((module) => ({ default: module.Dashboard })))
+const RestockSuggestions = lazy(() => import('./pages/RestockSuggestions').then((module) => ({ default: module.RestockSuggestions })))
 const DrugCatalog = lazy(() => import('./pages/DrugCatalog').then((module) => ({ default: module.DrugCatalog })))
 const DrugGroups = lazy(() => import('./pages/DrugGroups').then((module) => ({ default: module.DrugGroups })))
 const Manufacturers = lazy(() => import('./pages/Manufacturers').then((module) => ({ default: module.Manufacturers })))
@@ -71,6 +72,7 @@ function App() {
           )}
         >
           <Route index element={<Dashboard />} />
+          <Route path="/goi-y-nhap-hang" element={<RestockSuggestions />} />
           <Route path="/thuoc" element={<DrugCatalog />} />
           <Route path="/nhom-thuoc" element={<DrugGroups />} />
           <Route path="/cua-hang" element={<StoreHub />} />

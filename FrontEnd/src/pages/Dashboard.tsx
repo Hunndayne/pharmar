@@ -412,6 +412,12 @@ export function Dashboard() {
           </div>
           <div className="flex flex-wrap gap-2">
             <Link
+              to="/goi-y-nhap-hang"
+              className="inline-flex rounded-full border border-brand-500/20 bg-brand-500/10 px-4 py-2 text-sm font-semibold text-brand-700"
+            >
+              Xem chi tiết
+            </Link>
+            <Link
               to="/nhap-hang"
               className="inline-flex rounded-full bg-ink-900 px-4 py-2 text-sm font-semibold text-white"
             >
