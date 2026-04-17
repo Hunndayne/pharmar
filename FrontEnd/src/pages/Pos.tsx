@@ -3,7 +3,7 @@ import {
   inventoryApi,
   type InventoryBatch,
   type InventoryBatchDetail,
-  type InventoryMetaDrug,
+  type InventoryPosCatalogDrug,
   type InventoryStockDrugDetail,
 } from '../api/inventoryService'
 import { catalogApi, type PrescriptionTemplate } from '../api/catalogService'
@@ -310,23 +310,21 @@ const buildAutoFillPolicyLabel = (fefoEnabled: boolean, fefoThresholdDays: numbe
     ? `Xuất kho tự động theo FEFO/FIFO (ngưỡng ${fefoThresholdDays} ngày)`
     : 'Xuất kho tự động theo FIFO'
 
-const mapMetaDrugToPosDrug = (drug: InventoryMetaDrug): PosDrug => {
-  const priceByUnitId = new Map(drug.unit_prices.map((item) => [item.unit_id, Number(item.price || 0)]))
+const mapPosCatalogDrugToPosDrug = (drug: InventoryPosCatalogDrug): PosDrug => {
   const sortedUnits = drug.units.slice().sort((a, b) => b.conversion - a.conversion)
-
   return {
     id: drug.id,
     code: drug.code,
     name: drug.name,
-    group: drug.group ?? '',
-    instructions: String(drug.instructions ?? '').trim(),
-    totalQty: 0,
+    group: drug.group,
+    instructions: drug.instructions.trim(),
+    totalQty: drug.total_qty,
     units: sortedUnits.map((unit, index) => ({
       id: unit.id,
       name: unit.name,
       conversion: Math.max(1, unit.conversion),
-      price: Number.isFinite(priceByUnitId.get(unit.id)) ? Number(priceByUnitId.get(unit.id)) : 0,
-      barcode: String(unit.barcode ?? '').trim(),
+      price: unit.price,
+      barcode: unit.barcode.trim(),
       role: unitRoleFromIndex(index, sortedUnits.length),
     })),
   }
@@ -956,23 +954,16 @@ export function Pos() {
     setLoadError(null)
 
     try {
-      const [metaDrugs, stockSummary, inventorySettings, saleSettings, customerSettings, store] = await Promise.all([
-        inventoryApi.getMetaDrugs(token?.access_token),
-        inventoryApi.getStockSummary(token?.access_token),
+      const [posCatalog, inventorySettings, saleSettings, customerSettings, store] = await Promise.all([
+        inventoryApi.getPosCatalog(token?.access_token),
         storeApi.getSettingsByGroup('inventory'),
         storeApi.getSettingsByGroup('sale'),
         storeApi.getSettingsByGroup('customer').catch(() => ({})),
         storeApi.getInfo().catch(() => null),
       ])
 
-      const totalQtyByDrugId = new Map(
-        stockSummary.map((item) => [item.drug_id, Number(item.total_qty || 0)]),
-      )
-      const mappedDrugs = metaDrugs
-        .map((drug) => ({
-          ...mapMetaDrugToPosDrug(drug),
-          totalQty: totalQtyByDrugId.get(drug.id) ?? 0,
-        }))
+      const mappedDrugs = posCatalog
+        .map(mapPosCatalogDrugToPosDrug)
         .sort((a, b) => a.name.localeCompare(b.name, 'vi-VN'))
 
       setDrugs(mappedDrugs)

@@ -1915,6 +1915,37 @@ async def get_drugs(token: str = Depends(oauth2_scheme)) -> list[dict[str, Any]]
     return list(runtime_state.drugs.values())
 
 
+@router.get("/pos/catalog")
+async def get_pos_catalog(token: str = Depends(oauth2_scheme)) -> list[dict[str, Any]]:
+    """POS-optimised catalog: merges drug meta + stock qty in one call, slim payload."""
+    get_current_subject(token)
+    await maybe_sync_catalog_drugs(token)
+    result: list[dict[str, Any]] = []
+    for drug in runtime_state.drugs.values():
+        price_map = {up["unit_id"]: up["price"] for up in drug.get("unit_prices", [])}
+        units = [
+            {
+                "id": u["id"],
+                "name": u["name"],
+                "conversion": u["conversion"],
+                "price": price_map.get(u["id"], 0),
+                "barcode": u.get("barcode", ""),
+            }
+            for u in drug.get("units", [])
+        ]
+        result.append({
+            "id": drug["id"],
+            "code": drug["code"],
+            "name": drug["name"],
+            "group": drug.get("group", ""),
+            "instructions": drug.get("instructions", ""),
+            "total_qty": stock_total_for_drug(drug["id"]),
+            "units": units,
+        })
+    result.sort(key=lambda d: d["name"])
+    return result
+
+
 @router.get("/meta/suppliers")
 async def get_suppliers(token: str = Depends(oauth2_scheme)) -> list[dict[str, Any]]:
     get_current_subject(token)

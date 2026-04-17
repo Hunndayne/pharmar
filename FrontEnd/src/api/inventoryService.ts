@@ -46,6 +46,24 @@ export type InventoryMetaDrug = {
   sku_aliases: string[]
 }
 
+export type InventoryPosCatalogUnit = {
+  id: string
+  name: string
+  conversion: number
+  price: number
+  barcode: string
+}
+
+export type InventoryPosCatalogDrug = {
+  id: string
+  code: string
+  name: string
+  group: string
+  instructions: string
+  total_qty: number
+  units: InventoryPosCatalogUnit[]
+}
+
 export type InventoryReceiptLineUnitPrice = {
   unit_id: string
   unit_name: string
@@ -411,6 +429,9 @@ export const inventoryApi = {
 
   getMetaDrugs: (token?: string) =>
     requestInventoryJson<InventoryMetaDrug[]>('/inventory/meta/drugs', { method: 'GET' }, token),
+
+  getPosCatalog: (token?: string) =>
+    requestInventoryJson<InventoryPosCatalogDrug[]>('/inventory/pos/catalog', { method: 'GET' }, token),
 
   listImportReceipts: (params?: {
     date_from?: string
