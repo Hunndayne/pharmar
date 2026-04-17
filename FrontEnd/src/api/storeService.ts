@@ -1,5 +1,9 @@
-import { ApiError } from './usersService'
-import { controlledFetch } from './fetchControl'
+import {
+  createApiUrlBuilder,
+  requestJson,
+  requestResponse,
+  type ApiFetchOptions,
+} from './httpClient'
 
 export type StoreInfo = {
   id: string
@@ -147,66 +151,25 @@ export type UpdateExpensePayload = {
   note?: string | null
 }
 
-const sanitizePrefix = (value: string) => {
-  const trimmed = value.trim()
-  if (!trimmed) return ''
-  return `/${trimmed.replace(/^\/+|\/+$/g, '')}`
-}
-
-const sanitizeBase = (value: string) => value.trim().replace(/\/+$/, '')
-
-const API_BASE = sanitizeBase(import.meta.env.VITE_API_BASE_URL ?? '')
-const STORE_PREFIX = sanitizePrefix(import.meta.env.VITE_STORE_API_PREFIX ?? '/api/v1/store')
-
-export const buildStoreApiUrl = (
-  path: string,
-  params?: Record<string, string | number | boolean | undefined>,
-) => {
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`
-  const target = `${API_BASE}${STORE_PREFIX}${normalizedPath}`
-  const url = new URL(target, window.location.origin)
-  if (params) {
-    Object.entries(params).forEach(([key, value]) => {
-      if (value === undefined || value === null || value === '') return
-      url.searchParams.set(key, String(value))
-    })
-  }
-  return url.toString()
-}
+export const buildStoreApiUrl = createApiUrlBuilder({
+  envPrefix: import.meta.env.VITE_STORE_API_PREFIX,
+  fallbackPrefix: '/api/v1/store',
+})
 
 const requestStoreJson = async <T>(
   path: string,
   init: RequestInit = {},
   token?: string,
   params?: Record<string, string | number | boolean | undefined>,
-  fetchOptions?: {
-    dedupe?: boolean
-    dedupeKey?: string
-    getCacheMs?: number
-    retryOn429?: boolean
-    max429Retries?: number
-  },
-): Promise<T> => {
-  const headers = new Headers(init.headers)
-  if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json')
-  if (token) headers.set('Authorization', `Bearer ${token}`)
-
-  const response = await controlledFetch(buildStoreApiUrl(path, params), {
-    ...init,
-    headers,
-  }, fetchOptions)
-
-  const contentType = response.headers.get('content-type') ?? ''
-  const isJson = contentType.includes('application/json')
-  const payload = isJson ? await response.json() : null
-
-  if (!response.ok) {
-    const detail = payload?.detail ?? payload?.message ?? `Yeu cau that bai (${response.status})`
-    throw new ApiError(detail, response.status)
-  }
-
-  return payload as T
-}
+  fetchOptions?: ApiFetchOptions,
+): Promise<T> =>
+  requestJson<T>(buildStoreApiUrl, path, {
+    init,
+    token,
+    params,
+    fetchMode: 'controlled',
+    fetchOptions,
+  })
 
 export const storeApi = {
   health: () => requestStoreJson<{ service: string; status: string }>('/health', { method: 'GET' }),
@@ -230,17 +193,13 @@ export const storeApi = {
   uploadLogo: async (token: string, file: File) => {
     const formData = new FormData()
     formData.append('file', file)
-
-    const response = await fetch(buildStoreApiUrl('/info/logo'), {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: formData,
+    return requestJson<{ message: string; logo_url: string; data: StoreInfo }>(buildStoreApiUrl, '/info/logo', {
+      token,
+      init: {
+        method: 'POST',
+        body: formData,
+      },
     })
-    const payload = await response.json().catch(() => null)
-    if (!response.ok) {
-      throw new ApiError(payload?.detail ?? `Yeu cau that bai (${response.status})`, response.status)
-    }
-    return payload as { message: string; logo_url: string; data: StoreInfo }
   },
 
   deleteLogo: (token: string) =>
@@ -371,14 +330,14 @@ export const storeApi = {
     ),
 
   downloadBackup: async (token: string, backupId: string): Promise<{ blob: Blob; filename: string }> => {
-    const response = await fetch(buildStoreApiUrl(`/backup/download/${encodeURIComponent(backupId)}`), {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    if (!response.ok) {
-      const payload = await response.json().catch(() => null)
-      throw new ApiError(payload?.detail ?? `Yeu cau that bai (${response.status})`, response.status)
-    }
+    const response = await requestResponse(
+      buildStoreApiUrl,
+      `/backup/download/${encodeURIComponent(backupId)}`,
+      {
+        token,
+        init: { method: 'GET' },
+      },
+    )
     const filename = response.headers.get('x-backup-filename') ?? 'backup.sql.gz'
     const blob = await response.blob()
     return { blob, filename }
@@ -394,17 +353,13 @@ export const storeApi = {
   uploadBackup: async (token: string, file: File) => {
     const formData = new FormData()
     formData.append('file', file)
-
-    const response = await fetch(buildStoreApiUrl('/backup/upload'), {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: formData,
+    return requestJson<{ message: string; data: BackupRecord }>(buildStoreApiUrl, '/backup/upload', {
+      token,
+      init: {
+        method: 'POST',
+        body: formData,
+      },
     })
-    const payload = await response.json().catch(() => null)
-    if (!response.ok) {
-      throw new ApiError(payload?.detail ?? `Yeu cau that bai (${response.status})`, response.status)
-    }
-    return payload as { message: string; data: BackupRecord }
   },
 
   restoreBackup: (token: string, backupId: string) =>

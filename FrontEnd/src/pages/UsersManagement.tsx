@@ -7,6 +7,7 @@ import {
   usersApi,
 } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
+import { formatDateTimeInAppTimeZone as formatDateTime } from '../utils/timezone'
 
 type ActiveFilter = 'all' | 'active' | 'inactive'
 type HistorySuccessFilter = 'all' | 'success' | 'failed'
@@ -59,13 +60,6 @@ const defaultHistoryFilters: HistoryFilters = {
   userId: '',
   success: 'all',
   limit: 50,
-}
-
-const formatDateTime = (value: string | null) => {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('vi-VN')
 }
 
 const mapUserToUpdateForm = (user: UserProfile): UpdateForm => ({

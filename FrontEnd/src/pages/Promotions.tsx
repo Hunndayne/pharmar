@@ -8,6 +8,7 @@ import {
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { readLocalDraft, removeLocalDraft, writeLocalDraft } from '../utils/localDraft'
+import { formatDateInAppTimeZone as formatDate } from '../utils/timezone'
 
 type StatusFilter = 'all' | 'active' | 'inactive'
 type AutoApplyFilter = 'all' | 'auto' | 'manual'
@@ -60,13 +61,6 @@ const toNumber = (value: string | number | null | undefined) => {
 const formatCurrency = (value: string | number | null | undefined) => {
   const parsed = toNumber(value)
   return `${Math.round(parsed).toLocaleString('vi-VN')}d`
-}
-
-const formatDate = (value: string) => {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleDateString('vi-VN')
 }
 
 const formatDiscount = (row: PromotionRecord) => {

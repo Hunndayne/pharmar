@@ -1,4 +1,10 @@
-import { controlledFetch } from './fetchControl'
+import {
+  ApiError,
+  createApiUrlBuilder,
+  requestJson,
+  type ApiFetchOptions,
+  type ApiValidationDetailItem,
+} from './httpClient'
 
 export type UserRole = 'owner' | 'manager' | 'staff'
 
@@ -72,152 +78,46 @@ export type LoginHistoryRecord = {
   created_at: string
 }
 
-export type ApiValidationDetailItem = {
-  type?: string
-  loc?: (string | number)[]
-  msg?: string
-  input?: unknown
-  ctx?: unknown
-  url?: string
-}
+export { ApiError }
+export type { ApiValidationDetailItem }
 
-export class ApiError extends Error {
-  status: number
-  detail?: unknown
-  validationDetail?: ApiValidationDetailItem[]
+export const buildUsersApiUrl = createApiUrlBuilder({
+  envPrefix: import.meta.env.VITE_USERS_API_PREFIX,
+  fallbackPrefix: '/api/v1',
+  devGatewayPort: 8000,
+})
 
-  constructor(
-    message: string,
-    status: number,
-    options?: {
-      detail?: unknown
-      validationDetail?: ApiValidationDetailItem[]
-    },
-  ) {
-    super(message)
-    this.name = 'ApiError'
-    this.status = status
-    this.detail = options?.detail
-    this.validationDetail = options?.validationDetail
-  }
-}
-
-const sanitizePrefix = (value: string) => {
-  const trimmed = value.trim()
-  if (!trimmed) return ''
-  return `/${trimmed.replace(/^\/+|\/+$/g, '')}`
-}
-
-const sanitizeBase = (value: string) => value.trim().replace(/\/+$/, '')
-
-const API_PREFIX = sanitizePrefix(import.meta.env.VITE_USERS_API_PREFIX ?? '/api/v1')
-const API_BASE = sanitizeBase(import.meta.env.VITE_API_BASE_URL ?? '')
-
-const buildApiRoot = () => {
-  const isLikelyDevFrontendPort =
-    typeof window !== 'undefined' &&
-    ['3000', '4173', '5173', '5174'].includes(window.location.port)
-
-  if (!API_BASE && import.meta.env.DEV && isLikelyDevFrontendPort) {
-    const protocol = window.location.protocol || 'http:'
-    const hostname = window.location.hostname || 'localhost'
-    return `${protocol}//${hostname}:8000${API_PREFIX}`
-  }
-
-  if (!API_BASE) return API_PREFIX
-  if (!API_PREFIX) return API_BASE
-
-  const lowerBase = API_BASE.toLowerCase()
-  const lowerPrefix = API_PREFIX.toLowerCase()
-  if (lowerBase.endsWith(lowerPrefix)) return API_BASE
-
-  return `${API_BASE}${API_PREFIX}`
-}
-
-export const buildUsersApiUrl = (
-  path: string,
-  params?: Record<string, string | number | boolean | undefined>,
-) => {
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`
-  const root = buildApiRoot()
-  const target = root ? `${root}${normalizedPath}` : normalizedPath
-  const url = new URL(target, window.location.origin)
-  if (params) {
-    Object.entries(params).forEach(([key, value]) => {
-      if (value === undefined || value === null || value === '') return
-      url.searchParams.set(key, String(value))
-    })
-  }
-  return url.toString()
-}
-
-const requestJson = async <T>(
+const requestUsersJson = async <T>(
   path: string,
   init: RequestInit = {},
   token?: string,
   params?: Record<string, string | number | boolean | undefined>,
-  fetchOptions?: {
-    dedupe?: boolean
-    dedupeKey?: string
-    getCacheMs?: number
-    retryOn429?: boolean
-    max429Retries?: number
-  },
-): Promise<T> => {
-  const headers = new Headers(init.headers)
-  if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json')
-  if (token) headers.set('Authorization', `Bearer ${token}`)
-
-  const response = await controlledFetch(buildUsersApiUrl(path, params), {
-    ...init,
-    headers,
-  }, fetchOptions)
-
-  const contentType = response.headers.get('content-type') ?? ''
-  const isJson = contentType.includes('application/json')
-  const payload = isJson ? await response.json() : null
-
-  if (!response.ok) {
-    const validationDetail = Array.isArray(payload?.detail)
-      ? (payload.detail as ApiValidationDetailItem[])
-      : undefined
-    const detailMessage = validationDetail
-      ? validationDetail
-          .map((item: { msg?: string; loc?: (string | number)[] }) => {
-            const loc = Array.isArray(item?.loc) ? item.loc.join('.') : ''
-            return loc ? `${loc}: ${item?.msg ?? 'Dữ liệu không hợp lệ'}` : (item?.msg ?? 'Dữ liệu không hợp lệ')
-          })
-          .join('; ')
-      : undefined
-    const detail =
-      detailMessage ??
-      payload?.detail ??
-      payload?.message ??
-      `Yeu cau that bai (${response.status})`
-    throw new ApiError(detail, response.status, {
-      detail: payload?.detail,
-      validationDetail,
-    })
-  }
-
-  return payload as T
-}
+  fetchOptions?: ApiFetchOptions,
+): Promise<T> =>
+  requestJson<T>(buildUsersApiUrl, path, {
+    init,
+    token,
+    params,
+    fetchMode: 'controlled',
+    fetchOptions,
+    includeValidationDetail: true,
+  })
 
 export const usersApi = {
   login: (username: string, password: string) =>
-    requestJson<LoginResponse>('/auth/login', {
+    requestUsersJson<LoginResponse>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
 
   me: (token: string) =>
-    requestJson<UserProfile>('/auth/me', { method: 'GET' }, token, undefined, {
+    requestUsersJson<UserProfile>('/auth/me', { method: 'GET' }, token, undefined, {
       getCacheMs: 3000,
       max429Retries: 2,
     }),
 
   logout: (token: string, refreshToken?: string | null) =>
-    requestJson<void>(
+    requestUsersJson<void>(
       '/auth/logout',
       {
         method: 'POST',
@@ -227,7 +127,7 @@ export const usersApi = {
     ),
 
   refresh: (refreshToken: string) =>
-    requestJson<AuthToken>(
+    requestUsersJson<AuthToken>(
       '/auth/refresh',
       {
         method: 'POST',
@@ -244,7 +144,7 @@ export const usersApi = {
     ),
 
   changePassword: (token: string, payload: ChangePasswordPayload) =>
-    requestJson<{ message: string }>(
+    requestUsersJson<{ message: string }>(
       '/auth/change-password',
       {
         method: 'POST',
@@ -254,13 +154,13 @@ export const usersApi = {
     ),
 
   listUsers: (token: string, params?: ListUsersParams) =>
-    requestJson<UserProfile[]>('/users', { method: 'GET' }, token, params),
+    requestUsersJson<UserProfile[]>('/users', { method: 'GET' }, token, params),
 
   getUserById: (token: string, userId: number) =>
-    requestJson<UserProfile>(`/users/${userId}`, { method: 'GET' }, token),
+    requestUsersJson<UserProfile>(`/users/${userId}`, { method: 'GET' }, token),
 
   createUser: (token: string, payload: CreateUserPayload) =>
-    requestJson<UserProfile>(
+    requestUsersJson<UserProfile>(
       '/users',
       {
         method: 'POST',
@@ -270,7 +170,7 @@ export const usersApi = {
     ),
 
   updateUser: (token: string, userId: number, payload: UpdateUserPayload) =>
-    requestJson<UserProfile>(
+    requestUsersJson<UserProfile>(
       `/users/${userId}`,
       {
         method: 'PUT',
@@ -280,13 +180,13 @@ export const usersApi = {
     ),
 
   lockUser: (token: string, userId: number) =>
-    requestJson<void>(`/users/${userId}/lock`, { method: 'POST' }, token),
+    requestUsersJson<void>(`/users/${userId}/lock`, { method: 'POST' }, token),
 
   unlockUser: (token: string, userId: number) =>
-    requestJson<void>(`/users/${userId}/unlock`, { method: 'POST' }, token),
+    requestUsersJson<void>(`/users/${userId}/unlock`, { method: 'POST' }, token),
 
   resetUserPassword: (token: string, userId: number, newPassword: string) =>
-    requestJson<void>(
+    requestUsersJson<void>(
       `/users/${userId}/reset-password`,
       {
         method: 'POST',
@@ -296,8 +196,8 @@ export const usersApi = {
     ),
 
   deleteUser: (token: string, userId: number) =>
-    requestJson<void>(`/users/${userId}`, { method: 'DELETE' }, token),
+    requestUsersJson<void>(`/users/${userId}`, { method: 'DELETE' }, token),
 
   listLoginHistory: (token: string, params?: ListLoginHistoryParams) =>
-    requestJson<LoginHistoryRecord[]>('/users/login-history', { method: 'GET' }, token, params),
+    requestUsersJson<LoginHistoryRecord[]>('/users/login-history', { method: 'GET' }, token, params),
 }

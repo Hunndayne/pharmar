@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { notificationApi, type NotificationRecord } from '../api/notificationService'
 import { useAuth } from '../auth/AuthContext'
+import { formatDateTimeInAppTimeZone as formatDateTime } from '../utils/timezone'
 
 type CategoryFilter = 'all' | 'sale' | 'low_stock' | 'expiry_warning' | 'system' | 'general'
 type ReadFilter = 'all' | 'unread' | 'read'
@@ -22,12 +23,6 @@ const categoryColors: Record<string, string> = {
   expiry_warning: 'bg-coral-100 text-coral-700',
   system: 'bg-violet-100 text-violet-700',
   general: 'bg-ink-100 text-ink-600',
-}
-
-const formatDateTime = (value: string) => {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('vi-VN')
 }
 
 export function Notifications() {

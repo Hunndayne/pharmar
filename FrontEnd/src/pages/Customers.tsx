@@ -3,6 +3,7 @@ import { customerApi, type CustomerRecord } from '../api/customerService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { readLocalDraft, removeLocalDraft, writeLocalDraft } from '../utils/localDraft'
+import { formatDateInAppTimeZone as formatDate } from '../utils/timezone'
 
 type StatusFilter = 'all' | 'active' | 'inactive'
 type ModalMode = 'create' | 'edit'
@@ -34,13 +35,6 @@ const formatCurrency = (value: string | number) => {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return '0đ'
   return `${Math.round(parsed).toLocaleString('vi-VN')}đ`
-}
-
-const formatDate = (value: string | null) => {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleDateString('vi-VN')
 }
 
 const normalizePhone = (value: string) => value.replace(/[^0-9+]/g, '').trim()

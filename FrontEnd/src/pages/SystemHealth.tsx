@@ -1,12 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ApiError } from '../api/usersService'
 import { systemApi, type SystemHealthResponse, type SystemHealthService } from '../api/systemService'
-
-const formatDateTime = (value: string) => {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('vi-VN')
-}
+import { formatDateTimeInAppTimeZone as formatDateTime } from '../utils/timezone'
 
 const statusLabel: Record<string, string> = {
   up: 'Hoạt động',

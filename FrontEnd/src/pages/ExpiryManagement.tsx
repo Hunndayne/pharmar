@@ -3,25 +3,15 @@ import { inventoryApi, type DisposalLogEntry, type InventoryAlertEntry, type Inv
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { exportToExcel } from '../utils/exportFile'
+import {
+  formatDateInAppTimeZone as formatDate,
+  formatDateTimeInAppTimeZone,
+} from '../utils/timezone'
 
 type FilterGroup = 'all' | 'expired' | 'expiring_soon' | 'warning' | 'near_date'
 type ActiveTab = 'alerts' | 'disposal_log'
 
-const formatDate = (value: string) => {
-  try {
-    return new Date(value).toLocaleDateString('vi-VN')
-  } catch {
-    return value
-  }
-}
-
-const formatDateTime = (value: string) => {
-  try {
-    return new Date(value).toLocaleString('vi-VN')
-  } catch {
-    return value
-  }
-}
+const formatDateTime = (value: string) => formatDateTimeInAppTimeZone(value)
 
 const formatCurrency = (value: number) => `${Math.round(Math.max(0, value)).toLocaleString('vi-VN')}đ`
 

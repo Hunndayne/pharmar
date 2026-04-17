@@ -14,6 +14,7 @@ import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { downloadCsv } from '../utils/csv'
 import { exportToExcel } from '../utils/exportFile'
+import { formatDateInAppTimeZone as formatDate } from '../utils/timezone'
 
 type UnitConfig = {
   importUnit: { name: string; ratio: number } | null
@@ -41,7 +42,6 @@ const DEFAULT_NEAR_EXPIRY_DAYS = 90
 const STORE_NAME = 'Nhà thuốc Thanh Huy'
 const defaultUnitConfig: UnitConfig = { importUnit: null, middleUnit: null, retailUnit: { name: 'Đơn vị', ratio: 1 } }
 
-const formatDate = (value: string) => { const [y, m, d] = value.split('-'); return y && m && d ? `${d}/${m}/${y}` : value }
 const daysUntil = (value: string) => Math.floor((new Date(`${value}T00:00:00`).getTime() - new Date(new Date().toDateString()).getTime()) / (1000 * 60 * 60 * 24))
 const parseSafeInt = (value: string) => { const parsed = Number.parseInt(value, 10); return Number.isFinite(parsed) && parsed > 0 ? parsed : 0 }
 const parseConfigInt = (value: unknown, fallback: number) => { const parsed = Number(value); return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : fallback }

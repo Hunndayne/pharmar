@@ -9,6 +9,7 @@ import {
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { exportToExcel, exportInvoiceExcel } from '../utils/exportFile'
+import { formatDateTimeInAppTimeZone as formatDateTime } from '../utils/timezone'
 
 type InvoiceStatusFilter = 'all' | 'completed' | 'cancelled' | 'returned' | 'pending'
 type ReturnCondition = 'good' | 'damaged' | 'expired'
@@ -76,13 +77,6 @@ const toNumber = (value: string | number | null | undefined) => {
 }
 
 const formatCurrency = (value: string | number | null | undefined) => `${Math.round(toNumber(value)).toLocaleString('vi-VN')}đ`
-
-const formatDateTime = (value: string | null | undefined) => {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('vi-VN')
-}
 
 const getPaymentMethodLabel = (value: string) => paymentMethodLabels[value] ?? value
 const getStatusLabel = (value: string) => statusLabels[value] ?? value

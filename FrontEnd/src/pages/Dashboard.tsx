@@ -14,7 +14,8 @@ import { storeApi } from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import {
-  formatDateShortInTimeZone,
+  formatDateShortInAppTimeZone as formatDateShort,
+  formatDateTimeInAppTimeZone as formatDateTime,
   formatDateTimeInTimeZone,
   getCurrentDateKeyInTimeZone,
   getMonthStartDateKeyInTimeZone,
@@ -22,7 +23,7 @@ import {
   persistAppTimeZone,
   readStoredAppTimeZone,
   shiftDateKey,
-  toDateKeyInTimeZone,
+  toDateKeyInAppTimeZone as toDateKey,
 } from '../utils/timezone'
 
 type KpiItem = {
@@ -65,19 +66,10 @@ const formatDecimal = (value: number, maximumFractionDigits = 1) =>
     maximumFractionDigits,
   })
 
-const formatDateShort = (value: string, timeZone = readStoredAppTimeZone()) =>
-  formatDateShortInTimeZone(value, timeZone)
-
-const formatDateTime = (value: string, timeZone = readStoredAppTimeZone()) =>
-  formatDateTimeInTimeZone(value, timeZone)
-
 const formatDaysCover = (value: number | null) => {
   if (value === null) return 'Chưa đủ dữ liệu'
   return `${formatDecimal(value)} ngày`
 }
-
-const toDateKey = (value: string, timeZone = readStoredAppTimeZone()) =>
-  toDateKeyInTimeZone(value, timeZone)
 
 const addDays = (date: Date, diff: number) => {
   const next = new Date(date)

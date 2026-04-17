@@ -8,7 +8,7 @@ import {
 } from '../api/reportService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
-import { formatDateTimeInTimeZone, readStoredAppTimeZone } from '../utils/timezone'
+import { formatDateTimeInAppTimeZone as formatDateTime } from '../utils/timezone'
 
 type UrgencyFilter = 'all' | RestockUrgency
 
@@ -43,9 +43,6 @@ const formatDecimal = (value: number, maximumFractionDigits = 1) =>
     minimumFractionDigits: 0,
     maximumFractionDigits,
   })
-
-const formatDateTime = (value: string, timeZone = readStoredAppTimeZone()) =>
-  formatDateTimeInTimeZone(value, timeZone)
 
 const formatDaysCover = (value: number | null) => {
   if (value === null) return 'Chưa đủ dữ liệu'

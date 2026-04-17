@@ -8,18 +8,12 @@ import {
 import { storeApi, type StoreInfo } from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { resolveAssetUrl } from '../utils/assets'
+import { formatDateTimeInAppTimeZone as formatDateTime } from '../utils/timezone'
 
 type SearchMode = 'code' | 'phone'
 
 const formatCurrency = (value: string | number) =>
   `${Math.round(Math.max(0, Number(value || 0))).toLocaleString('vi-VN')}đ`
-
-const formatDateTime = (value: string | null | undefined) => {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('vi-VN')
-}
 
 const paymentLabel = (value: string) => {
   const normalized = value.trim().toLowerCase()

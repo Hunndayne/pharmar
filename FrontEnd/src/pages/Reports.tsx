@@ -20,6 +20,7 @@ import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { downloadCsv } from '../utils/csv'
 import { exportToExcel, exportToPdf } from '../utils/exportFile'
+import { formatDateInTimeZone } from '../utils/timezone'
 
 const EXPENSE_CATEGORIES = [
   { value: 'electricity', label: 'Tiền điện' },
@@ -102,9 +103,6 @@ const tabs: Array<{ id: ReportTab; label: string }> = [
 
 const PROFIT_PAGE_SIZE = 20
 const REPORT_TIME_ZONE = 'Asia/Ho_Chi_Minh'
-const REPORT_DATE_DISPLAY_FORMATTER = new Intl.DateTimeFormat('vi-VN', {
-  timeZone: REPORT_TIME_ZONE,
-})
 
 const toNumber = (value: string | number | null | undefined) => {
   const parsed = Number(value)
@@ -115,20 +113,7 @@ const toNumber = (value: string | number | null | undefined) => {
 
 const formatCurrency = (value: number) => `${Math.round(value || 0).toLocaleString('vi-VN')}đ`
 
-const formatDateKey = (value: string) => {
-  const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/)
-  if (!match) return value
-  return `${match[3]}/${match[2]}/${match[1]}`
-}
-
-const formatDate = (value: string) => {
-  if (!value) return '-'
-  const normalized = value.trim()
-  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return formatDateKey(normalized)
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value.slice(0, 10)
-  return REPORT_DATE_DISPLAY_FORMATTER.format(date)
-}
+const formatDate = (value: string) => formatDateInTimeZone(value, REPORT_TIME_ZONE)
 
 
 const stockStatusLabel = (status: string) => {

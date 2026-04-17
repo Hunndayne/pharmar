@@ -14,6 +14,7 @@ import { storeApi, type StoreInfo } from '../api/storeService'
 import { findBankOption } from '../constants/bankList'
 import { ApiError, buildUsersApiUrl } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
+import { formatDateTimeInAppTimeZone } from '../utils/timezone'
 
 type UnitRole = 'single' | 'import' | 'intermediate' | 'retail'
 type ServiceFeeMode = 'split' | 'separate'
@@ -2944,8 +2945,8 @@ export function Pos() {
         id: invoice.id,
         code: invoice.code,
         createdAt: invoice.created_at
-          ? new Date(invoice.created_at).toLocaleString('vi-VN')
-          : new Date().toLocaleString('vi-VN'),
+          ? formatDateTimeInAppTimeZone(invoice.created_at)
+          : formatDateTimeInAppTimeZone(new Date()),
         storeName: storeInfo?.name?.trim() || 'Nha thuoc',
         storeLogoUrl: resolveAssetUrl(storeInfo?.logo_url),
         storePhone: storeInfo?.phone?.trim() || '',

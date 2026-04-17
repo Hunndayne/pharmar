@@ -3,16 +3,9 @@ import { inventoryApi, type StockAudit as StockAuditType, type StockAuditItem } 
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { exportToExcel } from '../utils/exportFile'
+import { formatDateTimeInAppTimeZone as formatDateTime } from '../utils/timezone'
 
 type View = 'list' | 'detail'
-
-const formatDateTime = (value: string) => {
-  try {
-    return new Date(value).toLocaleString('vi-VN')
-  } catch {
-    return value
-  }
-}
 
 const statusLabel = (status: string) => {
   switch (status) {

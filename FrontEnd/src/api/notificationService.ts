@@ -1,4 +1,5 @@
-import { ApiError, buildUsersApiUrl } from './usersService'
+import { requestJson } from './httpClient'
+import { buildUsersApiUrl } from './usersService'
 
 export type NotificationRecord = {
   id: string
@@ -61,43 +62,24 @@ export type PageResponse<T> = {
   pages: number
 }
 
-const requestJson = async <T>(
+const requestNotificationJson = async <T>(
   path: string,
   token: string,
   init: RequestInit = {},
   params?: Record<string, string | number | boolean | undefined>,
-): Promise<T> => {
-  const headers = new Headers(init.headers)
-  if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json')
-  headers.set('Authorization', `Bearer ${token}`)
-
-  const response = await fetch(buildUsersApiUrl(path, params), {
-    ...init,
-    headers,
+): Promise<T> =>
+  requestJson<T>(buildUsersApiUrl, path, {
+    init,
+    token,
+    params,
   })
 
-  const contentType = response.headers.get('content-type') ?? ''
-  const isJson = contentType.includes('application/json')
-  const payload = isJson ? await response.json() : null
-
-  if (!response.ok) {
-    const detail =
-      (typeof payload?.detail === 'string' ? payload.detail : undefined) ??
-      payload?.message ??
-      `Yêu cầu thất bại (${response.status})`
-    throw new ApiError(detail, response.status)
-  }
-
-  return payload as T
-}
-
 export const notificationApi = {
-  // ── Notifications ──────────────────────────────────────────────────────
   listNotifications: (
     token: string,
     params?: { is_read?: boolean; category?: string; page?: number; size?: number },
   ) =>
-    requestJson<PageResponse<NotificationRecord>>(
+    requestNotificationJson<PageResponse<NotificationRecord>>(
       '/notification/notifications',
       token,
       { method: 'GET' },
@@ -105,14 +87,14 @@ export const notificationApi = {
     ),
 
   getUnreadCount: (token: string) =>
-    requestJson<{ unread_count: number }>(
+    requestNotificationJson<{ unread_count: number }>(
       '/notification/notifications/unread-count',
       token,
       { method: 'GET' },
     ),
 
   markRead: (token: string, notificationIds: string[]) =>
-    requestJson<{ message: string; count: number }>(
+    requestNotificationJson<{ message: string; count: number }>(
       '/notification/notifications/mark-read',
       token,
       {
@@ -122,36 +104,35 @@ export const notificationApi = {
     ),
 
   markAllRead: (token: string) =>
-    requestJson<{ message: string; count: number }>(
+    requestNotificationJson<{ message: string; count: number }>(
       '/notification/notifications/mark-all-read',
       token,
       { method: 'PATCH' },
     ),
 
   deleteNotification: (token: string, notificationId: string) =>
-    requestJson<void>(
+    requestNotificationJson<void>(
       `/notification/notifications/${encodeURIComponent(notificationId)}`,
       token,
       { method: 'DELETE' },
     ),
 
   deleteAllRead: (token: string) =>
-    requestJson<void>(
+    requestNotificationJson<void>(
       '/notification/notifications',
       token,
       { method: 'DELETE' },
     ),
 
-  // ── SMTP Config ────────────────────────────────────────────────────────
   getSmtpConfig: (token: string) =>
-    requestJson<SmtpConfigRecord>(
+    requestNotificationJson<SmtpConfigRecord>(
       '/notification/smtp',
       token,
       { method: 'GET' },
     ),
 
   updateSmtpConfig: (token: string, payload: SmtpConfigPayload) =>
-    requestJson<SmtpConfigRecord>(
+    requestNotificationJson<SmtpConfigRecord>(
       '/notification/smtp',
       token,
       {
@@ -161,7 +142,7 @@ export const notificationApi = {
     ),
 
   testSmtp: (token: string, toEmail: string) =>
-    requestJson<{ message: string }>(
+    requestNotificationJson<{ message: string }>(
       '/notification/smtp/test',
       token,
       {
@@ -170,16 +151,15 @@ export const notificationApi = {
       },
     ),
 
-  // ── Alert Rules ────────────────────────────────────────────────────────
   listAlertRules: (token: string) =>
-    requestJson<AlertRuleRecord[]>(
+    requestNotificationJson<AlertRuleRecord[]>(
       '/notification/alert-rules',
       token,
       { method: 'GET' },
     ),
 
   updateAlertRule: (token: string, ruleId: number, payload: AlertRuleUpdatePayload) =>
-    requestJson<AlertRuleRecord>(
+    requestNotificationJson<AlertRuleRecord>(
       `/notification/alert-rules/${ruleId}`,
       token,
       {

@@ -1,4 +1,4 @@
-import { ApiError } from './usersService'
+import { createApiUrlBuilder, requestJson } from './httpClient'
 
 export type FileCategory =
   | 'product'
@@ -43,59 +43,22 @@ type UploadOptions = {
   refId?: string
 }
 
-const sanitizePrefix = (value: string) => {
-  const trimmed = value.trim()
-  if (!trimmed) return ''
-  return `/${trimmed.replace(/^\/+|\/+$/g, '')}`
-}
-
-const sanitizeBase = (value: string) => value.trim().replace(/\/+$/, '')
-
-const API_BASE = sanitizeBase(import.meta.env.VITE_API_BASE_URL ?? '')
-const FILE_PREFIX = sanitizePrefix(import.meta.env.VITE_FILE_API_PREFIX ?? '/api/v1/file')
-
-export const buildFileApiUrl = (
-  path: string,
-  params?: Record<string, string | number | boolean | undefined>,
-) => {
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`
-  const target = `${API_BASE}${FILE_PREFIX}${normalizedPath}`
-  const url = new URL(target, window.location.origin)
-  if (params) {
-    Object.entries(params).forEach(([key, value]) => {
-      if (value === undefined || value === null || value === '') return
-      url.searchParams.set(key, String(value))
-    })
-  }
-  return url.toString()
-}
+export const buildFileApiUrl = createApiUrlBuilder({
+  envPrefix: import.meta.env.VITE_FILE_API_PREFIX,
+  fallbackPrefix: '/api/v1/file',
+})
 
 const requestFileJson = async <T>(
   path: string,
   init: RequestInit = {},
   token?: string,
   params?: Record<string, string | number | boolean | undefined>,
-): Promise<T> => {
-  const headers = new Headers(init.headers)
-  if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json')
-  if (token) headers.set('Authorization', `Bearer ${token}`)
-
-  const response = await fetch(buildFileApiUrl(path, params), {
-    ...init,
-    headers,
+): Promise<T> =>
+  requestJson<T>(buildFileApiUrl, path, {
+    init,
+    token,
+    params,
   })
-
-  const contentType = response.headers.get('content-type') ?? ''
-  const isJson = contentType.includes('application/json')
-  const payload = isJson ? await response.json() : null
-
-  if (!response.ok) {
-    const detail = payload?.detail ?? payload?.message ?? `Yeu cau that bai (${response.status})`
-    throw new ApiError(detail, response.status)
-  }
-
-  return payload as T
-}
 
 const appendUploadFields = (formData: FormData, options?: UploadOptions) => {
   if (!options) return
@@ -122,16 +85,13 @@ export const fileApi = {
     formData.append('file', file)
     appendUploadFields(formData, options)
 
-    const response = await fetch(buildFileApiUrl('/upload'), {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: formData,
+    return requestJson<FileRecord>(buildFileApiUrl, '/upload', {
+      token,
+      init: {
+        method: 'POST',
+        body: formData,
+      },
     })
-    const payload = await response.json().catch(() => null)
-    if (!response.ok) {
-      throw new ApiError(payload?.detail ?? `Yeu cau that bai (${response.status})`, response.status)
-    }
-    return payload as FileRecord
   },
 
   uploadMultiple: async (token: string, files: File[], options?: UploadOptions) => {
@@ -139,16 +99,17 @@ export const fileApi = {
     files.forEach((file) => formData.append('files', file))
     appendUploadFields(formData, options)
 
-    const response = await fetch(buildFileApiUrl('/upload/multiple'), {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: formData,
-    })
-    const payload = await response.json().catch(() => null)
-    if (!response.ok && response.status !== 207) {
-      throw new ApiError(payload?.detail ?? `Yeu cau that bai (${response.status})`, response.status)
-    }
-    return payload as { files: FileRecord[]; errors: string[]; total: number }
+    return requestJson<{ files: FileRecord[]; errors: string[]; total: number }>(
+      buildFileApiUrl,
+      '/upload/multiple',
+      {
+        token,
+        init: {
+          method: 'POST',
+          body: formData,
+        },
+      },
+    )
   },
 
   delete: (token: string, fileId: string) =>

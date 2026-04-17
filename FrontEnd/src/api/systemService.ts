@@ -1,4 +1,5 @@
-import { ApiError, buildUsersApiUrl } from './usersService'
+import { requestJson } from './httpClient'
+import { buildUsersApiUrl } from './usersService'
 
 export type SystemHealthService = {
   name: string
@@ -23,15 +24,8 @@ export type SystemHealthResponse = {
 }
 
 export const systemApi = {
-  getHealth: async (): Promise<SystemHealthResponse> => {
-    const response = await fetch(buildUsersApiUrl('/system/health'), { method: 'GET' })
-    const payload = await response.json().catch(() => null)
-    if (!response.ok) {
-      throw new ApiError(
-        payload?.detail ?? `Y\u00eau c\u1ea7u th\u1ea5t b\u1ea1i (${response.status})`,
-        response.status,
-      )
-    }
-    return payload as SystemHealthResponse
-  },
+  getHealth: () =>
+    requestJson<SystemHealthResponse>(buildUsersApiUrl, '/system/health', {
+      init: { method: 'GET' },
+    }),
 }

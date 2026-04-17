@@ -31,7 +31,10 @@ const TIME_ZONE_CATALOG: TimeZoneCatalogItem[] = [
   { value: 'Australia/Sydney', label: 'Sydney' },
 ]
 
+const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+
 const dateKeyFormatterCache = new Map<string, Intl.DateTimeFormat>()
+const dateFormatterCache = new Map<string, Intl.DateTimeFormat>()
 const dateShortFormatterCache = new Map<string, Intl.DateTimeFormat>()
 const dateTimeFormatterCache = new Map<string, Intl.DateTimeFormat>()
 
@@ -59,6 +62,20 @@ const getDateShortFormatter = (timeZone: string) => {
     month: '2-digit',
   })
   dateShortFormatterCache.set(normalized, next)
+  return next
+}
+
+const getDateFormatter = (timeZone: string) => {
+  const normalized = normalizeTimeZone(timeZone)
+  const cached = dateFormatterCache.get(normalized)
+  if (cached) return cached
+  const next = new Intl.DateTimeFormat('vi-VN', {
+    timeZone: normalized,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+  dateFormatterCache.set(normalized, next)
   return next
 }
 
@@ -143,7 +160,7 @@ export const persistAppTimeZone = (value: string | null | undefined) => {
 export const toDateKeyInTimeZone = (value: string | Date, timeZone: string) => {
   if (typeof value === 'string') {
     const normalized = value.trim()
-    if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return normalized
+    if (DATE_KEY_PATTERN.test(normalized)) return normalized
   }
   const date = toDate(value)
   if (Number.isNaN(date.getTime())) {
@@ -169,6 +186,26 @@ export const getMonthStartDateKeyInTimeZone = (timeZone: string, reference = new
   return year && month ? `${year}-${month}-01` : ''
 }
 
+const formatDateKeyForDisplay = (value: string) => {
+  const [year, month, day] = value.split('-')
+  return year && month && day ? `${day}/${month}/${year}` : value
+}
+
+export const formatDateInTimeZone = (
+  value: string | Date | null | undefined,
+  timeZone: string,
+) => {
+  if (!value) return '-'
+  if (typeof value === 'string') {
+    const normalized = value.trim()
+    if (DATE_KEY_PATTERN.test(normalized)) return formatDateKeyForDisplay(normalized)
+  }
+
+  const date = toDate(value)
+  if (Number.isNaN(date.getTime())) return typeof value === 'string' ? value : '-'
+  return getDateFormatter(timeZone).format(date)
+}
+
 export const formatDateShortInTimeZone = (value: string | Date, timeZone: string) => {
   const date = toDate(value)
   if (Number.isNaN(date.getTime())) return typeof value === 'string' ? value.slice(5) : ''
@@ -184,6 +221,26 @@ export const formatDateTimeInTimeZone = (
   if (Number.isNaN(date.getTime())) return typeof value === 'string' ? value : '-'
   return getDateTimeFormatter(timeZone).format(date)
 }
+
+export const formatDateInAppTimeZone = (
+  value: string | Date | null | undefined,
+  timeZone = readStoredAppTimeZone(),
+) => formatDateInTimeZone(value, timeZone)
+
+export const formatDateShortInAppTimeZone = (
+  value: string | Date,
+  timeZone = readStoredAppTimeZone(),
+) => formatDateShortInTimeZone(value, timeZone)
+
+export const toDateKeyInAppTimeZone = (
+  value: string | Date,
+  timeZone = readStoredAppTimeZone(),
+) => toDateKeyInTimeZone(value, timeZone)
+
+export const formatDateTimeInAppTimeZone = (
+  value: string | Date | null | undefined,
+  timeZone = readStoredAppTimeZone(),
+) => formatDateTimeInTimeZone(value, timeZone)
 
 export const getTimeZoneDisplayLabel = (value: string | null | undefined) => {
   const normalized = normalizeTimeZone(value)

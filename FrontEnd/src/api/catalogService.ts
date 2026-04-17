@@ -1,4 +1,5 @@
-import { ApiError, buildUsersApiUrl } from './usersService'
+import { requestBlob, requestJson } from './httpClient'
+import { buildUsersApiUrl } from './usersService'
 
 export type CatalogPageResponse<T> = {
   items: T[]
@@ -406,63 +407,22 @@ const requestCatalogJson = async <T>(
   token: string,
   init: RequestInit = {},
   params?: Record<string, string | number | boolean | undefined>,
-): Promise<T> => {
-  const headers = new Headers(init.headers)
-  if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json')
-  headers.set('Authorization', `Bearer ${token}`)
-
-  const response = await fetch(buildUsersApiUrl(path, params), {
-    ...init,
-    headers,
+): Promise<T> =>
+  requestJson<T>(buildUsersApiUrl, path, {
+    init,
+    token,
+    params,
   })
-
-  const contentType = response.headers.get('content-type') ?? ''
-  const isJson = contentType.includes('application/json')
-  const payload = isJson ? await response.json() : null
-
-  if (!response.ok) {
-    const detailMessage = Array.isArray(payload?.detail)
-      ? payload.detail
-          .map((item: { msg?: string; loc?: (string | number)[] }) => {
-            const loc = Array.isArray(item?.loc) ? item.loc.join('.') : ''
-            return loc
-              ? `${loc}: ${item?.msg ?? 'Dữ liệu không hợp lệ'}`
-              : (item?.msg ?? 'Dữ liệu không hợp lệ')
-          })
-          .join('; ')
-      : undefined
-    const detail =
-      detailMessage ??
-      payload?.detail ??
-      payload?.message ??
-      `Yêu cầu thất bại (${response.status})`
-    throw new ApiError(detail, response.status)
-  }
-
-  return payload as T
-}
 
 const requestCatalogBlob = async (
   path: string,
   token: string,
   params?: Record<string, string | number | boolean | undefined>,
-) => {
-  const response = await fetch(buildUsersApiUrl(path, params), {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+) =>
+  requestBlob(buildUsersApiUrl, path, {
+    token,
+    params,
   })
-
-  if (!response.ok) {
-    const contentType = response.headers.get('content-type') ?? ''
-    const payload = contentType.includes('application/json') ? await response.json() : null
-    const detail = payload?.detail ?? payload?.message ?? `Request failed (${response.status})`
-    throw new ApiError(detail, response.status)
-  }
-
-  return response.blob()
-}
 
 const uploadCatalogFile = async <T>(
   path: string,
@@ -471,25 +431,13 @@ const uploadCatalogFile = async <T>(
 ) => {
   const form = new FormData()
   form.append('file', file)
-
-  const response = await fetch(buildUsersApiUrl(path), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
+  return requestJson<T>(buildUsersApiUrl, path, {
+    token,
+    init: {
+      method: 'POST',
+      body: form,
     },
-    body: form,
   })
-
-  const contentType = response.headers.get('content-type') ?? ''
-  const isJson = contentType.includes('application/json')
-  const payload = isJson ? await response.json() : null
-
-  if (!response.ok) {
-    const detail = payload?.detail ?? payload?.message ?? `Request failed (${response.status})`
-    throw new ApiError(detail, response.status)
-  }
-
-  return payload as T
 }
 
 export const catalogApi = {
@@ -795,3 +743,4 @@ export const catalogApi = {
   deletePrescriptionTemplate: (token: string, id: string) =>
     requestCatalogJson<void>(`/catalog/prescription-templates/${id}`, token, { method: 'DELETE' }),
 }
+

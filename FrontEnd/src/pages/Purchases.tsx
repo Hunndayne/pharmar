@@ -18,6 +18,7 @@ import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
 import { downloadCsv } from '../utils/csv'
 import { readLocalDraft, removeLocalDraft, writeLocalDraft } from '../utils/localDraft'
+import { formatDateInAppTimeZone as formatDate } from '../utils/timezone'
 
 type Unit = {
   id: string
@@ -234,13 +235,6 @@ const paymentStatusStyles: Record<PaymentStatus, string> = {
 
 const todayISO = () => new Date().toISOString().slice(0, 10)
 const toDateKey = (value: string) => (value ? value.replace(/-/g, '') : todayISO().replace(/-/g, ''))
-
-const formatDate = (value: string) => {
-  if (!value) return '-'
-  const [year, month, day] = value.split('-')
-  if (!year || !month || !day) return value
-  return `${day}/${month}/${year}`
-}
 
 const parseNumber = (value: string) => {
   const parsed = Number(value)

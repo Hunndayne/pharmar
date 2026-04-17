@@ -1,4 +1,5 @@
-import { ApiError, buildUsersApiUrl } from './usersService'
+import { requestJson } from './httpClient'
+import { buildUsersApiUrl } from './usersService'
 
 export type CustomerRecord = {
   id: string
@@ -178,42 +179,12 @@ const requestCustomerJson = async <T>(
   token: string,
   init: RequestInit = {},
   params?: Record<string, string | number | boolean | undefined>,
-): Promise<T> => {
-  const headers = new Headers(init.headers)
-  if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json')
-  headers.set('Authorization', `Bearer ${token}`)
-
-  const response = await fetch(buildUsersApiUrl(path, params), {
-    ...init,
-    headers,
+): Promise<T> =>
+  requestJson<T>(buildUsersApiUrl, path, {
+    init,
+    token,
+    params,
   })
-
-  const contentType = response.headers.get('content-type') ?? ''
-  const isJson = contentType.includes('application/json')
-  const payload = isJson ? await response.json() : null
-
-  if (!response.ok) {
-    const detailMessage = Array.isArray(payload?.detail)
-      ? payload.detail
-          .map((item: { msg?: string; loc?: (string | number)[] }) => {
-            const loc = Array.isArray(item?.loc) ? item.loc.join('.') : ''
-            return loc
-              ? `${loc}: ${item?.msg ?? 'Du lieu khong hop le'}`
-              : (item?.msg ?? 'Du lieu khong hop le')
-          })
-          .join('; ')
-      : undefined
-
-    const detail =
-      detailMessage ??
-      (typeof payload?.detail === 'string' ? payload.detail : undefined) ??
-      payload?.message ??
-      `Yeu cau that bai (${response.status})`
-    throw new ApiError(detail, response.status)
-  }
-
-  return payload as T
-}
 
 export const customerApi = {
   listCustomers: (token: string, params?: CustomerListParams) =>

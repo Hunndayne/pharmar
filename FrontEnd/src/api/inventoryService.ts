@@ -1,5 +1,5 @@
-import { ApiError, buildUsersApiUrl, type ApiValidationDetailItem } from './usersService'
-import { controlledFetch } from './fetchControl'
+import { requestJson, type ApiFetchOptions } from './httpClient'
+import { buildUsersApiUrl } from './usersService'
 
 export type InventoryMetaSupplier = {
   id: string
@@ -394,54 +394,16 @@ const requestInventoryJson = async <T>(
   init: RequestInit = {},
   token?: string,
   params?: Record<string, string | number | boolean | undefined>,
-  fetchOptions?: {
-    dedupe?: boolean
-    dedupeKey?: string
-    getCacheMs?: number
-    retryOn429?: boolean
-    max429Retries?: number
-  },
-): Promise<T> => {
-  const headers = new Headers(init.headers)
-  if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json')
-  if (token) headers.set('Authorization', `Bearer ${token}`)
-
-  const response = await controlledFetch(buildUsersApiUrl(path, params), {
-    ...init,
-    headers,
-  }, fetchOptions)
-
-  const contentType = response.headers.get('content-type') ?? ''
-  const isJson = contentType.includes('application/json')
-  const payload = isJson ? await response.json() : null
-
-  if (!response.ok) {
-    const validationDetail = Array.isArray(payload?.detail)
-      ? (payload.detail as ApiValidationDetailItem[])
-      : undefined
-    const detailMessage = validationDetail
-      ? validationDetail
-          .map((item: { msg?: string; loc?: (string | number)[] }) => {
-            const loc = Array.isArray(item?.loc) ? item.loc.join('.') : ''
-            return loc ? `${loc}: ${item?.msg ?? 'Dữ liệu không hợp lệ'}` : (item?.msg ?? 'Dữ liệu không hợp lệ')
-          })
-          .join('; ')
-      : undefined
-
-    const detail =
-      detailMessage ??
-      (typeof payload?.detail === 'string' ? payload.detail : undefined) ??
-      payload?.message ??
-      `Yêu cầu thất bại (${response.status})`
-
-    throw new ApiError(detail, response.status, {
-      detail: payload?.detail,
-      validationDetail,
-    })
-  }
-
-  return payload as T
-}
+  fetchOptions?: ApiFetchOptions,
+): Promise<T> =>
+  requestJson<T>(buildUsersApiUrl, path, {
+    init,
+    token,
+    params,
+    fetchMode: 'controlled',
+    fetchOptions,
+    includeValidationDetail: true,
+  })
 
 export const inventoryApi = {
   getMetaSuppliers: (token?: string) =>
@@ -655,3 +617,4 @@ export const inventoryApi = {
       params,
     ),
 }
+
