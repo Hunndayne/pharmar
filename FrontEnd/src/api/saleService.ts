@@ -213,6 +213,7 @@ export type SaleInvoiceListParams = {
   date_to?: string
   cashier_id?: string
   search?: string
+  payment_mode?: 'debt'
   page?: number
   size?: number
 }

@@ -549,12 +549,16 @@ async def list_invoices(
     date_to: date | None = Query(default=None),
     cashier_id: str | None = Query(default=None),
     search: str | None = Query(default=None),
+    payment_mode: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=200),
 ) -> PageResponse[InvoiceListItemResponse]:
     stmt = select(Invoice).order_by(Invoice.created_at.desc())
     stmt = invoice_status_filter(stmt, status_value)
     stmt = invoice_search_filter(stmt, search)
+
+    if payment_mode == "debt":
+        stmt = stmt.where(Invoice.amount_paid < Invoice.total_amount)
 
     # Staff can only view their own invoices; managers and owners see all.
     if current_user.role not in {ROLE_OWNER, ROLE_MANAGER}:
