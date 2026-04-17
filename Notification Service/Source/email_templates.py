@@ -354,6 +354,109 @@ def build_expiry_email(
     return _render(body)
 
 
+# ── restock suggestions ───────────────────────────────────────────────────────
+
+def build_restock_email(
+    items: list[dict],
+    total_actionable: int,
+    critical_count: int,
+    high_count: int,
+    sales_window_days: int,
+    target_cover_days: int,
+    frontend_url: str,
+) -> str:
+    shown = items[:20]
+    hidden = len(items) - len(shown)
+
+    rows_html = ""
+    for item in shown:
+        name = item.get("drug_name", "?")
+        code = item.get("drug_code") or "—"
+        unit = item.get("base_unit", "")
+        current = item.get("current_qty", 0)
+        suggested = int(item.get("suggested_qty", 0))
+        days_cover = float(item.get("days_cover") or 0)
+        urgency = str(item.get("urgency", "normal")).lower()
+
+        if urgency == "critical":
+            urgency_html = _badge("Khẩn cấp", "#fef2f2", "#dc2626")
+            name_color = "#dc2626"
+        elif urgency == "high":
+            urgency_html = _badge("Cao", "#fffbeb", "#d97706")
+            name_color = "#d97706"
+        else:
+            urgency_html = _badge("Bình thường", "#f0fdf4", "#16a34a")
+            name_color = "#374151"
+
+        days_str = "Hết hàng" if days_cover <= 0 else f"{days_cover:.1f} ngày"
+        days_color = "#dc2626" if days_cover <= 3 else "#d97706" if days_cover <= 7 else "#6b7280"
+
+        rows_html += f"""
+        <tr>
+          <td style="padding:10px 0;border-bottom:1px solid #f3f4f6;vertical-align:top">
+            <p style="margin:0 0 2px;font-size:13px;font-weight:600;color:{name_color}">{name}</p>
+            <p style="margin:0;font-size:11px;color:#9ca3af;font-family:monospace">{code}</p>
+          </td>
+          <td style="padding:10px 0;border-bottom:1px solid #f3f4f6;text-align:center;vertical-align:top">
+            {urgency_html}
+          </td>
+          <td style="padding:10px 0;border-bottom:1px solid #f3f4f6;text-align:right;vertical-align:top;white-space:nowrap">
+            <span style="font-weight:600;color:#111827">{current}</span>
+            <span style="font-size:11px;color:#9ca3af"> {unit}</span><br>
+            <span style="font-size:11px;color:{days_color}">Đủ {days_str}</span>
+          </td>
+          <td style="padding:10px 0;border-bottom:1px solid #f3f4f6;text-align:right;vertical-align:top;white-space:nowrap">
+            <span style="font-size:14px;font-weight:700;color:#2563eb">+{suggested}</span>
+            <span style="font-size:11px;color:#9ca3af"> {unit}</span>
+          </td>
+        </tr>"""
+
+    if hidden > 0:
+        rows_html += f"""
+        <tr><td colspan="4" style="padding:10px 0;font-size:12px;color:#9ca3af;text-align:center">
+          ... và {hidden} mặt hàng khác
+        </td></tr>"""
+
+    summary_parts = []
+    if critical_count:
+        summary_parts.append(f"<span style='color:#dc2626;font-weight:700'>{critical_count} khẩn cấp</span>")
+    if high_count:
+        summary_parts.append(f"<span style='color:#d97706;font-weight:700'>{high_count} mức cao</span>")
+    normal = max(0, total_actionable - critical_count - high_count)
+    if normal:
+        summary_parts.append(f"<span style='color:#374151'>{normal} bình thường</span>")
+    summary_str = " &nbsp;·&nbsp; ".join(summary_parts) if summary_parts else f"{total_actionable} mặt hàng"
+
+    restock_url = f"{frontend_url}/goi-y-nhap-hang"
+
+    body = f"""
+      <div style="margin-bottom:18px">{_badge("Gợi ý nhập hàng", "#eff6ff", "#2563eb")}</div>
+      <h2 style="margin:0 0 6px;font-size:20px;font-weight:700;color:#111827">
+        {total_actionable} mặt hàng cần nhập hôm nay
+      </h2>
+      <p style="margin:0 0 4px;font-size:13px;color:#6b7280">{summary_str}</p>
+      <p style="margin:0 0 24px;font-size:12px;color:#9ca3af">
+        Phân tích dựa trên {sales_window_days} ngày bán &nbsp;·&nbsp; Mục tiêu đủ hàng {target_cover_days} ngày
+      </p>
+
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">
+        <tr>
+          <th style="font-size:11px;color:#9ca3af;font-weight:500;text-align:left;padding-bottom:8px;
+                     letter-spacing:0.06em;text-transform:uppercase;border-bottom:2px solid #f3f4f6">Thuốc</th>
+          <th style="font-size:11px;color:#9ca3af;font-weight:500;text-align:center;padding-bottom:8px;
+                     letter-spacing:0.06em;text-transform:uppercase;border-bottom:2px solid #f3f4f6">Mức độ</th>
+          <th style="font-size:11px;color:#9ca3af;font-weight:500;text-align:right;padding-bottom:8px;
+                     letter-spacing:0.06em;text-transform:uppercase;border-bottom:2px solid #f3f4f6">Tồn kho</th>
+          <th style="font-size:11px;color:#9ca3af;font-weight:500;text-align:right;padding-bottom:8px;
+                     letter-spacing:0.06em;text-transform:uppercase;border-bottom:2px solid #f3f4f6">Gợi ý đặt</th>
+        </tr>
+        {rows_html}
+      </table>
+      {_cta_button("Xem chi tiết gợi ý nhập hàng", restock_url, bg="#2563eb")}
+    """
+    return _render(body)
+
+
 # ── generic fallback ──────────────────────────────────────────────────────────
 
 def build_generic_email(title: str, body_text: str, cta_url: str | None = None, cta_label: str = "Xem chi tiết") -> str:

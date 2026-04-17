@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     STATE_FILE_PATH: str = "/data/runtime_state.json"
     STATE_PERSISTENCE: str = "postgres"
 
+    # Notification Service — trigger restock refresh after nhập hàng
+    NOTIFICATION_SERVICE_URL: str = ""  # empty = disabled
+    NOTIFICATION_INTERNAL_API_KEY: str = ""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

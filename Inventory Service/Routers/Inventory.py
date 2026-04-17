@@ -829,6 +829,22 @@ def save_runtime_state() -> None:
     tmp_path.replace(path)
 
 
+async def _trigger_restock_refresh() -> None:
+    """Fire-and-forget: notify Notification Service to refresh restock state."""
+    url = settings.NOTIFICATION_SERVICE_URL
+    key = settings.NOTIFICATION_INTERNAL_API_KEY
+    if not url or not key:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(
+                f"{url}/api/v1/notification/internal/restock/refresh",
+                headers={"X-Internal-API-Key": key},
+            )
+    except Exception:
+        pass  # fire-and-forget — do not block or fail the main request
+
+
 async def save_runtime_state_safe() -> None:
     try:
         if settings.STATE_PERSISTENCE.lower() == "postgres":
@@ -2276,6 +2292,7 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
             )
         await save_runtime_state_safe()
 
+    asyncio.create_task(_trigger_restock_refresh())
     return receipt_to_view(receipt)
 
 

@@ -133,7 +133,49 @@ export function NotificationSettings() {
 
         {alertLoading && <p className="mt-4 text-sm text-ink-400">Đang tải...</p>}
 
-        <div className="mt-4 overflow-x-auto">
+        {/* Mobile cards */}
+        <div className="mt-4 space-y-3 sm:hidden">
+          {alertRules.map((rule) => (
+            <div key={rule.id} className="rounded-2xl border border-ink-100 bg-fog-50 p-4">
+              <p className="text-sm font-semibold text-ink-800">{rule.name}</p>
+              {rule.description ? <p className="mt-0.5 text-xs text-ink-500">{rule.description}</p> : null}
+              <div className="mt-3 flex items-center gap-5">
+                <label className="flex items-center gap-1.5 text-xs text-ink-600">
+                  <button
+                    type="button"
+                    onClick={() => void handleToggleRule(rule, 'is_active')}
+                    className={`inline-block h-5 w-9 rounded-full transition ${rule.is_active ? 'bg-green-500' : 'bg-ink-200'}`}
+                  >
+                    <span className={`block h-4 w-4 translate-x-0.5 rounded-full bg-white shadow transition ${rule.is_active ? 'translate-x-4' : ''}`} />
+                  </button>
+                  Bật
+                </label>
+                <label className="flex items-center gap-1.5 text-xs text-ink-600">
+                  <button
+                    type="button"
+                    onClick={() => void handleToggleRule(rule, 'send_web')}
+                    className={`inline-block h-5 w-9 rounded-full transition ${rule.send_web ? 'bg-sky-500' : 'bg-ink-200'}`}
+                  >
+                    <span className={`block h-4 w-4 translate-x-0.5 rounded-full bg-white shadow transition ${rule.send_web ? 'translate-x-4' : ''}`} />
+                  </button>
+                  Web
+                </label>
+                <label className="flex items-center gap-1.5 text-xs text-ink-600">
+                  <button
+                    type="button"
+                    onClick={() => void handleToggleRule(rule, 'send_email')}
+                    className={`inline-block h-5 w-9 rounded-full transition ${rule.send_email ? 'bg-violet-500' : 'bg-ink-200'}`}
+                  >
+                    <span className={`block h-4 w-4 translate-x-0.5 rounded-full bg-white shadow transition ${rule.send_email ? 'translate-x-4' : ''}`} />
+                  </button>
+                  Email
+                </label>
+              </div>
+            </div>
+          ))}
+        </div>
+        {/* Desktop table */}
+        <div className="mt-4 hidden overflow-x-auto sm:block">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-ink-100 text-ink-500">

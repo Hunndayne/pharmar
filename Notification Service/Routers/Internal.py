@@ -16,10 +16,7 @@ async def internal_send_notification(
     db: DbSession,
     payload: NotificationCreateRequest,
 ):
-    """
-    Internal endpoint for other services to create notifications.
-    Requires X-Internal-API-Key header.
-    """
+    """Internal endpoint for other services to create notifications."""
     notification = Notification(
         title=payload.title,
         body=payload.body,
@@ -36,3 +33,16 @@ async def internal_send_notification(
     await db.commit()
     await db.refresh(notification)
     return NotificationResponse.model_validate(notification)
+
+
+@router.post("/restock/refresh")
+async def restock_refresh() -> dict[str, str]:
+    """Silent restock state refresh — call after nhập hàng.
+
+    Clears recovered drugs from the low-stock notification cache so they
+    can trigger a new alert if stock drops again later.
+    """
+    from Source.expiry_checker import refresh_low_stock_state
+
+    await refresh_low_stock_state()
+    return {"status": "ok"}

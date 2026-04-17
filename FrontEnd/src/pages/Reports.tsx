@@ -163,6 +163,7 @@ export function Reports() {
   const [dateTo, setDateTo] = useState('')
 
   const [storeInfo, setStoreInfo] = useState<StoreInfo | null>(null)
+  const [exportMenuOpen, setExportMenuOpen] = useState(false)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -585,26 +586,47 @@ export function Reports() {
           <h2 className="mt-2 text-3xl font-semibold text-ink-900">Báo cáo</h2>
         </div>
         <div className="flex gap-1.5">
+          {/* Mobile: single dropdown */}
+          <div className="relative sm:hidden">
+            <button
+              type="button"
+              onClick={() => setExportMenuOpen((o) => !o)}
+              className="flex items-center gap-1 rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900"
+            >
+              Xuất
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={`h-4 w-4 transition-transform ${exportMenuOpen ? 'rotate-180' : ''}`}>
+                <path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+              </svg>
+            </button>
+            {exportMenuOpen ? (
+              <div className="absolute right-0 top-full z-20 mt-1 w-32 overflow-hidden rounded-2xl border border-ink-900/10 bg-white py-1 shadow-lift">
+                <button type="button" onClick={() => { exportCurrentTabCsv(); setExportMenuOpen(false) }} className="w-full px-4 py-2 text-left text-sm text-ink-700 hover:bg-fog-50">CSV</button>
+                <button type="button" onClick={() => { exportCurrentTabExcel(); setExportMenuOpen(false) }} className="w-full px-4 py-2 text-left text-sm text-ink-700 hover:bg-fog-50">Excel</button>
+                <button type="button" onClick={() => { exportCurrentTabPdf(); setExportMenuOpen(false) }} className="w-full px-4 py-2 text-left text-sm text-ink-700 hover:bg-fog-50">PDF</button>
+              </div>
+            ) : null}
+          </div>
+          {/* Desktop: 3 separate buttons */}
           <button
             type="button"
             onClick={exportCurrentTabCsv}
-            className="rounded-full border border-ink-900/10 bg-white px-3 py-2 text-sm font-semibold text-ink-900 sm:px-4"
+            className="hidden rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 sm:block"
           >
-            <span className="hidden sm:inline">Xuất </span>CSV
+            Xuất CSV
           </button>
           <button
             type="button"
             onClick={exportCurrentTabExcel}
-            className="rounded-full border border-ink-900/10 bg-white px-3 py-2 text-sm font-semibold text-ink-900 sm:px-4"
+            className="hidden rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 sm:block"
           >
-            <span className="hidden sm:inline">Xuất </span>Excel
+            Xuất Excel
           </button>
           <button
             type="button"
             onClick={exportCurrentTabPdf}
-            className="rounded-full bg-ink-900 px-3 py-2 text-sm font-semibold text-white sm:px-4"
+            className="hidden rounded-full bg-ink-900 px-4 py-2 text-sm font-semibold text-white sm:block"
           >
-            <span className="hidden sm:inline">Xuất </span>PDF
+            Xuất PDF
           </button>
         </div>
       </header>
@@ -667,10 +689,8 @@ export function Reports() {
           />
           <button
             type="button"
-            onClick={() => {
-              void loadReport(tab)
-            }}
-            className="rounded-2xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white"
+            onClick={() => { void loadReport(tab) }}
+            className="col-span-1 rounded-2xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white md:col-auto"
           >
             Áp dụng
           </button>
@@ -679,11 +699,9 @@ export function Reports() {
             onClick={() => {
               setDateFrom('')
               setDateTo('')
-              window.setTimeout(() => {
-                void loadReport(tab)
-              }, 0)
+              window.setTimeout(() => { void loadReport(tab) }, 0)
             }}
-            className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900"
+            className="col-span-1 rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 md:col-auto"
           >
             Reset
           </button>
@@ -715,14 +733,32 @@ export function Reports() {
           <article className="glass-card rounded-3xl p-6">
             <h3 className="text-lg font-semibold text-ink-900">Doanh thu theo ngày</h3>
             <p className="mt-1 text-xs text-ink-500">Hóa đơn trung bình: {formatCurrency(revenueData.averageAmount)}</p>
-            <div className="mt-4 overflow-x-auto">
+            {/* Mobile cards */}
+            <div className="mt-4 space-y-2 sm:hidden">
+              {revenueData.dailyRows.slice(0, 20).map((row) => (
+                <div key={row.date} className="flex items-center justify-between rounded-xl border border-ink-900/10 bg-white/60 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-semibold text-ink-900">{formatDate(row.date)}</p>
+                    <p className="text-xs text-ink-500">{row.invoiceCount} hóa đơn</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-semibold text-ink-900">{formatCurrency(row.totalAmount)}</p>
+                    {row.debtAmount > 0 ? (
+                      <p className="text-xs text-coral-500">Nợ {formatCurrency(row.debtAmount)}</p>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+            {/* Desktop table */}
+            <div className="mt-4 hidden overflow-x-auto sm:block">
               <table className="w-full text-left text-sm">
                 <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
                   <tr>
                     <th className="py-2">Ngày</th>
                     <th className="py-2">Số HĐ</th>
                     <th className="py-2">Doanh thu</th>
-                    <th className="hidden py-2 sm:table-cell">Thực thu</th>
+                    <th className="py-2">Thực thu</th>
                     <th className="py-2">Còn nợ</th>
                   </tr>
                 </thead>
@@ -732,7 +768,7 @@ export function Reports() {
                       <td className="py-2">{formatDate(row.date)}</td>
                       <td className="py-2">{row.invoiceCount}</td>
                       <td className="py-2">{formatCurrency(row.totalAmount)}</td>
-                      <td className="hidden py-2 sm:table-cell">{formatCurrency(row.paidAmount)}</td>
+                      <td className="py-2">{formatCurrency(row.paidAmount)}</td>
                       <td className="py-2 text-coral-500">{formatCurrency(row.debtAmount)}</td>
                     </tr>
                   ))}
@@ -1095,15 +1131,34 @@ export function Reports() {
       {tab === 'inventory' && inventoryData ? (
         <section className="glass-card rounded-3xl p-6">
           <h3 className="text-lg font-semibold text-ink-900">Chi tiết tồn kho</h3>
-          <div className="mt-4 overflow-x-auto">
+          {/* Mobile cards */}
+          <div className="mt-4 space-y-2 sm:hidden">
+            {inventoryData.rows.map((item) => (
+              <div key={item.drug_id} className="rounded-xl border border-ink-900/10 bg-white/60 px-4 py-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-ink-900">{item.drug_name}</p>
+                    <p className="text-xs text-ink-500">{item.drug_code} · {item.drug_group || '-'}</p>
+                  </div>
+                  <span className="shrink-0 text-xs font-medium text-ink-700">{stockStatusLabel(item.status)}</span>
+                </div>
+                <div className="mt-2 flex items-center gap-4 text-xs text-ink-600">
+                  <span>Tồn: <strong className="text-ink-900">{item.total_qty.toLocaleString('vi-VN')} {item.base_unit}</strong></span>
+                  <span>HSD: <strong className="text-ink-900">{item.nearest_expiry ? formatDate(item.nearest_expiry) : '-'}</strong></span>
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* Desktop table */}
+          <div className="mt-4 hidden overflow-x-auto sm:block">
             <table className="w-full text-left text-sm">
               <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
                 <tr>
                   <th className="py-2">Mã thuốc</th>
                   <th className="py-2">Tên thuốc</th>
-                  <th className="hidden py-2 sm:table-cell">Nhóm</th>
+                  <th className="py-2">Nhóm</th>
                   <th className="py-2">Tồn</th>
-                  <th className="hidden py-2 sm:table-cell">Đơn vị</th>
+                  <th className="py-2">Đơn vị</th>
                   <th className="py-2">HSD gần nhất</th>
                   <th className="py-2">Trạng thái</th>
                 </tr>
@@ -1113,9 +1168,9 @@ export function Reports() {
                   <tr key={item.drug_id} className="border-t border-ink-900/5">
                     <td className="py-2 font-semibold text-ink-900">{item.drug_code}</td>
                     <td className="py-2">{item.drug_name}</td>
-                    <td className="hidden py-2 sm:table-cell">{item.drug_group || '-'}</td>
+                    <td className="py-2">{item.drug_group || '-'}</td>
                     <td className="py-2">{item.total_qty.toLocaleString('vi-VN')}</td>
-                    <td className="hidden py-2 sm:table-cell">{item.base_unit}</td>
+                    <td className="py-2">{item.base_unit}</td>
                     <td className="py-2">{item.nearest_expiry ? formatDate(item.nearest_expiry) : '-'}</td>
                     <td className="py-2">{stockStatusLabel(item.status)}</td>
                   </tr>
@@ -1130,13 +1185,26 @@ export function Reports() {
         <section className="grid gap-4 xl:grid-cols-2">
           <article className="glass-card rounded-3xl p-6">
             <h3 className="text-lg font-semibold text-ink-900">Hóa đơn còn nợ</h3>
-            <div className="mt-4 overflow-x-auto">
+            {/* Mobile cards */}
+            <div className="mt-4 space-y-2 sm:hidden">
+              {debtData.debtInvoiceRows.map((item) => (
+                <div key={item.code} className="flex items-center justify-between rounded-xl border border-ink-900/10 bg-white/60 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-semibold text-ink-900">{item.code}</p>
+                    <p className="text-xs text-ink-500">{item.customerName} · {formatDate(item.createdAt)}</p>
+                  </div>
+                  <p className="text-sm font-semibold text-coral-500">{formatCurrency(item.debtAmount)}</p>
+                </div>
+              ))}
+            </div>
+            {/* Desktop table */}
+            <div className="mt-4 hidden overflow-x-auto sm:block">
               <table className="w-full text-left text-sm">
                 <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
                   <tr>
                     <th className="py-2">Mã HĐ</th>
                     <th className="py-2">Khách hàng</th>
-                    <th className="hidden py-2 sm:table-cell">Ngày</th>
+                    <th className="py-2">Ngày</th>
                     <th className="py-2">Còn nợ</th>
                   </tr>
                 </thead>
@@ -1145,7 +1213,7 @@ export function Reports() {
                     <tr key={item.code} className="border-t border-ink-900/5">
                       <td className="py-2 font-semibold text-ink-900">{item.code}</td>
                       <td className="py-2">{item.customerName}</td>
-                      <td className="hidden py-2 sm:table-cell">{formatDate(item.createdAt)}</td>
+                      <td className="py-2">{formatDate(item.createdAt)}</td>
                       <td className="py-2 text-coral-500">{formatCurrency(item.debtAmount)}</td>
                     </tr>
                   ))}
@@ -1156,7 +1224,20 @@ export function Reports() {
 
           <article className="glass-card rounded-3xl p-6">
             <h3 className="text-lg font-semibold text-ink-900">Nhà phân phối còn công nợ</h3>
-            <div className="mt-4 overflow-x-auto">
+            {/* Mobile cards */}
+            <div className="mt-4 space-y-2 sm:hidden">
+              {debtData.supplierRows.map((item) => (
+                <div key={`${item.name}-${item.phone}`} className="flex items-center justify-between rounded-xl border border-ink-900/10 bg-white/60 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-semibold text-ink-900">{item.name}</p>
+                    <p className="text-xs text-ink-500">{item.phone}</p>
+                  </div>
+                  <p className="text-sm font-semibold text-coral-500">{formatCurrency(item.debtAmount)}</p>
+                </div>
+              ))}
+            </div>
+            {/* Desktop table */}
+            <div className="mt-4 hidden overflow-x-auto sm:block">
               <table className="w-full text-left text-sm">
                 <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
                   <tr>
@@ -1183,29 +1264,49 @@ export function Reports() {
       {tab === 'customer' && customerData ? (
         <section className="glass-card rounded-3xl p-6">
           <h3 className="text-lg font-semibold text-ink-900">Top khách hàng theo chi tiêu</h3>
-          <div className="mt-4 overflow-x-auto">
+          {/* Mobile cards */}
+          <div className="mt-4 space-y-2 sm:hidden">
+            {customerData.topSpenders.map((item) => (
+              <div key={item.id} className="rounded-xl border border-ink-900/10 bg-white/60 px-4 py-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-ink-900">{item.name}</p>
+                    <p className="text-xs text-ink-500">{item.code} · {item.phone}</p>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-700">{item.tier}</span>
+                </div>
+                <div className="mt-2 flex items-center gap-4 text-xs text-ink-600">
+                  <span>{item.total_orders.toLocaleString('vi-VN')} đơn</span>
+                  <span className="font-semibold text-ink-900">{formatCurrency(toNumber(item.total_spent))}</span>
+                  <span>{item.current_points.toLocaleString('vi-VN')} điểm</span>
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* Desktop table */}
+          <div className="mt-4 hidden overflow-x-auto sm:block">
             <table className="w-full text-left text-sm">
               <thead className="text-xs uppercase tracking-[0.2em] text-ink-600">
                 <tr>
-                  <th className="hidden py-2 sm:table-cell">Mã KH</th>
+                  <th className="py-2">Mã KH</th>
                   <th className="py-2">Tên khách hàng</th>
-                  <th className="hidden py-2 sm:table-cell">SĐT</th>
+                  <th className="py-2">SĐT</th>
                   <th className="py-2">Hạng</th>
                   <th className="py-2">Tổng đơn</th>
                   <th className="py-2">Tổng chi</th>
-                  <th className="hidden py-2 sm:table-cell">Điểm</th>
+                  <th className="py-2">Điểm</th>
                 </tr>
               </thead>
               <tbody>
                 {customerData.topSpenders.map((item) => (
                   <tr key={item.id} className="border-t border-ink-900/5">
-                    <td className="hidden py-2 font-semibold text-ink-900 sm:table-cell">{item.code}</td>
+                    <td className="py-2 font-semibold text-ink-900">{item.code}</td>
                     <td className="py-2">{item.name}</td>
-                    <td className="hidden py-2 sm:table-cell">{item.phone}</td>
+                    <td className="py-2">{item.phone}</td>
                     <td className="py-2">{item.tier}</td>
                     <td className="py-2">{item.total_orders.toLocaleString('vi-VN')}</td>
                     <td className="py-2">{formatCurrency(toNumber(item.total_spent))}</td>
-                    <td className="hidden py-2 sm:table-cell">{item.current_points.toLocaleString('vi-VN')}</td>
+                    <td className="py-2">{item.current_points.toLocaleString('vi-VN')}</td>
                   </tr>
                 ))}
               </tbody>

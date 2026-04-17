@@ -80,6 +80,7 @@ export function AppShell() {
       <MobileNav
         open={mobileNavOpen}
         items={visibleNavItems}
+        user={user}
         onClose={() => setMobileNavOpen(false)}
         onOpenSettings={() => navigate('/cai-dat')}
         onOpenUsersManagement={() => navigate('/quan-ly-tai-khoan')}

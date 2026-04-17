@@ -17,6 +17,7 @@ from .db.models import SCHEMA_NAME, AlertRule
 from .db.session import SessionLocal, engine
 from .expiry_checker import start_expiry_checker
 from .rabbitmq_consumer import start_consumer
+from .restock_checker import start_restock_checker
 
 
 settings = get_settings()
@@ -26,6 +27,7 @@ DEFAULT_ALERT_RULES = [
     {"code": "sale", "name": "Sự kiện bán hàng", "description": "Thông báo khi có hóa đơn mới, hủy hóa đơn, trả hàng"},
     {"code": "low_stock", "name": "Tồn kho thấp", "description": "Cảnh báo khi sản phẩm dưới mức tồn kho tối thiểu"},
     {"code": "expiry_warning", "name": "Thuốc sắp hết hạn", "description": "Cảnh báo thuốc gần hết hạn sử dụng"},
+    {"code": "restock", "name": "Gợi ý nhập hàng", "description": "Email tổng hợp hàng ngày về các mặt hàng cần đặt nhập"},
     {"code": "system", "name": "Hệ thống", "description": "Thông báo từ hệ thống (backup, cập nhật, lỗi)"},
     {"code": "general", "name": "Chung", "description": "Thông báo chung khác"},
 ]
@@ -68,7 +70,16 @@ async def lifespan(_: FastAPI):
     if settings.ENABLE_EXPIRY_CHECK_JOB:
         expiry_task = asyncio.create_task(start_expiry_checker(expiry_stop_event))
 
+    # Start restock email scheduler
+    restock_stop_event = asyncio.Event()
+    restock_task = asyncio.create_task(start_restock_checker(restock_stop_event))
+
     yield
+
+    restock_stop_event.set()
+    restock_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await restock_task
 
     if expiry_task is not None:
         expiry_stop_event.set()

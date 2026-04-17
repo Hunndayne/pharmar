@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     # Number of consecutive inventory fetch failures before a system alert is raised
     INVENTORY_FAIL_ALERT_THRESHOLD: int = 3
 
+    # Restock email scheduler
+    REPORT_SERVICE_URL: str = "http://report-service:8001"
+    RESTOCK_EMAIL_ENABLED: bool = True
+    RESTOCK_EMAIL_TIME: str = "07:00"  # HH:MM local time of day
+
     FRONTEND_URL: str = "https://pharmar.hunn.io.vn"
 
     CORS_ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]

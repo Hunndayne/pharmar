@@ -1810,54 +1810,94 @@ export function StoreSettings() {
             <p className="mt-4 text-sm text-ink-500">Chưa có bản sao lưu nào.</p>
           ) : null}
           {backups.length > 0 ? (
-            <div className="mt-4 overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-ink-900/10 text-xs uppercase tracking-wider text-ink-500">
-                    <th className="pb-2 pr-4">Tên file</th>
-                    <th className="pb-2 pr-4">Kích thước</th>
-                    <th className="pb-2 pr-4">Thời gian</th>
-                    <th className="pb-2 pr-4">Ghi chú</th>
-                    <th className="pb-2" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {backups.map((b) => (
-                    <tr key={b.id} className="border-b border-ink-900/5">
-                      <td className="py-2 pr-4 font-mono text-xs text-ink-800">{b.filename}</td>
-                      <td className="py-2 pr-4 text-ink-600">{formatFileSize(b.size_bytes)}</td>
-                      <td className="py-2 pr-4 text-ink-600">{formatDateTime(b.created_at, effectiveSettingsTimeZone)}</td>
-                      <td className="py-2 pr-4 text-ink-500">{b.note ?? '-'}</td>
-                      <td className="py-2">
-                        <div className="flex gap-1">
-                          <button
-                            type="button"
-                            onClick={() => void onDownloadBackup(b.id, b.filename)}
-                            className="rounded-lg px-2 py-1 text-xs font-medium text-brand-600 hover:bg-brand-50"
-                          >
-                            Tải về
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void onRestoreBackup(b.id)}
-                            disabled={backupRestoring === b.id}
-                            className="rounded-lg px-2 py-1 text-xs font-medium text-amber-600 hover:bg-amber-50 disabled:opacity-60"
-                          >
-                            {backupRestoring === b.id ? 'Đang khôi phục...' : 'Khôi phục'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void onDeleteBackup(b.id)}
-                            className="rounded-lg px-2 py-1 text-xs font-medium text-coral-500 hover:bg-coral-50"
-                          >
-                            Xóa
-                          </button>
-                        </div>
-                      </td>
+            <div className="mt-4">
+              {/* Mobile cards */}
+              <div className="space-y-3 sm:hidden">
+                {backups.map((b) => (
+                  <div key={b.id} className="rounded-2xl border border-ink-900/10 bg-white p-4">
+                    <p className="truncate font-mono text-xs font-medium text-ink-800">{b.filename}</p>
+                    <div className="mt-1 flex items-center gap-3 text-xs text-ink-500">
+                      <span>{formatFileSize(b.size_bytes)}</span>
+                      <span>{formatDateTime(b.created_at, effectiveSettingsTimeZone)}</span>
+                    </div>
+                    {b.note ? <p className="mt-1 text-xs text-ink-400">{b.note}</p> : null}
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void onDownloadBackup(b.id, b.filename)}
+                        className="rounded-lg px-3 py-1.5 text-xs font-medium text-brand-600 hover:bg-brand-50"
+                      >
+                        Tải về
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void onRestoreBackup(b.id)}
+                        disabled={backupRestoring === b.id}
+                        className="rounded-lg px-3 py-1.5 text-xs font-medium text-amber-600 hover:bg-amber-50 disabled:opacity-60"
+                      >
+                        {backupRestoring === b.id ? 'Đang khôi phục...' : 'Khôi phục'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void onDeleteBackup(b.id)}
+                        className="rounded-lg px-3 py-1.5 text-xs font-medium text-coral-500 hover:bg-coral-50"
+                      >
+                        Xóa
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {/* Desktop table */}
+              <div className="hidden overflow-x-auto sm:block">
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-ink-900/10 text-xs uppercase tracking-wider text-ink-500">
+                      <th className="pb-2 pr-4">Tên file</th>
+                      <th className="pb-2 pr-4">Kích thước</th>
+                      <th className="pb-2 pr-4">Thời gian</th>
+                      <th className="pb-2 pr-4">Ghi chú</th>
+                      <th className="pb-2" />
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {backups.map((b) => (
+                      <tr key={b.id} className="border-b border-ink-900/5">
+                        <td className="py-2 pr-4 font-mono text-xs text-ink-800">{b.filename}</td>
+                        <td className="py-2 pr-4 text-ink-600">{formatFileSize(b.size_bytes)}</td>
+                        <td className="py-2 pr-4 text-ink-600">{formatDateTime(b.created_at, effectiveSettingsTimeZone)}</td>
+                        <td className="py-2 pr-4 text-ink-500">{b.note ?? '-'}</td>
+                        <td className="py-2">
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => void onDownloadBackup(b.id, b.filename)}
+                              className="rounded-lg px-2 py-1 text-xs font-medium text-brand-600 hover:bg-brand-50"
+                            >
+                              Tải về
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void onRestoreBackup(b.id)}
+                              disabled={backupRestoring === b.id}
+                              className="rounded-lg px-2 py-1 text-xs font-medium text-amber-600 hover:bg-amber-50 disabled:opacity-60"
+                            >
+                              {backupRestoring === b.id ? 'Đang khôi phục...' : 'Khôi phục'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void onDeleteBackup(b.id)}
+                              className="rounded-lg px-2 py-1 text-xs font-medium text-coral-500 hover:bg-coral-50"
+                            >
+                              Xóa
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           ) : null}
 

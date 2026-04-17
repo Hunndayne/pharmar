@@ -201,6 +201,25 @@ async def _check_and_notify() -> None:
     await _handle_low_stock(alerts_data)
 
 
+async def refresh_low_stock_state() -> None:
+    """Silent refresh: remove recovered drugs from the notified set.
+
+    Called after nhập hàng so that re-stocked drugs can trigger future alerts.
+    """
+    global _notified_low_stock_drug_ids
+    alerts_data = await _fetch_inventory_alerts()
+    if alerts_data is None:
+        return
+    low_stock_items = alerts_data.get("low_stock", [])
+    current_low_ids = {item.get("drug_id", "") for item in low_stock_items}
+    _notified_low_stock_drug_ids &= current_low_ids
+    logger.info(
+        "Low stock state refreshed: %d currently low, %d remain in notified set",
+        len(current_low_ids),
+        len(_notified_low_stock_drug_ids),
+    )
+
+
 async def start_expiry_checker(stop_event: asyncio.Event) -> None:
     """Run the inventory alert check loop. Interval controlled by EXPIRY_CHECK_INTERVAL_HOURS."""
     interval_seconds = settings.EXPIRY_CHECK_INTERVAL_HOURS * 3600
