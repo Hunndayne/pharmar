@@ -4,9 +4,11 @@ import { MobileHeader } from '../components/layout/MobileHeader'
 import { MobileNav } from '../components/layout/MobileNav'
 import { NotificationBell } from '../components/layout/NotificationBell'
 import { Sidebar } from '../components/layout/Sidebar'
+import { WhatsNewModal } from '../components/WhatsNewModal'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
 import { navItems } from '../routes/navigation'
+import { CURRENT_VERSION, WHATS_NEW_STORAGE_KEY } from '../constants/changelog'
 
 const titleByPath: Record<string, string> = {
   '/': 'Dashboard',
@@ -42,6 +44,9 @@ export function AppShell() {
 
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [systemMenuOpen, setSystemMenuOpen] = useState(false)
+  const [showWhatsNew, setShowWhatsNew] = useState(
+    () => localStorage.getItem(WHATS_NEW_STORAGE_KEY) !== CURRENT_VERSION,
+  )
 
   const title = titleByPath[pathname] ?? 'PHARMAR'
   const canManageUsers = isOwnerOrAdmin(user)
@@ -90,6 +95,8 @@ export function AppShell() {
         }}
         canManageUsers={canManageUsers}
       />
+
+      {showWhatsNew && <WhatsNewModal onClose={() => setShowWhatsNew(false)} />}
 
       <div className="flex min-h-screen flex-1 flex-col lg:ml-72">
         <MobileHeader title={title} onMenu={() => setMobileNavOpen(true)} />
