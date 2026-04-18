@@ -5,6 +5,7 @@ import {
   useState,
   type ChangeEvent,
   type FormEvent,
+  type ReactNode,
 } from 'react'
 import { ApiError } from '../api/usersService'
 import { storeApi, type BackupRecord, type StoreInfo, type StoreSettingsMap } from '../api/storeService'
@@ -213,6 +214,67 @@ const resolveBankInputValue = (value: string) => {
   )
 }
 
+type SettingsPanelProps = {
+  title: string
+  description?: string
+  actions?: ReactNode
+  children: ReactNode
+  className?: string
+}
+
+type SettingsMetricCardProps = {
+  label: string
+  value: string
+  hint?: string
+  tone?: 'default' | 'brand' | 'amber'
+}
+
+const settingsPanelClass =
+  'rounded-[28px] border border-ink-900/10 bg-white/90 p-4 shadow-[0_24px_70px_-48px_rgba(15,23,42,0.45)] backdrop-blur sm:p-5'
+
+function SettingsPanel({
+  title,
+  description,
+  actions,
+  children,
+  className = '',
+}: SettingsPanelProps) {
+  return (
+    <div className={`${settingsPanelClass} ${className}`.trim()}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h4 className="text-lg font-semibold text-ink-900">{title}</h4>
+          {description ? <p className="mt-1 text-sm text-ink-600">{description}</p> : null}
+        </div>
+        {actions}
+      </div>
+      <div className="mt-4">{children}</div>
+    </div>
+  )
+}
+
+function SettingsMetricCard({
+  label,
+  value,
+  hint,
+  tone = 'default',
+}: SettingsMetricCardProps) {
+  const toneClass =
+    tone === 'brand'
+      ? 'border-brand-500/20 bg-brand-500/10 text-brand-700'
+      : tone === 'amber'
+        ? 'border-amber-500/25 bg-amber-500/10 text-amber-700'
+        : 'border-white/70 bg-white/75 text-ink-900'
+
+  return (
+    <div className={`rounded-[24px] border p-4 backdrop-blur ${toneClass}`}>
+      <p className="text-[11px] uppercase tracking-[0.28em] text-ink-500">{label}</p>
+      <p className="mt-2 text-lg font-semibold text-current">{value}</p>
+      {hint ? <p className="mt-1 text-xs text-ink-600">{hint}</p> : null}
+    </div>
+  )
+}
+
 const mapStoreInfoToForm = (info: StoreInfo): StoreInfoForm => ({
   name: info.name ?? '',
   address: info.address ?? '',
@@ -331,6 +393,10 @@ export function StoreSettings() {
   )
 
   const adsUrlsFromFiles = useMemo(() => mapFilesToAdsUrls(adsFiles), [adsFiles])
+  const configuredAdsCount = useMemo(
+    () => settingValueToStringArray(storeSettingsForm.customerDisplayAds).length,
+    [storeSettingsForm.customerDisplayAds],
+  )
 
   const loadStoreData = useCallback(async () => {
     setStoreLoading(true)
@@ -1044,7 +1110,7 @@ export function StoreSettings() {
 
   return (
     <div className="space-y-6">
-      <header>
+      <header className="overflow-hidden rounded-[32px] border border-brand-500/15 bg-[radial-gradient(circle_at_top_left,_rgba(14,165,233,0.18),_transparent_36%),linear-gradient(135deg,rgba(255,255,255,0.96),rgba(244,246,248,0.92))] p-5 shadow-[0_30px_90px_-60px_rgba(15,23,42,0.55)] sm:p-6 lg:p-8">
         <p className="text-xs uppercase tracking-[0.35em] text-ink-600">Cửa hàng</p>
         <h2 className="mt-2 text-3xl font-semibold text-ink-900">Thông tin và cấu hình cửa hàng</h2>
         <p className="mt-2 text-sm text-ink-600">
@@ -1053,9 +1119,65 @@ export function StoreSettings() {
         {!canManageStore ? (
           <p className="mt-2 text-sm text-amber-700">Bạn chỉ có quyền xem. Owner/Admin mới được chỉnh sửa.</p>
         ) : null}
+        <div className="mt-5 flex flex-wrap gap-2">
+          <a
+            href="#store-info"
+            className="rounded-full border border-white/80 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900"
+          >
+            Hồ sơ
+          </a>
+          <a
+            href="#store-config"
+            className="rounded-full border border-white/80 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900"
+          >
+            Vận hành
+          </a>
+          <a
+            href="#store-notifications"
+            className="rounded-full border border-white/80 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900"
+          >
+            Thông báo
+          </a>
+          {canManageStore ? (
+            <a
+              href="#store-backup"
+              className="rounded-full border border-white/80 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900"
+            >
+              Sao lưu
+            </a>
+          ) : null}
+        </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:max-w-4xl">
+          <SettingsMetricCard
+            label="Nhà thuốc"
+            value={storeInfoForm.name.trim() || 'Chưa đặt tên'}
+            hint={storeInfoForm.phone.trim() || 'Chưa có số điện thoại'}
+            tone="brand"
+          />
+          <SettingsMetricCard
+            label="Quyền hiện tại"
+            value={canManageStore ? 'Có thể chỉnh sửa' : 'Chỉ xem'}
+            hint={canManageStore ? 'Owner/Admin đang đăng nhập.' : 'Đăng nhập Owner/Admin để cập nhật.'}
+            tone={canManageStore ? 'default' : 'amber'}
+          />
+          <SettingsMetricCard
+            label="Múi giờ áp dụng"
+            value={effectiveSettingsTimeZone}
+            hint={timeZoneValid ? timeZonePreview : 'Cần nhập theo chuẩn IANA.'}
+          />
+          <SettingsMetricCard
+            label="Màn hình khách"
+            value={`${configuredAdsCount} ads cấu hình`}
+            hint={
+              autoPrintUpdatedAt
+                ? `Auto print cập nhật lúc ${formatDateTime(autoPrintUpdatedAt, effectiveSettingsTimeZone)}`
+                : 'Chưa có mốc cập nhật auto print.'
+            }
+          />
+        </div>
       </header>
 
-      <section className="glass-card rounded-3xl p-6">
+      <section id="store-info" className="glass-card scroll-mt-24 rounded-[32px] p-5 sm:p-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-xl font-semibold text-ink-900">Thông tin cửa hàng</h3>
           <button
@@ -1070,8 +1192,14 @@ export function StoreSettings() {
         {storeLoading ? <p className="mt-3 text-sm text-ink-600">Đang tải dữ liệu cửa hàng...</p> : null}
         {storeError ? <p className="mt-3 text-sm text-coral-500">{storeError}</p> : null}
 
-        <form onSubmit={onSubmitStoreInfo} className="mt-4 grid gap-4 md:grid-cols-2">
-          <label className="space-y-2 text-sm text-ink-700">
+        <form onSubmit={onSubmitStoreInfo} className="mt-6 space-y-5">
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1.08fr)_minmax(320px,0.92fr)]">
+            <SettingsPanel
+              title="Ho so co ban"
+              description="Tap trung cac truong co ban: ten nha thuoc, dia chi va lien he."
+            >
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="space-y-2 text-sm text-ink-700">
             <span>Tên nhà thuốc *</span>
             <input
               value={storeInfoForm.name}
@@ -1089,7 +1217,7 @@ export function StoreSettings() {
               disabled={!canManageStore || storeLoading}
             />
           </label>
-          <label className="space-y-2 text-sm text-ink-700 md:col-span-2">
+          <label className="space-y-2 text-sm text-ink-700 sm:col-span-2">
             <span>Địa chỉ</span>
             <input
               value={storeInfoForm.address}
@@ -1116,7 +1244,15 @@ export function StoreSettings() {
               disabled={!canManageStore || storeLoading}
             />
           </label>
-          <label className="space-y-2 text-sm text-ink-700">
+              </div>
+            </SettingsPanel>
+            <div className="space-y-5">
+              <SettingsPanel
+                title="Phap ly va ngan hang"
+                description="Gom cac truong phuc vu hoa don, QR va ke khai vao mot cum."
+              >
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="space-y-2 text-sm text-ink-700">
             <span>Mã số thuế</span>
             <input
               value={storeInfoForm.taxCode}
@@ -1198,7 +1334,7 @@ export function StoreSettings() {
               ) : null}
             </div>
           </label>
-          <label className="space-y-2 text-sm text-ink-700 md:col-span-2">
+          <label className="space-y-2 text-sm text-ink-700 sm:col-span-2">
             <span>Chi nhánh ngân hàng</span>
             <input
               value={storeInfoForm.bankBranch}
@@ -1208,7 +1344,13 @@ export function StoreSettings() {
             />
           </label>
 
-          <div className="md:col-span-2 rounded-2xl border border-ink-900/10 bg-white p-4">
+                </div>
+              </SettingsPanel>
+              <SettingsPanel
+                title="Logo nhan dien"
+                description="Khu rieng cho logo thuong hieu, de quan sat tren ca mobile lan desktop."
+              >
+                <div className="rounded-[24px] border border-ink-900/10 bg-white p-4">
             <p className="text-xs uppercase tracking-[0.25em] text-ink-500">Logo cửa hàng</p>
             <p className="mt-2 text-xs text-ink-500">Logo sẽ được dùng làm favicon của trang web.</p>
             {logoPreviewUrl && !logoPreviewFailed ? (
@@ -1249,14 +1391,20 @@ export function StoreSettings() {
             ) : null}
           </div>
 
-          {storeInfoError ? <p className="md:col-span-2 text-sm text-coral-500">{storeInfoError}</p> : null}
-          {storeInfoMessage ? <p className="md:col-span-2 text-sm text-brand-600">{storeInfoMessage}</p> : null}
+              </SettingsPanel>
+            </div>
+          </div>
+          {storeInfoError ? <p className="text-sm text-coral-500">{storeInfoError}</p> : null}
+          {storeInfoMessage ? <p className="text-sm text-brand-600">{storeInfoMessage}</p> : null}
 
-          <div className="md:col-span-2">
+          <div className="flex flex-col gap-3 rounded-[28px] border border-ink-900/10 bg-white/80 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-ink-600">
+              Luu lai de dong bo ho so cua hang, ngan hang va logo nhan dien.
+            </p>
             <button
               type="submit"
               disabled={storeInfoSubmitting || !canManageStore || storeLoading}
-              className="w-fit rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              className="w-full rounded-full bg-ink-900 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-60 sm:w-auto"
             >
               {storeInfoSubmitting ? 'Đang cập nhật...' : 'Cập nhật thông tin cửa hàng'}
             </button>
@@ -1264,497 +1412,569 @@ export function StoreSettings() {
         </form>
       </section>
 
-      <section className="glass-card rounded-3xl p-6">
-        <h3 className="text-xl font-semibold text-ink-900">Cấu hình bán hàng và kho</h3>
-        <p className="mt-2 text-xs text-ink-500">
-          Tự động in hóa đơn cập nhật lúc: {formatDateTime(autoPrintUpdatedAt, effectiveSettingsTimeZone)}
-        </p>
-
-        <form onSubmit={onSubmitStoreSettings} className="mt-4 grid gap-4 md:grid-cols-2">
-          <label className="flex items-center gap-2 text-sm text-ink-700 md:col-span-2">
-            <input
-              type="checkbox"
-              checked={storeSettingsForm.autoPrint}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({ ...prev, autoPrint: event.target.checked }))
-              }
-              disabled={!canManageStore || storeLoading}
-            />
-            Tự động in hóa đơn
-          </label>
-          <label className="flex items-center gap-2 text-sm text-ink-700 md:col-span-2">
-            <input
-              type="checkbox"
-              checked={storeSettingsForm.sellByLot}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({ ...prev, sellByLot: event.target.checked }))
-              }
-              disabled={!canManageStore || storeLoading}
-            />
-            Bán hàng theo lô (áp dụng FIFO/FEFO khi tạo hóa đơn)
-          </label>
-          <p className="text-xs text-ink-500 md:col-span-2">
-            {storeSettingsForm.sellByLot
-              ? 'Khi bật, mỗi dòng bán hàng phải bám theo lô được chọn và kiểm chính sách FIFO/FEFO như hiện tại.'
-              : 'Khi tắt, hệ thống có thể tự phân bổ qua nhiều lô cho đơn vị lẻ. Nếu quét hoặc chọn một lô cụ thể thì vẫn giữ chặt theo lô đó.'}
-          </p>
-          <label className="flex items-center gap-2 text-sm text-ink-700 md:col-span-2">
-            <input
-              type="checkbox"
-              checked={storeSettingsForm.cashRoundingEnabled}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({
-                  ...prev,
-                  cashRoundingEnabled: event.target.checked,
-                }))
-              }
-              disabled={!canManageStore || storeLoading}
-            />
-            Bật làm tròn tiền mặt khi thanh toán
-          </label>
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Bậc làm tròn tiền mặt (đồng)</span>
-            <input
-              type="number"
-              min={1}
-              value={storeSettingsForm.cashRoundingStep}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({
-                  ...prev,
-                  cashRoundingStep: event.target.value,
-                }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading || !storeSettingsForm.cashRoundingEnabled}
-            />
-          </label>
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Phương thức thanh toán mặc định</span>
-            <input
-              value={storeSettingsForm.defaultPaymentMethod}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({ ...prev, defaultPaymentMethod: event.target.value }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading}
-            />
-          </label>
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Nội dung chuyển khoản QR</span>
-            <select
-              value={storeSettingsForm.bankQrAddInfoMode}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({
-                  ...prev,
-                  bankQrAddInfoMode: event.target.value === "custom" ? "custom" : "order_code",
-                }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading}
-            >
-              <option value="order_code">Mã đơn hàng</option>
-              <option value="custom">Nội dung tùy chỉnh</option>
-            </select>
-          </label>
-          <label className="space-y-2 text-sm text-ink-700 md:col-span-2">
-            <span>Nội dung chuyển khoản tùy chỉnh</span>
-            <input
-              value={storeSettingsForm.bankQrAddInfoCustom}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({
-                  ...prev,
-                  bankQrAddInfoCustom: event.target.value,
-                }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              placeholder="Ví dụ: Thanh toán đơn thuốc"
-              disabled={!canManageStore || storeLoading || storeSettingsForm.bankQrAddInfoMode !== "custom"}
-            />
-          </label>
-
-          <label className="flex items-center gap-2 text-sm text-ink-700 md:col-span-2">
-            <input
-              type="checkbox"
-              checked={storeSettingsForm.customerDisplayShowPrice}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({
-                  ...prev,
-                  customerDisplayShowPrice: event.target.checked,
-                }))
-              }
-              disabled={!canManageStore || storeLoading}
-            />
-            Màn hình khách: hiển thị giá bán từng dòng thuốc
-          </label>
-          <label className="flex items-center gap-2 text-sm text-ink-700 md:col-span-2">
-            <input
-              type="checkbox"
-              checked={storeSettingsForm.customerDisplayShowTotal}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({
-                  ...prev,
-                  customerDisplayShowTotal: event.target.checked,
-                }))
-              }
-              disabled={!canManageStore || storeLoading}
-            />
-            Màn hình khách: hiển thị tổng tiền hóa đơn
-          </label>
-
-          <div className="space-y-3 text-sm text-ink-700 md:col-span-2">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span>Danh sách ads màn hình khách</span>
-              {canManageStore ? (
-                <div className="flex flex-wrap gap-2">
-                  <label className="cursor-pointer rounded-full border border-ink-900/10 bg-white px-4 py-1.5 text-xs font-semibold text-ink-900">
-                    {adsFilesUploading ? 'Đang tải...' : 'Tải ảnh quảng cáo'}
-                    <input
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      className="hidden"
-                      disabled={adsFilesUploading || storeLoading}
-                      onChange={(event) => {
-                        void onUploadAdsFiles(event)
-                      }}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => onApplyUploadedAds()}
-                    disabled={!adsUrlsFromFiles.length || storeLoading}
-                    className="rounded-full border border-ink-900/10 bg-white px-4 py-1.5 text-xs font-semibold text-ink-900 disabled:opacity-60"
-                  >
-                    Dùng danh sách ảnh đã tải lên
-                  </button>
-                </div>
-              ) : null}
-            </div>
-
-            {adsFilesLoading ? (
-              <p className="text-xs text-ink-500">Đang tải danh sách ảnh quảng cáo...</p>
-            ) : null}
-            {!adsFilesLoading && adsFilesSorted.length === 0 ? (
-              <p className="text-xs text-ink-500">Chưa có ảnh quảng cáo trên File Service.</p>
-            ) : null}
-            {adsFilesSorted.length > 0 ? (
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {adsFilesSorted.map((item) => {
-                  const previewUrl = resolveAssetUrl(item.url)
-                  return (
-                    <div key={item.id} className="rounded-2xl border border-ink-900/10 bg-white p-2">
-                      {previewUrl ? (
-                        <img
-                          src={previewUrl}
-                          alt={item.original_name}
-                          className="h-24 w-full rounded-xl object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-24 items-center justify-center rounded-xl bg-fog-50 text-xs text-ink-500">
-                          Không có preview
-                        </div>
-                      )}
-                      <p className="mt-2 truncate text-xs font-medium text-ink-800">{item.original_name}</p>
-                      <p className="text-[11px] text-ink-500">{formatFileSize(item.size)}</p>
-                      <div className="mt-2 flex gap-2">
-                        {previewUrl ? (
-                          <a
-                            href={previewUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="rounded-full border border-ink-900/10 px-3 py-1 text-[11px] font-semibold text-ink-900"
-                          >
-                            Xem trước
-                          </a>
-                        ) : null}
-                        {canManageStore ? (
-                          <button
-                            type="button"
-                            onClick={() => void onDeleteAdsFile(item)}
-                            className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-[11px] font-semibold text-coral-500"
-                          >
-                            Xóa
-                          </button>
-                        ) : null}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            ) : null}
-
-            <textarea
-              value={storeSettingsForm.customerDisplayAds}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({
-                  ...prev,
-                  customerDisplayAds: event.target.value,
-                }))
-              }
-              className="min-h-[120px] w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              placeholder="/customer-display/ads/ad-01.svg&#10;/customer-display/ads/ad-02.svg"
-              disabled={!canManageStore || storeLoading}
-            />
-            <p className="text-xs text-ink-500">
-              Mỗi dòng 1 URL ảnh. Bạn có thể dùng ảnh từ File Service hoặc dán URL thủ công.
+      <section id="store-config" className="glass-card scroll-mt-24 rounded-[32px] p-5 sm:p-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h3 className="text-xl font-semibold text-ink-900">Cau hinh ban hang va kho</h3>
+            <p className="mt-1 text-sm text-ink-600">
+              Tach theo tung nhom van hanh de de theo doi hon tren desktop va mobile.
             </p>
           </div>
+          <div className="flex flex-wrap gap-2 text-xs text-ink-600">
+            <span className="rounded-full border border-ink-900/10 bg-white px-3 py-1.5">
+              Mui gio: {effectiveSettingsTimeZone}
+            </span>
+            <span className="rounded-full border border-ink-900/10 bg-white px-3 py-1.5">
+              {configuredAdsCount} ads dang cau hinh
+            </span>
+            <span className="rounded-full border border-ink-900/10 bg-white px-3 py-1.5">
+              Auto print: {autoPrintUpdatedAt ? formatDateTime(autoPrintUpdatedAt, effectiveSettingsTimeZone) : 'chua cap nhat'}
+            </span>
+          </div>
+        </div>
 
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Kiểu transition ads</span>
-            <select
-              value={storeSettingsForm.customerDisplayAdsTransition}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({
-                  ...prev,
-                  customerDisplayAdsTransition:
-                    (event.target.value === 'none' || event.target.value === 'slide' ? event.target.value : 'fade') as AdsTransition,
-                }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading}
+        <form onSubmit={onSubmitStoreSettings} className="mt-6 space-y-5">
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,0.92fr)_minmax(320px,1.08fr)]">
+            <SettingsPanel
+              title="Van hanh va thanh toan"
+              description="Cac quy tac tac dong truc tiep den POS, in hoa don va noi dung chuyen khoan QR."
             >
-              <option value="fade">Fade</option>
-              <option value="slide">Slide</option>
-              <option value="none">None</option>
-            </select>
-          </label>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="flex items-start gap-3 rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm text-ink-700 sm:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={storeSettingsForm.autoPrint}
+                    onChange={(event) =>
+                      setStoreSettingsForm((prev) => ({ ...prev, autoPrint: event.target.checked }))
+                    }
+                    disabled={!canManageStore || storeLoading}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="block font-medium text-ink-900">Tu dong in hoa don</span>
+                    <span className="mt-1 block text-xs text-ink-500">
+                      In ngay sau khi giao dich hoan tat.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-3 rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm text-ink-700 sm:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={storeSettingsForm.sellByLot}
+                    onChange={(event) =>
+                      setStoreSettingsForm((prev) => ({ ...prev, sellByLot: event.target.checked }))
+                    }
+                    disabled={!canManageStore || storeLoading}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="block font-medium text-ink-900">Ban hang theo lo</span>
+                    <span className="mt-1 block text-xs text-ink-500">
+                      Ap dung FIFO/FEFO khi tao hoa don va theo doi ton theo lo.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-3 rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm text-ink-700 sm:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={storeSettingsForm.cashRoundingEnabled}
+                    onChange={(event) =>
+                      setStoreSettingsForm((prev) => ({
+                        ...prev,
+                        cashRoundingEnabled: event.target.checked,
+                      }))
+                    }
+                    disabled={!canManageStore || storeLoading}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="block font-medium text-ink-900">Lam tron tien mat</span>
+                    <span className="mt-1 block text-xs text-ink-500">
+                      Huu ich khi cua hang quy dinh buoc lam tron co dinh.
+                    </span>
+                  </span>
+                </label>
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Bac lam tron (dong)</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={storeSettingsForm.cashRoundingStep}
+                    onChange={(event) =>
+                      setStoreSettingsForm((prev) => ({
+                        ...prev,
+                        cashRoundingStep: event.target.value,
+                      }))
+                    }
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    disabled={!canManageStore || storeLoading || !storeSettingsForm.cashRoundingEnabled}
+                  />
+                </label>
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Thanh toan mac dinh</span>
+                  <input
+                    value={storeSettingsForm.defaultPaymentMethod}
+                    onChange={(event) =>
+                      setStoreSettingsForm((prev) => ({ ...prev, defaultPaymentMethod: event.target.value }))
+                    }
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    disabled={!canManageStore || storeLoading}
+                  />
+                </label>
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Noi dung chuyen khoan QR</span>
+                  <select
+                    value={storeSettingsForm.bankQrAddInfoMode}
+                    onChange={(event) =>
+                      setStoreSettingsForm((prev) => ({
+                        ...prev,
+                        bankQrAddInfoMode: event.target.value === 'custom' ? 'custom' : 'order_code',
+                      }))
+                    }
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    disabled={!canManageStore || storeLoading}
+                  >
+                    <option value="order_code">Ma don hang</option>
+                    <option value="custom">Noi dung tuy chinh</option>
+                  </select>
+                </label>
+                <label className="space-y-2 text-sm text-ink-700 sm:col-span-2">
+                  <span>Noi dung QR tuy chinh</span>
+                  <input
+                    value={storeSettingsForm.bankQrAddInfoCustom}
+                    onChange={(event) =>
+                      setStoreSettingsForm((prev) => ({
+                        ...prev,
+                        bankQrAddInfoCustom: event.target.value,
+                      }))
+                    }
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    placeholder="Vi du: Thanh toan don thuoc"
+                    disabled={!canManageStore || storeLoading || storeSettingsForm.bankQrAddInfoMode !== 'custom'}
+                  />
+                </label>
+              </div>
+            </SettingsPanel>
 
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Chu kỳ đổi ads (giây)</span>
-            <input
-              type="number"
-              min={1}
-              value={storeSettingsForm.customerDisplayAdsIntervalSeconds}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({
-                  ...prev,
-                  customerDisplayAdsIntervalSeconds: event.target.value,
-                }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading}
-            />
-          </label>
-
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Thời gian transition (ms)</span>
-            <input
-              type="number"
-              min={0}
-              value={storeSettingsForm.customerDisplayAdsTransitionMs}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({
-                  ...prev,
-                  customerDisplayAdsTransitionMs: event.target.value,
-                }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading}
-            />
-          </label>
-
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Cho phép trả hàng trong</span>
-            <input
-              type="number"
-              min={0}
-              value={storeSettingsForm.returnWindowValue}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({ ...prev, returnWindowValue: event.target.value }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading}
-            />
-          </label>
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Đơn vị thời gian trả hàng</span>
-            <select
-              value={storeSettingsForm.returnWindowUnit}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({
-                  ...prev,
-                  returnWindowUnit: event.target.value === 'hour' ? 'hour' : 'day',
-                }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading}
+            <SettingsPanel
+              title="Man hinh khach"
+              description="Gom cac tuy chon hien thi va quan ly danh sach anh quang cao vao cung mot khung."
             >
-              <option value="day">Ngày</option>
-              <option value="hour">Giờ</option>
-            </select>
-          </label>
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Ngưỡng sắp hết hàng</span>
-            <input
-              type="number"
-              min={0}
-              value={storeSettingsForm.lowStockThreshold}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({ ...prev, lowStockThreshold: event.target.value }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading}
-            />
-          </label>
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Cảnh báo hết hạn trước (ngày)</span>
-            <input
-              type="number"
-              min={0}
-              value={storeSettingsForm.expiryWarningDays}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({ ...prev, expiryWarningDays: event.target.value }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading}
-            />
-          </label>
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Ngưỡng cận date (ngày)</span>
-            <input
-              type="number"
-              min={0}
-              value={storeSettingsForm.nearDateDays}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({ ...prev, nearDateDays: event.target.value }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading}
-            />
-          </label>
-          <label className="flex items-center gap-2 text-sm text-ink-700">
-            <input
-              type="checkbox"
-              checked={storeSettingsForm.enableFefo}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({ ...prev, enableFefo: event.target.checked }))
-              }
-              disabled={!canManageStore || storeLoading}
-            />
-            Bật FEFO cho lô có HSD ngắn
-          </label>
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Ngưỡng chuyển FEFO/FIFO (ngày)</span>
-            <input
-              type="number"
-              min={1}
-              value={storeSettingsForm.fefoThresholdDays}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({ ...prev, fefoThresholdDays: event.target.value }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading}
-            />
-          </label>
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Múi giờ</span>
-            <input
-              list="store-timezone-suggestions"
-              value={storeSettingsForm.timezone}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({ ...prev, timezone: event.target.value }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading}
-              placeholder={DEFAULT_APP_TIME_ZONE}
-              autoComplete="off"
-            />
-            <datalist id="store-timezone-suggestions">
-              {TIMEZONE_SUGGESTIONS.map((item) => (
-                <option key={item.value} value={item.value} label={item.displayLabel} />
-              ))}
-            </datalist>
-            <p className="text-xs text-ink-500">
-              Goi y IANA: {timeZoneDisplayLabel}. Khuyen nghi dung {DEFAULT_APP_TIME_ZONE}.
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="flex items-start gap-3 rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm text-ink-700 sm:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={storeSettingsForm.customerDisplayShowPrice}
+                    onChange={(event) =>
+                      setStoreSettingsForm((prev) => ({
+                        ...prev,
+                        customerDisplayShowPrice: event.target.checked,
+                      }))
+                    }
+                    disabled={!canManageStore || storeLoading}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="block font-medium text-ink-900">Hien thi gia tung dong thuoc</span>
+                    <span className="mt-1 block text-xs text-ink-500">
+                      Giup khach doi chieu tung san pham tren man hinh phu.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-3 rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm text-ink-700 sm:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={storeSettingsForm.customerDisplayShowTotal}
+                    onChange={(event) =>
+                      setStoreSettingsForm((prev) => ({
+                        ...prev,
+                        customerDisplayShowTotal: event.target.checked,
+                      }))
+                    }
+                    disabled={!canManageStore || storeLoading}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="block font-medium text-ink-900">Hien thi tong tien hoa don</span>
+                    <span className="mt-1 block text-xs text-ink-500">
+                      De khach theo doi tong thanh toan ngay tren man hinh doi dien.
+                    </span>
+                  </span>
+                </label>
+                <div className="space-y-3 text-sm text-ink-700 sm:col-span-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span>Danh sach ads man hinh khach</span>
+                    {canManageStore ? (
+                      <div className="flex flex-wrap gap-2">
+                        <label className="cursor-pointer rounded-full border border-ink-900/10 bg-white px-4 py-1.5 text-xs font-semibold text-ink-900">
+                          {adsFilesUploading ? 'Dang tai...' : 'Tai anh quang cao'}
+                          <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            className="hidden"
+                            disabled={adsFilesUploading || storeLoading}
+                            onChange={(event) => {
+                              void onUploadAdsFiles(event)
+                            }}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => onApplyUploadedAds()}
+                          disabled={!adsUrlsFromFiles.length || storeLoading}
+                          className="rounded-full border border-ink-900/10 bg-white px-4 py-1.5 text-xs font-semibold text-ink-900 disabled:opacity-60"
+                        >
+                          Dung anh da tai len
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {adsFilesLoading ? (
+                    <p className="text-xs text-ink-500">Dang tai danh sach anh quang cao...</p>
+                  ) : null}
+                  {!adsFilesLoading && adsFilesSorted.length === 0 ? (
+                    <p className="text-xs text-ink-500">Chua co anh quang cao tren File Service.</p>
+                  ) : null}
+                  {adsFilesSorted.length > 0 ? (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {adsFilesSorted.map((item) => {
+                        const previewUrl = resolveAssetUrl(item.url)
+                        return (
+                          <div key={item.id} className="rounded-2xl border border-ink-900/10 bg-white p-2">
+                            {previewUrl ? (
+                              <img
+                                src={previewUrl}
+                                alt={item.original_name}
+                                className="h-24 w-full rounded-xl object-cover"
+                              />
+                            ) : (
+                              <div className="flex h-24 items-center justify-center rounded-xl bg-fog-50 text-xs text-ink-500">
+                                Khong co preview
+                              </div>
+                            )}
+                            <p className="mt-2 truncate text-xs font-medium text-ink-800">{item.original_name}</p>
+                            <p className="text-[11px] text-ink-500">{formatFileSize(item.size)}</p>
+                            <div className="mt-2 flex gap-2">
+                              {previewUrl ? (
+                                <a
+                                  href={previewUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="rounded-full border border-ink-900/10 px-3 py-1 text-[11px] font-semibold text-ink-900"
+                                >
+                                  Xem truoc
+                                </a>
+                              ) : null}
+                              {canManageStore ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void onDeleteAdsFile(item)}
+                                  className="rounded-full border border-coral-500/30 bg-coral-500/10 px-3 py-1 text-[11px] font-semibold text-coral-500"
+                                >
+                                  Xoa
+                                </button>
+                              ) : null}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : null}
+
+                  <textarea
+                    value={storeSettingsForm.customerDisplayAds}
+                    onChange={(event) =>
+                      setStoreSettingsForm((prev) => ({
+                        ...prev,
+                        customerDisplayAds: event.target.value,
+                      }))
+                    }
+                    className="min-h-[120px] w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    placeholder="/customer-display/ads/ad-01.svg&#10;/customer-display/ads/ad-02.svg"
+                    disabled={!canManageStore || storeLoading}
+                  />
+                  <p className="text-xs text-ink-500">
+                    Moi dong 1 URL anh. Co the dung anh tu File Service hoac dan URL thu cong.
+                  </p>
+                </div>
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Kieu transition ads</span>
+                  <select
+                    value={storeSettingsForm.customerDisplayAdsTransition}
+                    onChange={(event) =>
+                      setStoreSettingsForm((prev) => ({
+                        ...prev,
+                        customerDisplayAdsTransition:
+                          (event.target.value === 'none' || event.target.value === 'slide' ? event.target.value : 'fade') as AdsTransition,
+                      }))
+                    }
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    disabled={!canManageStore || storeLoading}
+                  >
+                    <option value="fade">Fade</option>
+                    <option value="slide">Slide</option>
+                    <option value="none">None</option>
+                  </select>
+                </label>
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Chu ky doi ads (giay)</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={storeSettingsForm.customerDisplayAdsIntervalSeconds}
+                    onChange={(event) =>
+                      setStoreSettingsForm((prev) => ({
+                        ...prev,
+                        customerDisplayAdsIntervalSeconds: event.target.value,
+                      }))
+                    }
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    disabled={!canManageStore || storeLoading}
+                  />
+                </label>
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Thoi gian transition (ms)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={storeSettingsForm.customerDisplayAdsTransitionMs}
+                    onChange={(event) =>
+                      setStoreSettingsForm((prev) => ({
+                        ...prev,
+                        customerDisplayAdsTransitionMs: event.target.value,
+                      }))
+                    }
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    disabled={!canManageStore || storeLoading}
+                  />
+                </label>
+              </div>
+            </SettingsPanel>
+          </div>
+
+          <SettingsPanel
+            title="Kho va he thong"
+            description="Nhom cac nguong canh bao, FEFO, mui gio va goi y nhap hang."
+          >
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="space-y-2 text-sm text-ink-700">
+                <span>Cho phep tra hang trong</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={storeSettingsForm.returnWindowValue}
+                  onChange={(event) =>
+                    setStoreSettingsForm((prev) => ({ ...prev, returnWindowValue: event.target.value }))
+                  }
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  disabled={!canManageStore || storeLoading}
+                />
+              </label>
+              <label className="space-y-2 text-sm text-ink-700">
+                <span>Don vi thoi gian tra hang</span>
+                <select
+                  value={storeSettingsForm.returnWindowUnit}
+                  onChange={(event) =>
+                    setStoreSettingsForm((prev) => ({
+                      ...prev,
+                      returnWindowUnit: event.target.value === 'hour' ? 'hour' : 'day',
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  disabled={!canManageStore || storeLoading}
+                >
+                  <option value="day">Ngay</option>
+                  <option value="hour">Gio</option>
+                </select>
+              </label>
+              <label className="space-y-2 text-sm text-ink-700">
+                <span>Nguong sap het hang</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={storeSettingsForm.lowStockThreshold}
+                  onChange={(event) =>
+                    setStoreSettingsForm((prev) => ({ ...prev, lowStockThreshold: event.target.value }))
+                  }
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  disabled={!canManageStore || storeLoading}
+                />
+              </label>
+              <label className="space-y-2 text-sm text-ink-700">
+                <span>Canh bao het han truoc (ngay)</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={storeSettingsForm.expiryWarningDays}
+                  onChange={(event) =>
+                    setStoreSettingsForm((prev) => ({ ...prev, expiryWarningDays: event.target.value }))
+                  }
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  disabled={!canManageStore || storeLoading}
+                />
+              </label>
+              <label className="space-y-2 text-sm text-ink-700">
+                <span>Nguong can date (ngay)</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={storeSettingsForm.nearDateDays}
+                  onChange={(event) =>
+                    setStoreSettingsForm((prev) => ({ ...prev, nearDateDays: event.target.value }))
+                  }
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  disabled={!canManageStore || storeLoading}
+                />
+              </label>
+              <label className="space-y-2 text-sm text-ink-700">
+                <span>Nguong chuyen FEFO/FIFO (ngay)</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={storeSettingsForm.fefoThresholdDays}
+                  onChange={(event) =>
+                    setStoreSettingsForm((prev) => ({ ...prev, fefoThresholdDays: event.target.value }))
+                  }
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  disabled={!canManageStore || storeLoading}
+                />
+              </label>
+              <label className="flex items-start gap-3 rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm text-ink-700 sm:col-span-2">
+                <input
+                  type="checkbox"
+                  checked={storeSettingsForm.enableFefo}
+                  onChange={(event) =>
+                    setStoreSettingsForm((prev) => ({ ...prev, enableFefo: event.target.checked }))
+                  }
+                  disabled={!canManageStore || storeLoading}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="block font-medium text-ink-900">Bat FEFO cho lo co HSD ngan</span>
+                  <span className="mt-1 block text-xs text-ink-500">
+                    Uu tien xuat lo gan het han truoc khi dat nguong FEFO.
+                  </span>
+                </span>
+              </label>
+              <label className="space-y-2 text-sm text-ink-700 sm:col-span-2">
+                <span>Mui gio</span>
+                <input
+                  list="store-timezone-suggestions"
+                  value={storeSettingsForm.timezone}
+                  onChange={(event) =>
+                    setStoreSettingsForm((prev) => ({ ...prev, timezone: event.target.value }))
+                  }
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  disabled={!canManageStore || storeLoading}
+                  placeholder={DEFAULT_APP_TIME_ZONE}
+                  autoComplete="off"
+                />
+                <datalist id="store-timezone-suggestions">
+                  {TIMEZONE_SUGGESTIONS.map((item) => (
+                    <option key={item.value} value={item.value} label={item.displayLabel} />
+                  ))}
+                </datalist>
+                <p className="text-xs text-ink-500">
+                  Goi y IANA: {timeZoneDisplayLabel}. Khuyen nghi dung {DEFAULT_APP_TIME_ZONE}.
+                </p>
+                <p className={`text-xs ${timeZoneValid ? 'text-brand-700' : 'text-coral-500'}`}>
+                  {timeZoneValid
+                    ? `Gio hien tai theo mui gio nay: ${timeZonePreview}`
+                    : 'Mui gio khong hop le. Vui long chon theo goi y, vi du Asia/Ho_Chi_Minh.'}
+                </p>
+              </label>
+              <label className="space-y-2 text-sm text-ink-700">
+                <span>Tien te</span>
+                <input
+                  value={storeSettingsForm.currency}
+                  onChange={(event) =>
+                    setStoreSettingsForm((prev) => ({ ...prev, currency: event.target.value }))
+                  }
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  disabled={!canManageStore || storeLoading}
+                />
+              </label>
+              <label className="space-y-2 text-sm text-ink-700">
+                <span>Chu ky phan tich ban hang (ngay)</span>
+                <input
+                  type="number"
+                  min={7}
+                  value={storeSettingsForm.restockSalesWindowDays}
+                  onChange={(event) =>
+                    setStoreSettingsForm((prev) => ({
+                      ...prev,
+                      restockSalesWindowDays: event.target.value,
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  disabled={!canManageStore || storeLoading}
+                />
+              </label>
+              <label className="space-y-2 text-sm text-ink-700 sm:col-span-2">
+                <span>Muc tieu du hang cho goi y nhap (ngay)</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={storeSettingsForm.restockTargetCoverDays}
+                  onChange={(event) =>
+                    setStoreSettingsForm((prev) => ({
+                      ...prev,
+                      restockTargetCoverDays: event.target.value,
+                    }))
+                  }
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  disabled={!canManageStore || storeLoading}
+                />
+              </label>
+            </div>
+          </SettingsPanel>
+
+          {settingsError ? <p className="text-sm text-coral-500">{settingsError}</p> : null}
+          {settingsMessage ? <p className="text-sm text-brand-600">{settingsMessage}</p> : null}
+
+          <div className="flex flex-col gap-3 rounded-[28px] border border-ink-900/10 bg-white/80 p-4 lg:flex-row lg:items-center lg:justify-between">
+            <p className="text-sm text-ink-600">
+              Luu lai de cac cau hinh POS, man hinh khach va canh bao kho duoc ap dung dong bo.
             </p>
-            <p className={`text-xs ${timeZoneValid ? 'text-brand-700' : 'text-coral-500'}`}>
-              {timeZoneValid
-                ? `Gio hien tai theo mui gio nay: ${timeZonePreview}`
-                : 'Mui gio khong hop le. Vui long chon theo goi y, vi du Asia/Ho_Chi_Minh.'}
-            </p>
-          </label>
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Tiền tệ</span>
-            <input
-              value={storeSettingsForm.currency}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({ ...prev, currency: event.target.value }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading}
-            />
-          </label>
-
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Chu kỳ phân tích bán hàng cho gợi ý nhập (ngày)</span>
-            <input
-              type="number"
-              min={7}
-              value={storeSettingsForm.restockSalesWindowDays}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({
-                  ...prev,
-                  restockSalesWindowDays: event.target.value,
-                }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading}
-            />
-          </label>
-          <label className="space-y-2 text-sm text-ink-700">
-            <span>Mục tiêu đủ hàng cho gợi ý nhập (ngày)</span>
-            <input
-              type="number"
-              min={1}
-              value={storeSettingsForm.restockTargetCoverDays}
-              onChange={(event) =>
-                setStoreSettingsForm((prev) => ({
-                  ...prev,
-                  restockTargetCoverDays: event.target.value,
-                }))
-              }
-              className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
-              disabled={!canManageStore || storeLoading}
-            />
-          </label>
-          {settingsError ? <p className="md:col-span-2 text-sm text-coral-500">{settingsError}</p> : null}
-          {settingsMessage ? <p className="md:col-span-2 text-sm text-brand-600">{settingsMessage}</p> : null}
-
-          <div className="md:col-span-2 flex flex-wrap gap-2">
-            <button
-              type="submit"
-              disabled={settingsSubmitting || !canManageStore || storeLoading}
-              className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
-            >
-              {settingsSubmitting ? 'Đang cập nhật...' : 'Cập nhật cấu hình'}
-            </button>
-            <button
-              type="button"
-              onClick={() => void onResetAutoPrint()}
-              disabled={settingsResetting || !canManageStore || storeLoading}
-              className="rounded-full border border-ink-900/10 bg-white px-5 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
-            >
-              Reset auto print
-            </button>
-            <button
-              type="button"
-              onClick={() => void onResetAllSettings()}
-              disabled={settingsResetting || !canManageStore || storeLoading}
-              className="rounded-full border border-coral-500/30 bg-coral-500/10 px-5 py-2 text-sm font-semibold text-coral-500 disabled:opacity-60"
-            >
-              Reset tất cả
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="submit"
+                disabled={settingsSubmitting || !canManageStore || storeLoading}
+                className="rounded-full bg-ink-900 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                {settingsSubmitting ? 'Dang cap nhat...' : 'Cap nhat cau hinh'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void onResetAutoPrint()}
+                disabled={settingsResetting || !canManageStore || storeLoading}
+                className="rounded-full border border-ink-900/10 bg-white px-5 py-2.5 text-sm font-semibold text-ink-900 disabled:opacity-60"
+              >
+                Reset auto print
+              </button>
+              <button
+                type="button"
+                onClick={() => void onResetAllSettings()}
+                disabled={settingsResetting || !canManageStore || storeLoading}
+                className="rounded-full border border-coral-500/30 bg-coral-500/10 px-5 py-2.5 text-sm font-semibold text-coral-500 disabled:opacity-60"
+              >
+                Reset tat ca
+              </button>
+            </div>
           </div>
         </form>
       </section>
 
       {/* --- Notification Settings --- */}
-      <NotificationSettingsSection />
+      <div id="store-notifications" className="scroll-mt-24">
+        <NotificationSettingsSection />
+      </div>
 
       {/* --- Backup & Sync --- */}
       {canManageStore ? (
-        <section className="glass-card rounded-3xl p-6">
+        <section id="store-backup" className="glass-card scroll-mt-24 rounded-[32px] p-5 sm:p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="text-xl font-semibold text-ink-900">Sao lưu & Đồng bộ dữ liệu</h3>
