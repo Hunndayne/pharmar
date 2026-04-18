@@ -343,6 +343,8 @@ export type StockAudit = {
   code: string
   status: 'draft' | 'completed' | 'cancelled'
   note: string
+  inspector_name: string
+  audit_type: string
   created_by: string
   created_at: string
   completed_at: string | null
@@ -582,12 +584,15 @@ export const inventoryApi = {
     ),
 
   // Stock Audit
-  createStockAudit: (token: string, note?: string) =>
+  createStockAudit: (
+    token: string,
+    payload?: { note?: string; inspector_name?: string; audit_type?: string },
+  ) =>
     requestInventoryJson<{ message: string; audit: StockAudit }>(
       '/inventory/stock-audits',
       {
         method: 'POST',
-        body: JSON.stringify({ note: note ?? null }),
+        body: JSON.stringify(payload ?? {}),
       },
       token,
     ),

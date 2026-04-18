@@ -266,6 +266,7 @@ export function SalesHistory() {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<InvoiceStatusFilter>('all')
   const [paymentModeFilter, setPaymentModeFilter] = useState<'all' | 'debt'>('all')
+  const [prescriptionFilter, setPrescriptionFilter] = useState<'all' | 'prescription' | 'otc'>('all')
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
 
@@ -291,6 +292,7 @@ export function SalesHistory() {
         search: search.trim() || undefined,
         status: statusFilter === 'all' ? undefined : statusFilter,
         payment_mode: paymentModeFilter === 'all' ? undefined : paymentModeFilter,
+        is_prescription: prescriptionFilter === 'all' ? undefined : prescriptionFilter === 'prescription',
         date_from: fromDate || undefined,
         date_to: toDate || undefined,
         page,
@@ -310,7 +312,7 @@ export function SalesHistory() {
     } finally {
       setLoading(false)
     }
-  }, [accessToken, fromDate, page, paymentModeFilter, search, statusFilter, toDate])
+  }, [accessToken, fromDate, page, paymentModeFilter, prescriptionFilter, search, statusFilter, toDate])
 
   useEffect(() => {
     void loadRows()
@@ -694,6 +696,7 @@ export function SalesHistory() {
     setSearch('')
     setStatusFilter('all')
     setPaymentModeFilter('all')
+    setPrescriptionFilter('all')
     setFromDate('')
     setToDate('')
     setPage(1)
@@ -708,6 +711,7 @@ export function SalesHistory() {
         search: search.trim() || undefined,
         status: statusFilter === 'all' ? undefined : statusFilter,
         payment_mode: paymentModeFilter === 'all' ? undefined : paymentModeFilter,
+        is_prescription: prescriptionFilter === 'all' ? undefined : prescriptionFilter === 'prescription',
         date_from: fromDate || undefined,
         date_to: toDate || undefined,
         size: EXPORT_PAGE_SIZE,
@@ -796,7 +800,7 @@ export function SalesHistory() {
       </section>
 
       <section className="glass-card rounded-3xl p-4 sm:p-6 space-y-4">
-        <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-[1.5fr,1fr,1fr,1fr,1fr,auto,auto,auto]">
+        <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-[1.5fr,1fr,1fr,1fr,1fr,1fr,auto,auto,auto]">
           <input
             value={search}
             onChange={(event) => {
@@ -832,6 +836,19 @@ export function SalesHistory() {
           >
             <option value="all">Tất cả thanh toán</option>
             <option value="debt">Mua nợ</option>
+          </select>
+
+          <select
+            value={prescriptionFilter}
+            onChange={(event) => {
+              setPrescriptionFilter(event.target.value as 'all' | 'prescription' | 'otc')
+              setPage(1)
+            }}
+            className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm"
+          >
+            <option value="all">Tất cả loại đơn</option>
+            <option value="prescription">Theo đơn thuốc</option>
+            <option value="otc">Không theo đơn</option>
           </select>
 
           <input

@@ -84,6 +84,12 @@ async def lifespan(_: FastAPI):
                 """
             )
         )
+        await connection.execute(
+            text(f"ALTER TABLE {SCHEMA_NAME}.customers ADD COLUMN IF NOT EXISTS allergy TEXT")
+        )
+        await connection.execute(
+            text(f"ALTER TABLE {SCHEMA_NAME}.customers ADD COLUMN IF NOT EXISTS medical_history TEXT")
+        )
 
     async with SessionLocal() as session:
         await ensure_default_tiers(session)

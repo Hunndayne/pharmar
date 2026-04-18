@@ -85,6 +85,11 @@ class Invoice(Base):
     commission_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0.00"))
     shift_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
 
+    is_prescription: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    prescription_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    doctor_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    diagnosis: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

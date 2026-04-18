@@ -3260,6 +3260,8 @@ async def create_stock_audit(payload: StockAuditCreateRequest, token: str = Depe
             "code": code,
             "status": "draft",
             "note": payload.note or "",
+            "inspector_name": payload.inspector_name or "",
+            "audit_type": payload.audit_type or "periodic",
             "created_by": actor_id,
             "created_at": now,
             "completed_at": None,

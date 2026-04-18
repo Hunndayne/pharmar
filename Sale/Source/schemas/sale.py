@@ -156,6 +156,10 @@ class InvoiceCreateRequest(MoneyInputModel):
     rounding_adjustment_amount: Decimal = Field(default=Decimal("0.00"))
     amount_paid: Decimal | None = Field(default=None, ge=0)
     payments: list[InvoiceCheckoutPaymentRequest] | None = None
+    is_prescription: bool = False
+    prescription_code: str | None = Field(default=None, max_length=50)
+    doctor_name: str | None = Field(default=None, max_length=100)
+    diagnosis: str | None = Field(default=None, max_length=200)
     note: str | None = None
 
     @field_validator("promotion_code")
@@ -271,6 +275,10 @@ class InvoiceResponse(MoneyOutputModel):
     commission_rate: Decimal
     commission_amount: Decimal
     shift_id: UUID | None
+    is_prescription: bool
+    prescription_code: str | None
+    doctor_name: str | None
+    diagnosis: str | None
     note: str | None
     created_at: datetime
     updated_at: datetime
@@ -291,6 +299,9 @@ class InvoiceListItemResponse(MoneyOutputModel):
     service_fee_mode: str
     status: str
     cashier_name: str | None
+    is_prescription: bool
+    prescription_code: str | None
+    doctor_name: str | None
     created_at: datetime
 
 

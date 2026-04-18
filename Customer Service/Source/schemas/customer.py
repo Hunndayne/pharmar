@@ -63,6 +63,8 @@ class CustomerCreateRequest(BaseModel):
     date_of_birth: date | None = None
     gender: GenderType | None = None
     address: str | None = None
+    allergy: str | None = None
+    medical_history: str | None = None
     note: str | None = None
     is_active: bool = True
 
@@ -74,6 +76,8 @@ class CustomerUpdateRequest(BaseModel):
     date_of_birth: date | None = None
     gender: GenderType | None = None
     address: str | None = None
+    allergy: str | None = None
+    medical_history: str | None = None
     note: str | None = None
     is_active: bool | None = None
 
@@ -98,6 +102,8 @@ class CustomerResponse(MoneyOutputModel):
     total_orders: int
     total_spent: Decimal
     last_purchase_at: datetime | None
+    allergy: str | None
+    medical_history: str | None
     is_active: bool
     note: str | None
     created_at: datetime

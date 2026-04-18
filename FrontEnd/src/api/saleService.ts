@@ -27,6 +27,10 @@ export type SaleInvoiceCreatePayload = {
   service_fee_mode?: 'split' | 'separate'
   rounding_adjustment_amount?: number
   amount_paid?: number
+  is_prescription?: boolean
+  prescription_code?: string | null
+  doctor_name?: string | null
+  diagnosis?: string | null
   note?: string | null
 }
 
@@ -136,6 +140,9 @@ export type SaleInvoiceListItem = {
   service_fee_mode: string
   status: string
   cashier_name: string | null
+  is_prescription: boolean
+  prescription_code: string | null
+  doctor_name: string | null
   created_at: string
 }
 
@@ -214,6 +221,7 @@ export type SaleInvoiceListParams = {
   cashier_id?: string
   search?: string
   payment_mode?: 'debt'
+  is_prescription?: boolean
   page?: number
   size?: number
 }

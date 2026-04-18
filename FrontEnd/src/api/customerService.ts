@@ -19,6 +19,8 @@ export type CustomerRecord = {
   total_orders: number
   total_spent: string | number
   last_purchase_at: string | null
+  allergy: string | null
+  medical_history: string | null
   is_active: boolean
   note: string | null
   created_at: string
@@ -47,6 +49,8 @@ export type CustomerCreatePayload = {
   date_of_birth?: string | null
   gender?: 'male' | 'female' | 'other' | null
   address?: string | null
+  allergy?: string | null
+  medical_history?: string | null
   note?: string | null
   is_active?: boolean
 }
@@ -58,6 +62,8 @@ export type CustomerUpdatePayload = {
   date_of_birth?: string | null
   gender?: 'male' | 'female' | 'other' | null
   address?: string | null
+  allergy?: string | null
+  medical_history?: string | null
   note?: string | null
   is_active?: boolean
 }

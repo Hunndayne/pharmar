@@ -66,6 +66,9 @@ class Customer(Base):
     total_spent: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False, default=Decimal("0.00"))
     last_purchase_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    allergy: Mapped[str | None] = mapped_column(Text, nullable=True)
+    medical_history: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

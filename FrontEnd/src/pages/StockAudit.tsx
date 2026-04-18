@@ -40,6 +40,9 @@ export function StockAudit() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
+  const [newInspectorName, setNewInspectorName] = useState('')
+  const [newAuditType, setNewAuditType] = useState<'periodic' | 'unscheduled'>('periodic')
+
   const [selectedAudit, setSelectedAudit] = useState<StockAuditType | null>(null)
   const [editItems, setEditItems] = useState<Record<string, { actual_qty: string; note: string }>>({})
   const [saving, setSaving] = useState(false)
@@ -73,7 +76,10 @@ export function StockAudit() {
     setError(null)
     setNotice(null)
     try {
-      const result = await inventoryApi.createStockAudit(accessToken)
+      const result = await inventoryApi.createStockAudit(accessToken, {
+        inspector_name: newInspectorName.trim() || undefined,
+        audit_type: newAuditType,
+      })
       setNotice(`Đã tạo phiếu kiểm kê ${result.audit.code}`)
       setSelectedAudit(result.audit)
       initEditItems(result.audit.items)
@@ -211,6 +217,8 @@ export function StockAudit() {
               <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusStyle(selectedAudit.status)}`}>
                 {statusLabel(selectedAudit.status)}
               </span>
+              <span>{selectedAudit.audit_type === 'unscheduled' ? 'Đột xuất' : 'Định kỳ'}</span>
+              {selectedAudit.inspector_name ? <span>Người kiểm: <strong>{selectedAudit.inspector_name}</strong></span> : null}
               <span>Tạo: {formatDateTime(selectedAudit.created_at)}</span>
               {selectedAudit.completed_at ? <span>Hoàn thành: {formatDateTime(selectedAudit.completed_at)}</span> : null}
             </div>
@@ -342,9 +350,25 @@ export function StockAudit() {
           <h2 className="mt-2 text-2xl font-semibold text-ink-900 sm:text-3xl">Kiểm kê kho</h2>
         </div>
         {canManage ? (
-          <button type="button" onClick={() => void handleCreate()} className="rounded-full bg-ink-900 px-5 py-2.5 text-sm font-semibold text-white">
-            Tạo phiếu kiểm kê
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={newInspectorName}
+              onChange={(e) => setNewInspectorName(e.target.value)}
+              placeholder="Người kiểm (tuỳ chọn)"
+              className="rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm w-44"
+            />
+            <select
+              value={newAuditType}
+              onChange={(e) => setNewAuditType(e.target.value as 'periodic' | 'unscheduled')}
+              className="rounded-full border border-ink-900/10 bg-white px-4 py-2 text-sm"
+            >
+              <option value="periodic">Định kỳ</option>
+              <option value="unscheduled">Đột xuất</option>
+            </select>
+            <button type="button" onClick={() => void handleCreate()} className="rounded-full bg-ink-900 px-5 py-2.5 text-sm font-semibold text-white">
+              Tạo phiếu kiểm kê
+            </button>
+          </div>
         ) : null}
       </header>
 
@@ -381,6 +405,8 @@ export function StockAudit() {
                 <tr>
                   <th className="px-4 py-3">Mã phiếu</th>
                   <th className="px-4 py-3">Ngày tạo</th>
+                  <th className="px-4 py-3">Loại</th>
+                  <th className="px-4 py-3">Người kiểm</th>
                   <th className="px-4 py-3">Số dòng</th>
                   <th className="px-4 py-3">Trạng thái</th>
                   <th className="px-4 py-3">Hoàn thành</th>
@@ -392,6 +418,8 @@ export function StockAudit() {
                   <tr key={audit.id} className="hover:bg-white/80">
                     <td className="px-4 py-3 font-semibold text-ink-900">{audit.code}</td>
                     <td className="px-4 py-3 text-ink-700">{formatDateTime(audit.created_at)}</td>
+                    <td className="px-4 py-3 text-ink-700">{audit.audit_type === 'unscheduled' ? 'Đột xuất' : 'Định kỳ'}</td>
+                    <td className="px-4 py-3 text-ink-700">{audit.inspector_name || '—'}</td>
                     <td className="px-4 py-3 text-ink-700">{audit.items.length}</td>
                     <td className="px-4 py-3">
                       <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusStyle(audit.status)}`}>

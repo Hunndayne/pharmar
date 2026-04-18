@@ -113,6 +113,8 @@ async def create_customer(payload: CustomerCreateRequest, _: AnyUser, db: DbSess
         date_of_birth=payload.date_of_birth,
         gender=payload.gender,
         address=payload.address.strip() if payload.address else None,
+        allergy=payload.allergy.strip() if payload.allergy else None,
+        medical_history=payload.medical_history.strip() if payload.medical_history else None,
         tier="bronze",
         tier_updated_at=now_utc(),
         is_active=payload.is_active,
@@ -147,6 +149,10 @@ async def update_customer(
         customer.gender = payload.gender
     if "address" in updates:
         customer.address = payload.address.strip() if payload.address else None
+    if "allergy" in updates:
+        customer.allergy = payload.allergy.strip() if payload.allergy else None
+    if "medical_history" in updates:
+        customer.medical_history = payload.medical_history.strip() if payload.medical_history else None
     if "note" in updates:
         customer.note = payload.note.strip() if payload.note else None
     if "is_active" in updates and payload.is_active is not None:

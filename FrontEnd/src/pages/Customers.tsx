@@ -15,6 +15,8 @@ type CustomerForm = {
   phone: string
   email: string
   address: string
+  allergy: string
+  medical_history: string
   note: string
   isActive: boolean
 }
@@ -27,6 +29,8 @@ const emptyForm: CustomerForm = {
   phone: '',
   email: '',
   address: '',
+  allergy: '',
+  medical_history: '',
   note: '',
   isActive: true,
 }
@@ -130,6 +134,8 @@ export function Customers() {
       phone: item.phone,
       email: item.email ?? '',
       address: item.address ?? '',
+      allergy: item.allergy ?? '',
+      medical_history: item.medical_history ?? '',
       note: item.note ?? '',
       isActive: item.is_active,
     })
@@ -159,6 +165,8 @@ export function Customers() {
         phone,
         email: form.email.trim() || null,
         address: form.address.trim() || null,
+        allergy: form.allergy.trim() || null,
+        medical_history: form.medical_history.trim() || null,
         note: form.note.trim() || null,
         is_active: form.isActive,
       }
@@ -523,6 +531,26 @@ export function Customers() {
                     value={form.address}
                     onChange={(event) => setForm((prev) => ({ ...prev, address: event.target.value }))}
                     className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                  />
+                </label>
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Tiền sử dị ứng</span>
+                  <textarea
+                    value={form.allergy}
+                    onChange={(event) => setForm((prev) => ({ ...prev, allergy: event.target.value }))}
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    rows={2}
+                    placeholder="Dị ứng thuốc, thực phẩm..."
+                  />
+                </label>
+                <label className="space-y-2 text-sm text-ink-700">
+                  <span>Tiền sử bệnh</span>
+                  <textarea
+                    value={form.medical_history}
+                    onChange={(event) => setForm((prev) => ({ ...prev, medical_history: event.target.value }))}
+                    className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                    rows={2}
+                    placeholder="Bệnh nền, phẫu thuật..."
                   />
                 </label>
                 <label className="space-y-2 text-sm text-ink-700 md:col-span-2">

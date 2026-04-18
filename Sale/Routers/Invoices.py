@@ -378,6 +378,10 @@ async def _prepare_invoice_creation(
         commission_rate=_normalize_decimal(commission_rate),
         commission_amount=_normalize_decimal(commission_amount),
         shift_id=open_shift.id if open_shift else None,
+        is_prescription=payload.is_prescription,
+        prescription_code=payload.prescription_code,
+        doctor_name=payload.doctor_name,
+        diagnosis=payload.diagnosis,
         note=payload.note,
     )
 
@@ -550,6 +554,7 @@ async def list_invoices(
     cashier_id: str | None = Query(default=None),
     search: str | None = Query(default=None),
     payment_mode: str | None = Query(default=None),
+    is_prescription: bool | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=200),
 ) -> PageResponse[InvoiceListItemResponse]:
@@ -559,6 +564,8 @@ async def list_invoices(
 
     if payment_mode == "debt":
         stmt = stmt.where(Invoice.amount_paid < Invoice.total_amount)
+    if is_prescription is not None:
+        stmt = stmt.where(Invoice.is_prescription == is_prescription)
 
     # Staff can only view their own invoices; managers and owners see all.
     if current_user.role not in {ROLE_OWNER, ROLE_MANAGER}:
@@ -588,6 +595,9 @@ async def list_invoices(
                 service_fee_mode=item.service_fee_mode,
                 status=item.status,
                 cashier_name=item.created_by_name,
+                is_prescription=item.is_prescription,
+                prescription_code=item.prescription_code,
+                doctor_name=item.doctor_name,
                 created_at=item.created_at,
             )
             for item in rows

@@ -87,6 +87,10 @@ type PosOrder = {
   customerPoints: number | null
   pointsToRedeem: string
   note: string
+  isPrescription: boolean
+  prescriptionCode: string
+  doctorName: string
+  diagnosis: string
   serviceFee: string
   serviceFeeMode: ServiceFeeMode
   paymentMode: PaymentMode
@@ -350,6 +354,10 @@ const createEmptyOrder = (): PosOrder => ({
   customerPoints: null,
   pointsToRedeem: '',
   note: '',
+  isPrescription: false,
+  prescriptionCode: '',
+  doctorName: '',
+  diagnosis: '',
   serviceFee: '0',
   serviceFeeMode: 'split',
   paymentMode: 'cash',
@@ -2872,6 +2880,10 @@ export function Pos() {
         points_used: effectivePointsToRedeem,
         rounding_adjustment_amount: roundingAdjustmentAmount,
         amount_paid: amountPaid,
+        is_prescription: checkoutOrder.isPrescription,
+        prescription_code: checkoutOrder.prescriptionCode.trim() || null,
+        doctor_name: checkoutOrder.doctorName.trim() || null,
+        diagnosis: checkoutOrder.diagnosis.trim() || null,
         note: noteParts.join(' | ') || null,
         items: expandedLines.map((line) => ({
           // Use product_id as SKU for reserve API to avoid ambiguity when drug codes are duplicated.
@@ -3286,6 +3298,39 @@ export function Pos() {
                     Chưa có thành viên. Tìm theo số điện thoại hoặc thêm nhanh khách hàng mới.
                   </p>
                 )}
+              </div>
+            ) : null}
+
+            <label className="flex items-center gap-2 text-sm text-ink-700 select-none cursor-pointer">
+              <input
+                type="checkbox"
+                checked={activeOrder.isPrescription}
+                onChange={(event) => updateActiveOrder((order) => ({ ...order, isPrescription: event.target.checked }))}
+                className="h-4 w-4 rounded border-ink-900/20"
+              />
+              <span className="font-medium">Bán theo đơn thuốc</span>
+            </label>
+
+            {activeOrder.isPrescription ? (
+              <div className="grid gap-2 sm:grid-cols-3">
+                <input
+                  value={activeOrder.prescriptionCode}
+                  onChange={(event) => updateActiveOrder((order) => ({ ...order, prescriptionCode: event.target.value }))}
+                  className="rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-sm"
+                  placeholder="Số đơn thuốc"
+                />
+                <input
+                  value={activeOrder.doctorName}
+                  onChange={(event) => updateActiveOrder((order) => ({ ...order, doctorName: event.target.value }))}
+                  className="rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-sm"
+                  placeholder="Tên bác sĩ"
+                />
+                <input
+                  value={activeOrder.diagnosis}
+                  onChange={(event) => updateActiveOrder((order) => ({ ...order, diagnosis: event.target.value }))}
+                  className="rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-sm"
+                  placeholder="Chẩn đoán"
+                />
               </div>
             ) : null}
 

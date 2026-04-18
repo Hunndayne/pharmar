@@ -87,6 +87,18 @@ async def lifespan(_: FastAPI):
                 """
             )
         )
+        await connection.execute(text(
+            f"ALTER TABLE {SCHEMA_NAME}.invoices ADD COLUMN IF NOT EXISTS is_prescription BOOLEAN NOT NULL DEFAULT false"
+        ))
+        await connection.execute(text(
+            f"ALTER TABLE {SCHEMA_NAME}.invoices ADD COLUMN IF NOT EXISTS prescription_code VARCHAR(50)"
+        ))
+        await connection.execute(text(
+            f"ALTER TABLE {SCHEMA_NAME}.invoices ADD COLUMN IF NOT EXISTS doctor_name VARCHAR(100)"
+        ))
+        await connection.execute(text(
+            f"ALTER TABLE {SCHEMA_NAME}.invoices ADD COLUMN IF NOT EXISTS diagnosis VARCHAR(200)"
+        ))
 
     await _seed_default_payment_methods()
     await init_event_publisher(

@@ -28,7 +28,7 @@ export function Sidebar({
         <div>
           <p className="text-xs uppercase tracking-[0.35em] text-ink-600">PHARMAR</p>
           <h1 className="mt-2 text-4xl font-semibold leading-tight text-ink-900">Hệ thống nhà thuốc</h1>
-          <p className="mt-3 text-sm text-ink-500">Phiên bản V1.0</p>
+          <p className="mt-3 text-sm text-ink-500">Phiên bản V1.5</p>
         </div>
         <NavList items={items} />
       </div>

@@ -101,6 +101,8 @@ class StockAdjustmentRequest(BaseModel):
 
 class StockAuditCreateRequest(BaseModel):
     note: str | None = Field(default=None, max_length=500)
+    inspector_name: str | None = Field(default=None, max_length=100)
+    audit_type: str | None = Field(default=None, max_length=50)  # "periodic" | "unscheduled"
 
 
 class StockAuditUpdateItemRequest(BaseModel):
