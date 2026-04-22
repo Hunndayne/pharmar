@@ -35,6 +35,16 @@ export const navItems: NavItem[] = [
       { type: 'item', label: 'Thuốc thu hồi', path: '/thuoc-thu-hoi' },
     ],
   },
+  {
+    type: 'group',
+    label: 'Sổ GPP',
+    children: [
+      { type: 'item', label: 'Sổ bán theo đơn', path: '/ban-hang' },
+      { type: 'item', label: 'Sổ thông tin bệnh nhân', path: '/khach-hang' },
+      { type: 'item', label: 'Sổ kiểm soát chất lượng', path: '/kiem-ke-kho' },
+      { type: 'item', label: 'Sổ thuốc thu hồi', path: '/thuoc-thu-hoi' },
+    ],
+  },
   { type: 'item', label: 'Báo cáo', path: '/bao-cao' },
   { type: 'item', label: 'Thông báo', path: '/thong-bao' },
 ]
