@@ -32,6 +32,8 @@ from Source.schemas.inventory import (
     ImportReceiptUpdateRequest,
     ReserveRequest,
     StockAdjustmentRequest,
+    DrugRecallCreateRequest,
+    DrugRecallUpdateRequest,
     StockAuditCreateRequest,
     StockAuditUpdateRequest,
 )
@@ -817,6 +819,7 @@ def save_runtime_state() -> None:
         "reservations": runtime_state.reservations,
         "sale_events": runtime_state.sale_events,
         "disposal_log": runtime_state.disposal_log,
+        "drug_recalls": runtime_state.drug_recalls,
         "catalog_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
         "catalog_drugs_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
         "catalog_suppliers_last_sync_at": runtime_state.catalog_suppliers_last_sync_at,
@@ -859,6 +862,7 @@ async def save_runtime_state_safe() -> None:
                 "reservations": runtime_state.reservations,
                 "sale_events": runtime_state.sale_events,
                 "audits": runtime_state.audits,
+                "drug_recalls": runtime_state.drug_recalls,
                 "disposal_log": runtime_state.disposal_log,
                 "catalog_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
                 "catalog_drugs_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
@@ -945,7 +949,7 @@ def load_runtime_state_from_payload(payload: dict[str, Any]) -> bool:
             return False
 
         runtime_state.counters = dict(payload.get("counters") or {})
-        for key in ("receipt", "receipt_line", "batch", "movement", "reservation", "audit", "disposal"):
+        for key in ("receipt", "receipt_line", "batch", "movement", "reservation", "audit", "disposal", "drug_recall"):
             runtime_state.counters.setdefault(key, 0)
         runtime_state.suppliers = dict(payload.get("suppliers") or {})
         runtime_state.drugs = dict(payload.get("drugs") or {})
@@ -955,6 +959,7 @@ def load_runtime_state_from_payload(payload: dict[str, Any]) -> bool:
         runtime_state.reservations = list(payload.get("reservations") or [])
         runtime_state.sale_events = list(payload.get("sale_events") or [])
         runtime_state.audits = dict(payload.get("audits") or {})
+        runtime_state.drug_recalls = dict(payload.get("drug_recalls") or {})
         runtime_state.disposal_log = list(payload.get("disposal_log") or [])
         legacy_catalog_sync = payload.get("catalog_last_sync_at")
         runtime_state.catalog_drugs_last_sync_at = _parse_iso_datetime(
@@ -1779,7 +1784,7 @@ def extract_qr_candidates(raw_value: str) -> list[str]:
 
 
 def seed_demo_data() -> None:
-    runtime_state.counters = {"receipt": 0, "receipt_line": 0, "batch": 0, "movement": 0, "reservation": 0, "audit": 0, "disposal": 0}
+    runtime_state.counters = {"receipt": 0, "receipt_line": 0, "batch": 0, "movement": 0, "reservation": 0, "audit": 0, "disposal": 0, "drug_recall": 0}
     runtime_state.suppliers = {}
     runtime_state.drugs = {}
     runtime_state.receipts = {}
@@ -1788,6 +1793,7 @@ def seed_demo_data() -> None:
     runtime_state.reservations = []
     runtime_state.sale_events = []
     runtime_state.audits = {}
+    runtime_state.drug_recalls = {}
     runtime_state.disposal_log = []
     runtime_state.catalog_drugs_last_sync_at = datetime.fromtimestamp(0, tz=timezone.utc)
     runtime_state.catalog_suppliers_last_sync_at = datetime.fromtimestamp(0, tz=timezone.utc)
@@ -3393,4 +3399,111 @@ async def cancel_stock_audit(audit_id: str, token: str = Depends(oauth2_scheme))
         await save_runtime_state_safe()
 
     return {"message": "Stock audit cancelled", "audit": audit}
+
+
+# ---------------------------------------------------------------------------
+# Drug Recalls (GPP — Sổ theo dõi thuốc bị thu hồi / đình chỉ lưu hành)
+# ---------------------------------------------------------------------------
+
+@router.post("/drug-recalls")
+async def create_drug_recall(payload: DrugRecallCreateRequest, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+    actor_id, role, _ = get_current_actor(token)
+    if role not in ("owner", "manager", "admin"):
+        raise HTTPException(status_code=403, detail="Only owner/manager can create drug recalls")
+
+    async with runtime_state.lock:
+        recall_id = next_id("drug_recall", "dr")
+        now = utc_now()
+        counter_val = runtime_state.counters["drug_recall"]
+        code = f"TH{now.strftime('%Y%m%d')}{counter_val:03d}"
+
+        recall = {
+            "id": recall_id,
+            "code": code,
+            "drug_name": payload.drug_name,
+            "official_doc_number": payload.official_doc_number or "",
+            "issued_date": payload.issued_date or "",
+            "concentration": payload.concentration or "",
+            "content": payload.content or "",
+            "unit": payload.unit or "",
+            "registration_number": payload.registration_number or "",
+            "lot_number": payload.lot_number or "",
+            "expiry_date": payload.expiry_date or "",
+            "qty_purchased": payload.qty_purchased,
+            "qty_sold": payload.qty_sold,
+            "qty_remaining": payload.qty_remaining,
+            "qty_recalled_from_customers": payload.qty_recalled_from_customers,
+            "manufacturer": payload.manufacturer or "",
+            "customer_name": payload.customer_name or "",
+            "customer_address": payload.customer_address or "",
+            "recipient": payload.recipient or "",
+            "facility_handling": payload.facility_handling or "",
+            "reason": payload.reason or "",
+            "created_by": actor_id,
+            "created_at": now,
+            "updated_at": now,
+        }
+        runtime_state.drug_recalls[recall_id] = recall
+        await save_runtime_state_safe()
+
+    return {"message": "Drug recall created", "recall": recall}
+
+
+@router.get("/drug-recalls")
+async def list_drug_recalls(
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    sort: str | None = Query(default="desc"),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=200),
+    token: str = Depends(oauth2_scheme),
+) -> dict[str, Any]:
+    get_current_subject(token)
+    recalls = list(runtime_state.drug_recalls.values())
+
+    if date_from:
+        recalls = [r for r in recalls if (r.get("issued_date") or r.get("created_at", "")[:10]) >= date_from]
+    if date_to:
+        recalls = [r for r in recalls if (r.get("issued_date") or r.get("created_at", "")[:10]) <= date_to]
+
+    reverse = sort != "asc"
+    recalls.sort(key=lambda r: (r.get("issued_date") or r.get("created_at", "")[:10]), reverse=reverse)
+    total = len(recalls)
+    start = (page - 1) * size
+    return {"items": recalls[start : start + size], "total": total, "page": page, "size": size}
+
+
+@router.put("/drug-recalls/{recall_id}")
+async def update_drug_recall(recall_id: str, payload: DrugRecallUpdateRequest, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+    _, role, _ = get_current_actor(token)
+    if role not in ("owner", "manager", "admin"):
+        raise HTTPException(status_code=403, detail="Only owner/manager can update drug recalls")
+
+    async with runtime_state.lock:
+        recall = runtime_state.drug_recalls.get(recall_id)
+        if recall is None:
+            raise HTTPException(status_code=404, detail="Drug recall not found")
+
+        update_fields = payload.model_dump(exclude_unset=True)
+        for field, value in update_fields.items():
+            recall[field] = value
+        recall["updated_at"] = utc_now()
+        await save_runtime_state_safe()
+
+    return {"message": "Drug recall updated", "recall": recall}
+
+
+@router.delete("/drug-recalls/{recall_id}")
+async def delete_drug_recall(recall_id: str, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+    _, role, _ = get_current_actor(token)
+    if role not in ("owner", "manager", "admin"):
+        raise HTTPException(status_code=403, detail="Only owner/manager can delete drug recalls")
+
+    async with runtime_state.lock:
+        recall = runtime_state.drug_recalls.pop(recall_id, None)
+        if recall is None:
+            raise HTTPException(status_code=404, detail="Drug recall not found")
+        await save_runtime_state_safe()
+
+    return {"message": "Drug recall deleted"}
 

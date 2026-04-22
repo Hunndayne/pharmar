@@ -409,6 +409,65 @@ export type DisposalLogEntry = {
   disposed_at: string
 }
 
+export type DrugRecall = {
+  id: string
+  code: string
+  drug_name: string
+  official_doc_number: string
+  issued_date: string
+  concentration: string
+  content: string
+  unit: string
+  registration_number: string
+  lot_number: string
+  expiry_date: string
+  qty_purchased: number | null
+  qty_sold: number | null
+  qty_remaining: number | null
+  qty_recalled_from_customers: number | null
+  manufacturer: string
+  customer_name: string
+  customer_address: string
+  recipient: string
+  facility_handling: string
+  reason: string
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+export type DrugRecallCreatePayload = {
+  drug_name: string
+  official_doc_number?: string | null
+  issued_date?: string | null
+  concentration?: string | null
+  content?: string | null
+  unit?: string | null
+  registration_number?: string | null
+  lot_number?: string | null
+  expiry_date?: string | null
+  qty_purchased?: number | null
+  qty_sold?: number | null
+  qty_remaining?: number | null
+  qty_recalled_from_customers?: number | null
+  manufacturer?: string | null
+  customer_name?: string | null
+  customer_address?: string | null
+  recipient?: string | null
+  facility_handling?: string | null
+  reason?: string | null
+}
+
+export type DrugRecallUpdatePayload = Partial<DrugRecallCreatePayload>
+
+export type DrugRecallListParams = {
+  date_from?: string
+  date_to?: string
+  sort?: 'asc' | 'desc'
+  page?: number
+  size?: number
+}
+
 const requestInventoryJson = async <T>(
   path: string,
   init: RequestInit = {},
@@ -641,6 +700,35 @@ export const inventoryApi = {
       { method: 'GET' },
       token,
       params,
+    ),
+
+  createDrugRecall: (token: string, payload: DrugRecallCreatePayload) =>
+    requestInventoryJson<{ message: string; recall: DrugRecall }>(
+      '/inventory/drug-recalls',
+      { method: 'POST', body: JSON.stringify(payload) },
+      token,
+    ),
+
+  listDrugRecalls: (token: string, params?: DrugRecallListParams) =>
+    requestInventoryJson<{ items: DrugRecall[]; total: number; page: number; size: number }>(
+      '/inventory/drug-recalls',
+      { method: 'GET' },
+      token,
+      params,
+    ),
+
+  updateDrugRecall: (token: string, recallId: string, payload: DrugRecallUpdatePayload) =>
+    requestInventoryJson<{ message: string; recall: DrugRecall }>(
+      `/inventory/drug-recalls/${encodeURIComponent(recallId)}`,
+      { method: 'PUT', body: JSON.stringify(payload) },
+      token,
+    ),
+
+  deleteDrugRecall: (token: string, recallId: string) =>
+    requestInventoryJson<{ message: string }>(
+      `/inventory/drug-recalls/${encodeURIComponent(recallId)}`,
+      { method: 'DELETE' },
+      token,
     ),
 }
 

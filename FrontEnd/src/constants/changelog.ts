@@ -9,11 +9,18 @@ export type ChangelogEntry = {
   features: ChangelogFeature[]
 }
 
-export const CURRENT_VERSION = 'V1.6'
+export const CURRENT_VERSION = 'V1.7'
 
 export const WHATS_NEW_STORAGE_KEY = 'pharmar.whats_new_seen'
 
 export const changelogEntries: ChangelogEntry[] = [
+  {
+    version: 'V1.7',
+    date: '2026-04-22',
+    features: [
+      { text: 'GPP — Sổ theo dõi thuốc bị thu hồi / đình chỉ lưu hành', route: '/thuoc-thu-hoi' },
+    ],
+  },
   {
     version: 'V1.6',
     date: '2026-04-19',

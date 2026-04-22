@@ -115,5 +115,49 @@ class StockAuditUpdateRequest(BaseModel):
     items: list[StockAuditUpdateItemRequest] = Field(min_length=1)
 
 
+class DrugRecallCreateRequest(BaseModel):
+    drug_name: str = Field(min_length=1, max_length=200)
+    official_doc_number: str | None = Field(default=None, max_length=100)
+    issued_date: str | None = Field(default=None)  # ISO date string
+    concentration: str | None = Field(default=None, max_length=100)
+    content: str | None = Field(default=None, max_length=100)
+    unit: str | None = Field(default=None, max_length=50)
+    registration_number: str | None = Field(default=None, max_length=100)
+    lot_number: str | None = Field(default=None, max_length=100)
+    expiry_date: str | None = Field(default=None)  # ISO date string
+    qty_purchased: float | None = Field(default=None, ge=0)
+    qty_sold: float | None = Field(default=None, ge=0)
+    qty_remaining: float | None = Field(default=None, ge=0)
+    qty_recalled_from_customers: float | None = Field(default=None, ge=0)
+    manufacturer: str | None = Field(default=None, max_length=200)
+    customer_name: str | None = Field(default=None, max_length=200)
+    customer_address: str | None = Field(default=None, max_length=500)
+    recipient: str | None = Field(default=None, max_length=200)
+    facility_handling: str | None = Field(default=None, max_length=500)
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class DrugRecallUpdateRequest(BaseModel):
+    drug_name: str | None = Field(default=None, min_length=1, max_length=200)
+    official_doc_number: str | None = Field(default=None, max_length=100)
+    issued_date: str | None = Field(default=None)
+    concentration: str | None = Field(default=None, max_length=100)
+    content: str | None = Field(default=None, max_length=100)
+    unit: str | None = Field(default=None, max_length=50)
+    registration_number: str | None = Field(default=None, max_length=100)
+    lot_number: str | None = Field(default=None, max_length=100)
+    expiry_date: str | None = Field(default=None)
+    qty_purchased: float | None = Field(default=None, ge=0)
+    qty_sold: float | None = Field(default=None, ge=0)
+    qty_remaining: float | None = Field(default=None, ge=0)
+    qty_recalled_from_customers: float | None = Field(default=None, ge=0)
+    manufacturer: str | None = Field(default=None, max_length=200)
+    customer_name: str | None = Field(default=None, max_length=200)
+    customer_address: str | None = Field(default=None, max_length=500)
+    recipient: str | None = Field(default=None, max_length=200)
+    facility_handling: str | None = Field(default=None, max_length=500)
+    reason: str | None = Field(default=None, max_length=1000)
+
+
 class BatchCostLookupRequest(BaseModel):
     batch_ids: list[str] = Field(min_length=1)

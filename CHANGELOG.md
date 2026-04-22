@@ -2,6 +2,13 @@
 
 ---
 
+## V1.7 — 2026-04-22
+
+### Tính năng mới
+- **GPP — Sổ theo dõi thuốc bị thu hồi / đình chỉ lưu hành** [`/thuoc-thu-hoi`]: nhập đầy đủ theo mẫu GPP (số công văn, ngày ban hành, tên thuốc, nồng độ/hàm lượng, số lô/hạn dùng, số lượng mua/bán/tồn/thu hồi từ khách, công ty SX, khách hàng, người nhận, xử lý, lý do); xuất Excel; lọc theo ngày ban hành
+
+---
+
 ## V1.6 — 2026-04-19
 
 ### Tính năng mới

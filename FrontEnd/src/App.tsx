@@ -28,6 +28,7 @@ const StoreDrugGroups = lazy(() => import('./pages/StoreDrugGroups').then((modul
 const SystemHealth = lazy(() => import('./pages/SystemHealth').then((module) => ({ default: module.SystemHealth })))
 const Notifications = lazy(() => import('./pages/Notifications').then((module) => ({ default: module.Notifications })))
 const StockAudit = lazy(() => import('./pages/StockAudit').then((module) => ({ default: module.StockAudit })))
+const DrugRecall = lazy(() => import('./pages/DrugRecall').then((module) => ({ default: module.DrugRecall })))
 const ExpiryManagement = lazy(() => import('./pages/ExpiryManagement').then((module) => ({ default: module.ExpiryManagement })))
 const PublicInvoiceLookup = lazy(() => import('./pages/PublicInvoiceLookup').then((module) => ({ default: module.PublicInvoiceLookup })))
 const PrescriptionTemplates = lazy(() => import('./pages/PrescriptionTemplates').then((module) => ({ default: module.PrescriptionTemplates })))
@@ -88,6 +89,7 @@ function App() {
           <Route path="/khach-hang" element={<Customers />} />
           <Route path="/khuyen-mai" element={<Promotions />} />
           <Route path="/kiem-ke-kho" element={<StockAudit />} />
+          <Route path="/thuoc-thu-hoi" element={<DrugRecall />} />
           <Route path="/han-su-dung" element={<ExpiryManagement />} />
           <Route path="/bao-cao" element={<Reports />} />
           <Route path="/thong-bao" element={<Notifications />} />
