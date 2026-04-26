@@ -747,6 +747,101 @@ async def list_profit_source_invoices(
     )
 
 
+@router.get("/reports/top-products-aggregated")
+async def top_products_aggregated(
+    _: AnyUser,
+    db: DbSession,
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    """
+    Returns top products by net revenue using a single SQL CTE.
+    Includes per-batch base_units breakdown so Report service can compute COGS accurately.
+    Replaces the 7-page pagination loop in _fetch_profit_source_invoices.
+    """
+    range_start_at, range_end_at = build_utc_range_for_local_dates(date_from, date_to, await get_store_timezone())
+    date_filters: list[str] = []
+    query_params: dict[str, Any] = {"limit": limit}
+    if range_start_at is not None:
+        date_filters.append("AND i.created_at >= :date_from")
+        query_params["date_from"] = range_start_at
+    if range_end_at is not None:
+        date_filters.append("AND i.created_at < :date_to")
+        query_params["date_to"] = range_end_at
+    date_filter_sql = "\n              ".join(date_filters)
+
+    sql = text(f"""
+        WITH invoice_discounts AS (
+            SELECT
+                i.id AS invoice_id,
+                (i.tier_discount + i.promotion_discount + i.points_discount) AS total_discount,
+                NULLIF(SUM(ii.line_total), 0) AS invoice_line_total_sum
+            FROM {SCHEMA_NAME}.invoices i
+            JOIN {SCHEMA_NAME}.invoice_items ii ON ii.invoice_id = i.id
+            WHERE i.status IN ('completed', 'returned')
+              {date_filter_sql}
+            GROUP BY i.id, i.tier_discount, i.promotion_discount, i.points_discount
+        ),
+        item_net AS (
+            SELECT
+                ii.product_id,
+                ii.product_code,
+                ii.product_name,
+                ii.batch_id,
+                ii.conversion_rate,
+                GREATEST(ii.quantity - LEAST(ii.returned_quantity, ii.quantity), 0) AS effective_qty,
+                (
+                    CASE
+                        WHEN id.invoice_line_total_sum IS NOT NULL
+                        THEN ii.line_total - (id.total_discount * ii.line_total / id.invoice_line_total_sum)
+                        ELSE ii.line_total
+                    END
+                ) * (
+                    CASE
+                        WHEN ii.quantity > 0
+                        THEN GREATEST(ii.quantity - LEAST(ii.returned_quantity, ii.quantity), 0)::numeric / ii.quantity
+                        ELSE 0
+                    END
+                ) AS net_revenue,
+                GREATEST(ii.quantity - LEAST(ii.returned_quantity, ii.quantity), 0) * ii.conversion_rate AS base_units
+            FROM {SCHEMA_NAME}.invoice_items ii
+            JOIN {SCHEMA_NAME}.invoices i ON ii.invoice_id = i.id
+            JOIN invoice_discounts id ON id.invoice_id = i.id
+            WHERE i.status IN ('completed', 'returned')
+              {date_filter_sql}
+        ),
+        product_batch AS (
+            SELECT
+                product_id, product_code, product_name,
+                batch_id,
+                SUM(net_revenue)  AS batch_net_revenue,
+                SUM(base_units)   AS batch_base_units
+            FROM item_net
+            WHERE effective_qty > 0 OR net_revenue > 0
+            GROUP BY product_id, product_code, product_name, batch_id
+        ),
+        product_agg AS (
+            SELECT
+                product_id, product_code, product_name,
+                SUM(batch_net_revenue) AS total_net_revenue,
+                JSON_AGG(
+                    JSON_BUILD_OBJECT('batch_id', batch_id, 'base_units', batch_base_units)
+                ) AS batches
+            FROM product_batch
+            GROUP BY product_id, product_code, product_name
+        )
+        SELECT * FROM product_agg
+        ORDER BY total_net_revenue DESC
+        LIMIT :limit
+    """)
+
+    result = await db.execute(sql, query_params)
+    rows = result.mappings().all()
+    items = [dict(r) for r in rows]
+    return {"items": items}
+
+
 @router.post("/invoices/{invoice_id}/cancel")
 async def cancel_invoice(
     invoice_id: UUID,

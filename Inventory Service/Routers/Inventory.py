@@ -581,13 +581,40 @@ async def sync_drug_from_catalog(
     return upsert_drug_from_catalog_product(product)
 
 
+async def fetch_catalog_batch(
+    ids: list[str],
+    token: str | None,
+) -> list[dict[str, Any]]:
+    if not ids:
+        return []
+    url = f"{settings.CATALOG_SERVICE_URL.rstrip('/')}/api/v1/catalog/products/batch"
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    timeout = httpx.Timeout(settings.CATALOG_SYNC_TIMEOUT_SECONDS)
+    chunk_size = 100
+    results: list[dict[str, Any]] = []
+    for start in range(0, len(ids), chunk_size):
+        chunk = ids[start : start + chunk_size]
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(url, json={"ids": chunk}, headers=headers)
+        except httpx.HTTPError:
+            continue
+        if response.status_code >= 400:
+            continue
+        payload = response.json()
+        if isinstance(payload, list):
+            results.extend(item for item in payload if isinstance(item, dict))
+    return results
+
+
 async def sync_all_drugs_from_catalog(token: str | None) -> int:
     page = 1
     pages = 1
-    upserted = 0
+    all_ids: list[str] = []
     synced_drugs: dict[str, dict[str, Any]] = {}
     has_page = False
 
+    # Step 1: collect all product IDs from paginated list (lightweight)
     while page <= pages:
         listing = await fetch_catalog_json(
             "/api/v1/catalog/products",
@@ -606,19 +633,18 @@ async def sync_all_drugs_from_catalog(token: str | None) -> int:
             break
 
         for item in items:
-            if not isinstance(item, dict):
-                continue
-            product_id = item.get("id")
-            if not product_id:
-                continue
-            detail = await fetch_catalog_json(f"/api/v1/catalog/products/{product_id}", token)
-            if detail is None:
-                continue
-            if upsert_drug_from_catalog_product(detail, target=synced_drugs) is not None:
-                upserted += 1
+            if isinstance(item, dict) and item.get("id"):
+                all_ids.append(str(item["id"]))
 
         pages = _to_positive_int(listing.get("pages"), default=1)
         page += 1
+
+    # Step 2: fetch full details in one batch call instead of N individual calls
+    upserted = 0
+    details = await fetch_catalog_batch(all_ids, token)
+    for detail in details:
+        if upsert_drug_from_catalog_product(detail, target=synced_drugs) is not None:
+            upserted += 1
 
     if has_page:
         preserve_drug_ids = {

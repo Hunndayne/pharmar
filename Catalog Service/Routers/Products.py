@@ -474,6 +474,33 @@ async def delete_product(
     return {"message": "Product deleted (soft delete)"}
 
 
+@router.post("/products/batch", response_model=list[ProductDetailResponse])
+async def get_products_batch(
+    payload: dict[str, list[str]],
+    _: AnyUser,
+    db: DbSession,
+) -> list[ProductDetailResponse]:
+    ids_raw = payload.get("ids") or []
+    if not ids_raw:
+        return []
+    try:
+        uuids = [UUID(str(i)) for i in ids_raw[:200]]
+    except (ValueError, AttributeError):
+        return []
+    stmt = (
+        select(Product)
+        .where(Product.id.in_(uuids))
+        .options(
+            selectinload(Product.group),
+            selectinload(Product.manufacturer),
+            selectinload(Product.units),
+        )
+    )
+    result = await db.execute(stmt)
+    products = result.scalars().all()
+    return [to_product_detail(p) for p in products]
+
+
 @router.get("/products/{product_id:uuid}", response_model=ProductDetailResponse)
 async def get_product(product_id: UUID, _: AnyUser, db: DbSession) -> ProductDetailResponse:
     item = await get_product_or_404(product_id, db)

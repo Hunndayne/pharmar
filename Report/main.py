@@ -2224,6 +2224,87 @@ async def profit_breakdown(
     return _paginate_rows(list(dataset["breakdowns"][group_key]), page, size)
 
 
+async def _fetch_top_products_aggregated(
+    authorization: str,
+    date_from: date | None,
+    date_to: date | None,
+    fetch_limit: int = 50,
+) -> list[dict[str, Any]]:
+    query_from = date_from - timedelta(days=1) if date_from else None
+    query_to = date_to + timedelta(days=1) if date_to else None
+    payload = await _request_service_json(
+        "GET",
+        f"{settings.SALE_SERVICE_URL}/api/v1/sale/reports/top-products-aggregated",
+        authorization,
+        params={
+            "date_from": query_from.isoformat() if query_from else None,
+            "date_to": query_to.isoformat() if query_to else None,
+            "limit": fetch_limit,
+        },
+    )
+    return payload.get("items", []) if isinstance(payload, dict) else []
+
+
+async def _load_top_products_fast(
+    authorization: str,
+    date_from: date | None,
+    date_to: date | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    cache_key = _cache_key(
+        "report:top_products_fast:v1",
+        {
+            "date_from": date_from.isoformat() if date_from else None,
+            "date_to": date_to.isoformat() if date_to else None,
+            "timezone": _active_report_timezone_name(),
+        },
+    )
+    cached = await _get_cached_json(cache_key)
+    if isinstance(cached, list):
+        return cached[:limit]
+
+    # Single call — DB aggregates for us (replaces 7-page pagination loop)
+    products = await _fetch_top_products_aggregated(authorization, date_from, date_to, fetch_limit=50)
+
+    # Collect all batch_ids for cost lookup
+    batch_ids: list[str] = []
+    for p in products:
+        for b in (p.get("batches") or []):
+            if isinstance(b, dict) and b.get("batch_id"):
+                batch_ids.append(str(b["batch_id"]))
+
+    batch_costs = await _fetch_batch_costs(authorization, batch_ids)
+
+    result: list[dict[str, Any]] = []
+    for p in products:
+        net_revenue = _to_decimal(p.get("total_net_revenue"))
+        cogs = Decimal("0")
+        for b in (p.get("batches") or []):
+            if not isinstance(b, dict):
+                continue
+            bid = str(b.get("batch_id") or "").strip()
+            base_units = _to_decimal(b.get("base_units"))
+            cost_info = batch_costs.get(bid, {})
+            cost_per_base = _to_decimal(cost_info.get("cost_per_base_unit"))
+            cogs += base_units * cost_per_base
+
+        gross_profit = net_revenue - cogs
+        result.append({
+            "product_id": str(p.get("product_id") or ""),
+            "product_code": str(p.get("product_code") or ""),
+            "product_name": str(p.get("product_name") or ""),
+            "net_revenue": float(net_revenue),
+            "cogs": float(cogs),
+            "gross_profit": float(gross_profit),
+            "sold_base_qty": float(_to_decimal(p.get("total_base_units", 0))),
+        })
+
+    result.sort(key=lambda x: x["gross_profit"], reverse=True)
+
+    await _set_cached_json(cache_key, result, settings.REPORT_CACHE_TTL_SECONDS)
+    return result[:limit]
+
+
 @app.get("/api/v1/report/profit/top-products")
 async def profit_top_products(
     date_from: str | None = Query(default=None),
@@ -2233,12 +2314,12 @@ async def profit_top_products(
 ) -> list[dict[str, Any]]:
     token = _require_authorization(authorization)
     await _refresh_report_timezone(token)
-    dataset = await _load_profit_dataset(
+    return await _load_top_products_fast(
         token,
         _parse_optional_date(date_from, "date_from"),
         _parse_optional_date(date_to, "date_to"),
+        limit,
     )
-    return list(dataset["top_products"][:limit])
 
 
 @app.get("/api/v1/report/restock/highlights")
