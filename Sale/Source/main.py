@@ -18,7 +18,7 @@ from .db.base import Base
 from .db.models import PaymentMethod, SCHEMA_NAME
 from .db.session import SessionLocal, engine
 from .events import close_event_publisher, init_event_publisher
-from .sale import DEFAULT_PAYMENT_METHODS, cleanup_expired_held_orders
+from .sale import DEFAULT_PAYMENT_METHODS, cleanup_expired_held_orders, close_http_client
 
 
 settings = get_settings()
@@ -121,6 +121,7 @@ async def lifespan(_: FastAPI):
             await worker_task
 
     await close_event_publisher()
+    await close_http_client()
     await engine.dispose()
 
 

@@ -1,4 +1,8 @@
 import asyncio
+import base64
+import hashlib
+import json
+import logging
 import secrets
 import time
 from datetime import datetime, timezone
@@ -6,9 +10,13 @@ from time import perf_counter
 from typing import Any
 
 import httpx
+import redis.asyncio as redis
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger("api_gateway")
 
 
 class Settings(BaseSettings):
@@ -25,6 +33,8 @@ class Settings(BaseSettings):
     PAYMENT_QR_SERVICE_URL: str = "http://payment-qr-service:8008"
     FILE_SERVICE_URL: str = "http://file-service:8009"
     NOTIFICATION_SERVICE_URL: str = "http://notification-service:8010"
+
+    REDIS_URL: str = "redis://redis:6379/0"
 
     CORS_ALLOWED_ORIGINS: list[str] = [
         "http://localhost:3000",
@@ -55,6 +65,11 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Requested-With", "X-Request-ID"],
     expose_headers=["X-Request-ID"],
 )
+# Compresses responses (>=1KB) before they go out over the wire. Safe here
+# because the proxy always returns fully-buffered upstream content with the
+# upstream Content-Encoding header stripped (see `proxy()`), so there is no
+# risk of double-compressing an already-encoded body.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
 SERVICE_URLS: dict[str, str] = {
@@ -85,63 +100,88 @@ HEALTH_TARGETS: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Token blacklist: stores hashes of revoked access tokens to enforce logout.
-# Entries expire automatically when the gateway cleans up stale entries.
+# Token blacklist: stores hashes of revoked access tokens in Redis so logout
+# is enforced across gateway restarts and multiple replicas.
 # ---------------------------------------------------------------------------
-_token_blacklist: dict[str, float] = {}  # token → expiry_unix_timestamp
-_BLACKLIST_CLEANUP_INTERVAL = 300  # clean up every 5 minutes
+_FALLBACK_BLACKLIST_TTL = 1800  # used only if the token's exp claim can't be read
 
 
-def _blacklist_token(token: str, expires_at: float) -> None:
-    _token_blacklist[token] = expires_at
+def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
+    """Best-effort decode of a JWT payload WITHOUT verifying the signature.
+
+    The gateway does not hold the JWT signing secret, so this must never be
+    used for authorization decisions — only to read the `exp` claim so the
+    blacklist TTL matches the token's real remaining lifetime.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        payload_b64 = parts[1]
+        padding = "=" * (-len(payload_b64) % 4)
+        payload_bytes = base64.urlsafe_b64decode(payload_b64 + padding)
+        return json.loads(payload_bytes)
+    except Exception:
+        return None
 
 
-def _is_token_blacklisted(token: str) -> bool:
-    expiry = _token_blacklist.get(token)
-    if expiry is None:
+def _token_ttl_seconds(token: str) -> int:
+    payload = _decode_jwt_payload(token)
+    if payload is None:
+        return _FALLBACK_BLACKLIST_TTL
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)):
+        return _FALLBACK_BLACKLIST_TTL
+    return max(int(exp - time.time()), 60)
+
+
+def _blacklist_key(token: str) -> str:
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return f"gw:blacklist:{digest}"
+
+
+async def _blacklist_token(token: str) -> None:
+    redis_client = getattr(app.state, "redis", None)
+    if redis_client is None:
+        return
+    try:
+        await redis_client.set(_blacklist_key(token), "1", ex=_token_ttl_seconds(token))
+    except Exception as exc:
+        logger.warning("Redis unreachable while blacklisting token, logout may not propagate: %s", exc)
+
+
+async def _is_token_blacklisted(token: str) -> bool:
+    redis_client = getattr(app.state, "redis", None)
+    if redis_client is None:
         return False
-    if time.time() > expiry:
-        _token_blacklist.pop(token, None)
+    try:
+        value = await redis_client.get(_blacklist_key(token))
+        return value is not None
+    except Exception as exc:
+        logger.warning("Redis unreachable while checking token blacklist, failing open: %s", exc)
         return False
-    return True
-
-
-def _cleanup_token_blacklist() -> None:
-    now = time.time()
-    expired = [tok for tok, exp in _token_blacklist.items() if now > exp]
-    for tok in expired:
-        _token_blacklist.pop(tok, None)
 
 
 # ---------------------------------------------------------------------------
-# Simple per-IP rate limiter (token bucket, in-memory).
+# Per-IP rate limiter — Redis fixed-window counter (one window per minute).
 # ---------------------------------------------------------------------------
-_rate_buckets: dict[str, dict[str, Any]] = {}
-
-
-def _check_rate_limit(key: str, rpm: int) -> bool:
+async def _check_rate_limit(key: str, rpm: int) -> bool:
     """Return True if the request is allowed, False if rate-limited."""
-    now = time.time()
-    bucket = _rate_buckets.get(key)
-
-    # New bucket: start full so the first request burst is not rejected.
-    if bucket is None:
-        _rate_buckets[key] = {"tokens": float(max(rpm - 1, 0)), "last": now}
+    redis_client = getattr(app.state, "redis", None)
+    if redis_client is None:
         return True
 
-    elapsed = now - float(bucket.get("last", now))
-    refill = elapsed * (rpm / 60.0)
-    tokens = min(float(rpm), float(bucket.get("tokens", 0.0)) + refill)
-
-    if tokens >= 1.0:
-        tokens -= 1.0
-        bucket["tokens"] = tokens
-        bucket["last"] = now
+    unix_minute = int(time.time() // 60)
+    redis_key = f"gw:rl:{key}:{unix_minute}"
+    try:
+        count = await redis_client.incr(redis_key)
+        if count == 1:
+            await redis_client.expire(redis_key, 90)
+    except Exception as exc:
+        logger.warning("Redis unreachable while rate limiting, failing open: %s", exc)
         return True
 
-    bucket["tokens"] = tokens
-    bucket["last"] = now
-    return False
+    return count <= rpm
 
 
 def _get_client_ip(request: Request) -> str:
@@ -184,12 +224,21 @@ async def correlation_id_middleware(request: Request, call_next):
 @app.on_event("startup")
 async def startup_event() -> None:
     app.state.http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
-    app.state.customer_display_states: dict[str, dict[str, Any]] = {}
+    # redis.asyncio connects lazily on first command, so a Redis outage at
+    # startup does not block the gateway from coming up; per-call try/except
+    # blocks around every Redis usage fail open if it's unreachable later.
+    app.state.redis = redis.from_url(settings.REDIS_URL, decode_responses=True)
 
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
     await app.state.http_client.aclose()
+    redis_client = getattr(app.state, "redis", None)
+    if redis_client is not None:
+        try:
+            await redis_client.aclose()
+        except Exception as exc:
+            logger.warning("Error closing Redis client on shutdown: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -260,8 +309,17 @@ async def services_health() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Customer display state (POS second-screen)
+# Customer display state (POS second-screen) — stored in Redis so it survives
+# gateway restarts and is shared across worker processes/replicas. Stale
+# display state has no value beyond a shift, hence the 6h TTL.
 # ---------------------------------------------------------------------------
+_DISPLAY_STATE_TTL = 6 * 60 * 60  # 6 hours
+
+
+def _display_state_key(screen_id: str) -> str:
+    return f"gw:display:{screen_id}"
+
+
 @app.post("/api/v1/system/customer-display/state")
 async def set_customer_display_state(request: Request) -> dict[str, Any]:
     # Require a Bearer token so anonymous callers cannot update the display.
@@ -282,11 +340,25 @@ async def set_customer_display_state(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="state must be an object")
 
     updated_at = datetime.now(timezone.utc).isoformat()
-    app.state.customer_display_states[screen_id] = {
+    record = {
         "screen_id": screen_id,
         "updated_at": updated_at,
         "state": state,
     }
+
+    redis_client = getattr(app.state, "redis", None)
+    if redis_client is None:
+        raise HTTPException(status_code=503, detail="Display state store is unavailable")
+    try:
+        await redis_client.set(
+            _display_state_key(screen_id),
+            json.dumps(record),
+            ex=_DISPLAY_STATE_TTL,
+        )
+    except Exception as exc:
+        logger.warning("Redis unreachable while writing customer display state: %s", exc)
+        raise HTTPException(status_code=503, detail="Display state store is unavailable") from exc
+
     return {
         "message": "customer display state updated",
         "screen_id": screen_id,
@@ -297,14 +369,31 @@ async def set_customer_display_state(request: Request) -> dict[str, Any]:
 @app.get("/api/v1/system/customer-display/state")
 async def get_customer_display_state(screen_id: str = "default") -> dict[str, Any]:
     normalized = screen_id.strip() or "default"
-    current = app.state.customer_display_states.get(normalized)
-    if current:
-        return current
-    return {
+    empty_state = {
         "screen_id": normalized,
         "updated_at": None,
         "state": None,
     }
+
+    redis_client = getattr(app.state, "redis", None)
+    if redis_client is None:
+        logger.warning("Redis unavailable while reading customer display state for screen_id=%s", normalized)
+        return empty_state
+
+    try:
+        raw = await redis_client.get(_display_state_key(normalized))
+    except Exception as exc:
+        logger.warning("Redis unreachable while reading customer display state: %s", exc)
+        return empty_state
+
+    if raw is None:
+        return empty_state
+
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        logger.warning("Corrupt customer display state for screen_id=%s: %s", normalized, exc)
+        return empty_state
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +420,7 @@ async def proxy(service: str, request: Request, resource_path: str = "") -> Resp
     is_auth_endpoint = service in {"auth", "users"} and resource_path.startswith("login")
     rpm_limit = settings.AUTH_RATE_LIMIT_RPM if is_auth_endpoint else settings.RATE_LIMIT_RPM
     scope = "auth" if is_auth_endpoint else "api"
-    if not _check_rate_limit(f"{client_ip}:{service}:{scope}", rpm_limit):
+    if not await _check_rate_limit(f"{client_ip}:{service}:{scope}", rpm_limit):
         raise HTTPException(status_code=429, detail="Too many requests. Please slow down.")
 
     # ------------------------------------------------------------------
@@ -341,7 +430,7 @@ async def proxy(service: str, request: Request, resource_path: str = "") -> Resp
     bearer_token: str | None = None
     if auth_header.lower().startswith("bearer "):
         bearer_token = auth_header[7:].strip()
-        if bearer_token and _is_token_blacklisted(bearer_token):
+        if bearer_token and await _is_token_blacklisted(bearer_token):
             raise HTTPException(
                 status_code=401,
                 detail="Token has been revoked. Please log in again.",
@@ -384,8 +473,7 @@ async def proxy(service: str, request: Request, resource_path: str = "") -> Resp
             headers=filtered_headers,
         )
     except httpx.RequestError as exc:
-        import logging
-        logging.getLogger("api_gateway").error(
+        logger.error(
             "Upstream error service=%s request_id=%s: %s",
             service,
             req_id,
@@ -405,10 +493,9 @@ async def proxy(service: str, request: Request, resource_path: str = "") -> Resp
         and bearer_token is not None
     )
     if is_logout:
-        # Expire the blacklist entry in 30 min (matches ACCESS_TOKEN_EXPIRE_MINUTES default).
-        _blacklist_token(bearer_token, time.time() + 1800)
-        # Periodically purge stale entries.
-        _cleanup_token_blacklist()
+        # TTL is derived from the token's own `exp` claim (see _token_ttl_seconds),
+        # falling back to 1800s only if the token can't be parsed.
+        await _blacklist_token(bearer_token)
 
     response_headers = {
         key: value

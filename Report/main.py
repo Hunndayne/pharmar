@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     INTERNAL_SERVICE_TOKEN_EXPIRE_MINUTES: int = 30
 
+    REPORT_CACHE_WARMUP_ENABLED: bool = True
+
     AI_DASHBOARD_INSIGHTS_ENABLED: bool = False
     AI_WORKER_DASHBOARD_INSIGHTS_URL: str = ""
     AI_WORKER_API_KEY: str = ""
@@ -307,30 +309,48 @@ async def _fetch_profit_source_invoices(
     date_from: date | None,
     date_to: date | None,
 ) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    page = 1
-    pages = 1
-
     query_from = date_from - timedelta(days=1) if date_from else None
     query_to = date_to + timedelta(days=1) if date_to else None
 
-    while page <= pages:
-        payload = await _request_service_json(
+    async def _fetch_page(page: int) -> Any:
+        return await _request_service_json(
             "GET",
             f"{settings.SALE_SERVICE_URL}/api/v1/sale/reports/profit-source",
             authorization,
             params={
                 "page": page,
-                "size": 200,
+                "size": 1000,
                 "date_from": query_from.isoformat() if query_from else None,
                 "date_to": query_to.isoformat() if query_to else None,
             },
         )
+
+    def _rows_of(payload: Any) -> list[dict[str, Any]]:
         rows = payload.get("items") if isinstance(payload, dict) else []
-        if isinstance(rows, list):
-            items.extend(row for row in rows if isinstance(row, dict))
-        pages = max(1, int((payload or {}).get("pages", 1) or 1))
-        page += 1
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)]
+
+    # Page 1 first: it tells us the total page count. The Sale endpoint may
+    # clamp `size` below what we requested, but `pages` is read from its
+    # response either way, so pagination stays correct regardless of the
+    # actual per-page item count.
+    first_payload = await _fetch_page(1)
+    items: list[dict[str, Any]] = list(_rows_of(first_payload))
+    pages = max(1, int((first_payload or {}).get("pages", 1) or 1))
+
+    if pages > 1:
+        semaphore = asyncio.Semaphore(4)
+
+        async def _fetch_bounded(page: int) -> Any:
+            async with semaphore:
+                return await _fetch_page(page)
+
+        remaining_payloads = await asyncio.gather(
+            *(_fetch_bounded(page) for page in range(2, pages + 1))
+        )
+        for payload in remaining_payloads:
+            items.extend(_rows_of(payload))
 
     return items
 
@@ -353,14 +373,22 @@ async def _fetch_batch_costs(
         deduped.append(normalized)
 
     chunk_size = 500
-    for start in range(0, len(deduped), chunk_size):
-        chunk = deduped[start : start + chunk_size]
-        payload = await _request_service_json(
-            "POST",
-            f"{settings.INVENTORY_SERVICE_URL}/api/v1/inventory/reports/batch-costs",
-            authorization,
-            json_body={"batch_ids": chunk},
-        )
+    chunks = [deduped[start : start + chunk_size] for start in range(0, len(deduped), chunk_size)]
+
+    semaphore = asyncio.Semaphore(4)
+
+    async def _fetch_chunk(chunk: list[str]) -> Any:
+        async with semaphore:
+            return await _request_service_json(
+                "POST",
+                f"{settings.INVENTORY_SERVICE_URL}/api/v1/inventory/reports/batch-costs",
+                authorization,
+                json_body={"batch_ids": chunk},
+            )
+
+    payloads = await asyncio.gather(*(_fetch_chunk(chunk) for chunk in chunks))
+
+    for payload in payloads:
         rows = payload.get("items") if isinstance(payload, dict) else []
         if not isinstance(rows, list):
             continue
@@ -2114,6 +2142,66 @@ async def consume_sale_events_rabbitmq() -> None:
                 await connection.close()
 
 
+async def _run_report_cache_warmup(stop_event: asyncio.Event) -> None:
+    """Pre-populate Redis cache for the main dashboard endpoints after a fresh
+    restart so the first real dashboard load doesn't have to pull every
+    invoice from Sale synchronously. Best-effort: never raises."""
+    if not settings.REPORT_CACHE_WARMUP_ENABLED:
+        logger.info("Report cache warm-up disabled")
+        return
+
+    initial_delay_seconds = 15
+    max_attempts = 3
+    retry_delay_seconds = 20
+
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=initial_delay_seconds)
+        return  # app is shutting down before warm-up even started
+    except asyncio.TimeoutError:
+        pass
+
+    for attempt in range(1, max_attempts + 1):
+        if stop_event.is_set():
+            return
+        try:
+            authorization = _internal_authorization_header()
+            await _refresh_report_timezone(authorization)
+
+            today = _now_local().date()
+            trend_start = today - timedelta(days=13)
+            first_day_of_month = today.replace(day=1)
+
+            # Reuse the exact same endpoint functions the dashboard page calls,
+            # with the same default date ranges the frontend requests, so the
+            # populated cache entries are actually hit by the first real load.
+            await asyncio.gather(
+                revenue_summary(
+                    date_from=trend_start.isoformat(),
+                    date_to=today.isoformat(),
+                    authorization=authorization,
+                ),
+                profit_top_products(
+                    date_from=first_day_of_month.isoformat(),
+                    date_to=today.isoformat(),
+                    limit=5,
+                    authorization=authorization,
+                ),
+                restock_highlights(limit=8, authorization=authorization),
+            )
+            logger.info("Report cache warm-up completed (attempt=%s/%s)", attempt, max_attempts)
+            return
+        except Exception:
+            logger.exception("Report cache warm-up attempt %s/%s failed", attempt, max_attempts)
+            if attempt >= max_attempts:
+                logger.warning("Report cache warm-up exhausted all attempts; giving up")
+                return
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=retry_delay_seconds)
+                return  # app is shutting down; stop retrying
+            except asyncio.TimeoutError:
+                continue
+
+
 @app.on_event("startup")
 async def startup_event() -> None:
     app.state.redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
@@ -2127,18 +2215,30 @@ async def startup_event() -> None:
         if _is_ai_dashboard_enabled()
         else None
     )
+    app.state.warmup_task = (
+        asyncio.create_task(_run_report_cache_warmup(app.state.ai_scheduler_stop))
+        if settings.REPORT_CACHE_WARMUP_ENABLED
+        else None
+    )
 
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
+    app.state.ai_scheduler_stop.set()
+    tasks = [app.state.consumer_task]
     app.state.consumer_task.cancel()
+
     ai_scheduler_task = getattr(app.state, "ai_scheduler_task", None)
     if ai_scheduler_task is not None:
-        app.state.ai_scheduler_stop.set()
         ai_scheduler_task.cancel()
-        await asyncio.gather(app.state.consumer_task, ai_scheduler_task, return_exceptions=True)
-    else:
-        await asyncio.gather(app.state.consumer_task, return_exceptions=True)
+        tasks.append(ai_scheduler_task)
+
+    warmup_task = getattr(app.state, "warmup_task", None)
+    if warmup_task is not None:
+        warmup_task.cancel()
+        tasks.append(warmup_task)
+
+    await asyncio.gather(*tasks, return_exceptions=True)
     await app.state.http_client.aclose()
     await app.state.redis.aclose()
 

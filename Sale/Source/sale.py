@@ -94,6 +94,11 @@ def quantize_money(value: Decimal | int | float | str) -> Decimal:
             parsed = Decimal(str(value))
         except (InvalidOperation, ValueError):
             parsed = DECIMAL_ZERO
+    # NaN.quantize() trả về NaN thay vì raise như Infinity, nên phải chặn ở đây
+    # để NaN từ dữ liệu ngoài (vd. JSON response) không lọt vào tổng tiền hóa đơn;
+    # safe_decimal sẽ bắt exception này và trả về default.
+    if not parsed.is_finite():
+        raise InvalidOperation(f"Non-finite money value: {parsed}")
     return parsed.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
 
@@ -115,8 +120,9 @@ async def paginate_scalars(
     stmt: Select[Any],
     page: int,
     size: int,
+    max_size: int = 200,
 ) -> tuple[list[Any], PaginationMeta]:
-    safe_page, safe_size = normalize_page_size(page, size)
+    safe_page, safe_size = normalize_page_size(page, size, max_size=max_size)
     count_stmt = select(func.count()).select_from(stmt.subquery())
     total = int((await db.scalar(count_stmt)) or 0)
 
@@ -245,6 +251,33 @@ def extract_item_sku(item: Any) -> str:
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot resolve sku for an invoice item")
 
 
+_http_client: httpx.AsyncClient | None = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    """Return a lazily-created, process-wide shared httpx client.
+
+    Reusing a single client lets httpx pool and keep-alive TCP/TLS connections
+    to the other services instead of paying handshake cost on every call.
+    Timeouts are passed per-request (see call sites) so callers keep their
+    existing per-call timeout behavior.
+    """
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+            timeout=httpx.Timeout(10.0),
+        )
+    return _http_client
+
+
+async def close_http_client() -> None:
+    global _http_client
+    client, _http_client = _http_client, None
+    if client is not None:
+        await client.aclose()
+
+
 def update_shift_sales_by_method(shift: Shift, method: str, amount: Decimal) -> None:
     amount = quantize_money(amount)
     if method == "cash":
@@ -274,8 +307,10 @@ async def call_json_api(
         request_headers["Authorization"] = f"Bearer {token}"
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.request(method=method, url=url, json=payload, headers=request_headers)
+        client = get_http_client()
+        response = await client.request(
+            method=method, url=url, json=payload, headers=request_headers, timeout=timeout
+        )
     except httpx.RequestError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Upstream unavailable: {exc}") from exc
 
@@ -375,8 +410,8 @@ async def customer_internal_get(path: str, params: dict[str, Any] | None = None)
     url = f"{settings.CUSTOMER_SERVICE_URL.rstrip('/')}/api/v1/customer/internal/{path.lstrip('/')}"
     headers = {"X-Internal-API-Key": settings.CUSTOMER_INTERNAL_API_KEY}
     try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
-            response = await client.get(url, params=params, headers=headers)
+        client = get_http_client()
+        response = await client.get(url, params=params, headers=headers, timeout=12.0)
     except httpx.RequestError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Customer service unavailable: {exc}") from exc
 

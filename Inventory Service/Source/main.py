@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from Routers.Inventory import get_state_persistence_status
 from Routers.Inventory import router as inventory_router
 from Routers.Inventory import shutdown_event as shutdown_inventory_state
 from Routers.Inventory import startup_event as startup_inventory_state
@@ -27,4 +28,10 @@ app.include_router(inventory_router)
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"service": "inventory", "status": "ok"}
+    # Top-level "status" stays "ok" so the gateway's up/down check is unaffected;
+    # state_persistence surfaces whether the last runtime-state save succeeded.
+    return {
+        "service": "inventory",
+        "status": "ok",
+        "state_persistence": get_state_persistence_status(),
+    }

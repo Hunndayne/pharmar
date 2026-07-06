@@ -57,13 +57,17 @@
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
       REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
-    ports:
-      - "8001:8001"
     depends_on:
       postgres:
         condition: service_healthy
       db-bootstrap:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
   inventory-service:
@@ -83,8 +87,6 @@
       STORE_SERVICE_URL: http://store-service:8005
     volumes:
       - inventory_state_data:/data
-    ports:
-      - "8002:8002"
     depends_on:
       postgres:
         condition: service_healthy
@@ -92,6 +94,12 @@
         condition: service_completed_successfully
       redis:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8002/health', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
   sale-service:
@@ -118,8 +126,6 @@
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-pharmar.events}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
-    ports:
-      - "8003:8003"
     depends_on:
       postgres:
         condition: service_healthy
@@ -128,15 +134,21 @@
       users-service:
         condition: service_started
       store-service:
-        condition: service_started
+        condition: service_healthy
       catalog-service:
-        condition: service_started
+        condition: service_healthy
       inventory-service:
-        condition: service_started
+        condition: service_healthy
       customer-service:
-        condition: service_started
+        condition: service_healthy
       rabbitmq:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8003/health', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
   report-service:
@@ -162,13 +174,17 @@
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-pharmar.events}
       RABBITMQ_QUEUE: ${REPORT_RABBITMQ_QUEUE:-report.sale.events}
       RABBITMQ_ROUTING_KEYS: ${REPORT_RABBITMQ_ROUTING_KEYS:-sale.invoice.created,sale.invoice.cancelled,sale.return.approved}
-    ports:
-      - "8004:8004"
     depends_on:
       redis:
         condition: service_started
       rabbitmq:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8004/health', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
   store-service:
@@ -193,8 +209,6 @@
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
     volumes:
       - store_backups:/app/backups
-    ports:
-      - "8005:8005"
     depends_on:
       postgres:
         condition: service_healthy
@@ -202,6 +216,12 @@
         condition: service_completed_successfully
       redis:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8005/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
   catalog-service:
@@ -218,15 +238,19 @@
       INVENTORY_SERVICE_URL: http://inventory-service:8002
       SALE_SERVICE_URL: http://sale-service:8003
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
-    ports:
-      - "8006:8006"
     depends_on:
       postgres:
         condition: service_healthy
       db-bootstrap:
         condition: service_completed_successfully
       inventory-service:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8006/health', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
   customer-service:
@@ -245,15 +269,19 @@
       ENABLE_POINTS_EXPIRY_JOB: ${ENABLE_POINTS_EXPIRY_JOB:-true}
       POINTS_EXPIRY_JOB_INTERVAL_HOURS: ${POINTS_EXPIRY_JOB_INTERVAL_HOURS:-24}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
-    ports:
-      - "8007:8007"
     depends_on:
       postgres:
         condition: service_healthy
       db-bootstrap:
         condition: service_completed_successfully
       store-service:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8007/health', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
   file-service:
@@ -274,13 +302,17 @@
       R2_PUBLIC_DOMAIN: ${R2_PUBLIC_DOMAIN:-}
       MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-50}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
-    ports:
-      - "8009:8009"
     depends_on:
       postgres:
         condition: service_healthy
       db-bootstrap:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8009/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
   notification-service:
@@ -304,8 +336,6 @@
       ENABLE_EXPIRY_CHECK_JOB: ${ENABLE_EXPIRY_CHECK_JOB:-true}
       EXPIRY_CHECK_INTERVAL_HOURS: ${EXPIRY_CHECK_INTERVAL_HOURS:-24}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
-    ports:
-      - "8010:8010"
     depends_on:
       postgres:
         condition: service_healthy
@@ -314,7 +344,13 @@
       rabbitmq:
         condition: service_started
       inventory-service:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8010/health', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
   payment-qr-service:
@@ -330,8 +366,12 @@
       VIETQR_URL: ${VIETQR_URL:-https://api.vietqr.io/v2/generate}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-    ports:
-      - "${PAYMENT_QR_HOST_PORT:-18008}:8008"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8008/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
   frontend:
@@ -366,29 +406,32 @@
       AUTH_RATE_LIMIT_RPM: ${AUTH_RATE_LIMIT_RPM:-120}
       FILE_SERVICE_URL: http://file-service:8009
       NOTIFICATION_SERVICE_URL: http://notification-service:8010
+      REDIS_URL: redis://redis:6379/0
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
     ports:
       - "8000:8000"
     depends_on:
       users-service:
-        condition: service_started
+        condition: service_healthy
       sale-service:
-        condition: service_started
+        condition: service_healthy
       inventory-service:
-        condition: service_started
+        condition: service_healthy
       report-service:
-        condition: service_started
+        condition: service_healthy
       store-service:
-        condition: service_started
+        condition: service_healthy
       catalog-service:
-        condition: service_started
+        condition: service_healthy
       customer-service:
-        condition: service_started
+        condition: service_healthy
       payment-qr-service:
-        condition: service_started
+        condition: service_healthy
       file-service:
-        condition: service_started
+        condition: service_healthy
       notification-service:
+        condition: service_healthy
+      redis:
         condition: service_started
     restart: unless-stopped
 

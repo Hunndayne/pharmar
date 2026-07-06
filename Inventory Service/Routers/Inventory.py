@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import re
 from enum import Enum
 from datetime import date, datetime, time, timezone
@@ -40,6 +41,7 @@ from Source.schemas.inventory import (
 
 router = APIRouter(prefix="/api/v1/inventory", tags=["inventory"])
 runtime_state = SimpleNamespace()
+logger = logging.getLogger(__name__)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 optional_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 
@@ -907,8 +909,45 @@ async def save_runtime_state_safe() -> None:
         else:
             save_runtime_state()
     except Exception:
-        # Tránh chặn luồng nghiệp vụ nếu storage tạm thời gặp lỗi.
-        pass
+        # Storage tạm thời gặp lỗi: không chặn luồng nghiệp vụ, nhưng phải log đầy đủ
+        # và đánh dấu để retry — nếu không, mutation vừa áp dụng trong bộ nhớ sẽ biến mất
+        # âm thầm khi service restart mà không có dấu vết nào.
+        logger.exception("Failed to persist inventory runtime state; will retry in background")
+        runtime_state.save_failed = True
+        return
+    runtime_state.save_failed = False
+
+
+RUNTIME_STATE_SAVE_RETRY_INTERVAL_SECONDS = 30
+
+
+def get_state_persistence_status() -> str:
+    """Used by the /health endpoint to surface persistence health without changing
+    the top-level status field semantics the gateway relies on."""
+    return "failing" if getattr(runtime_state, "save_failed", False) else "ok"
+
+
+async def retry_failed_runtime_state_save() -> None:
+    """Background loop: if the last save attempt failed, periodically retry it so a
+    transient Postgres/file outage doesn't silently lose mutations forever.
+
+    save_runtime_state_safe() already catches and logs its own exceptions and never
+    raises, so this loop only needs to poll the dirty flag; the try/except here is
+    just defensive against unexpected errors in the loop itself.
+    """
+    while True:
+        try:
+            await asyncio.sleep(RUNTIME_STATE_SAVE_RETRY_INTERVAL_SECONDS)
+            if getattr(runtime_state, "save_failed", False):
+                logger.warning("Retrying previously failed inventory runtime state save")
+                # Giữ cùng lock với các handler mutate để bản snapshot retry không
+                # ghi đè (revert) một bản save mới hơn đang diễn ra song song.
+                async with runtime_state.lock:
+                    await save_runtime_state_safe()
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Unexpected error in inventory runtime state retry loop")
 
 
 def load_runtime_state() -> bool:
@@ -1891,12 +1930,14 @@ async def startup_event() -> None:
     runtime_state.redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     runtime_state.lock = asyncio.Lock()
     runtime_state.pg_pool = None
+    runtime_state.save_failed = False
     runtime_state.inventory_settings = {
         "data": normalize_inventory_settings(DEFAULT_INVENTORY_SETTINGS),
         "fetched_at": datetime.fromtimestamp(0, tz=timezone.utc),
     }
     await reload_runtime_state_from_storage()
     runtime_state.consumer_task = asyncio.create_task(consume_sale_events())
+    runtime_state.state_retry_task = asyncio.create_task(retry_failed_runtime_state_save())
 
 
 async def reload_runtime_state_from_storage() -> bool:
@@ -1914,7 +1955,8 @@ async def reload_runtime_state_from_storage() -> bool:
 async def shutdown_event() -> None:
     await save_runtime_state_safe()
     runtime_state.consumer_task.cancel()
-    await asyncio.gather(runtime_state.consumer_task, return_exceptions=True)
+    runtime_state.state_retry_task.cancel()
+    await asyncio.gather(runtime_state.consumer_task, runtime_state.state_retry_task, return_exceptions=True)
     await runtime_state.redis.aclose()
     if getattr(runtime_state, "pg_pool", None) is not None:
         await runtime_state.pg_pool.close()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from decimal import Decimal
 import re
@@ -168,10 +169,29 @@ async def _prepare_invoice_creation(
     await inventory_reserve(invoice_code, reserve_items, token)
 
     customer_snapshot: dict[str, Any] | None = None
+    tier_discount_percent = Decimal("0.00")
     if payload.customer_id is not None:
-        customer_snapshot = await fetch_customer_by_id(payload.customer_id, token)
+        # fetch_customer_by_id and fetch_customer_tier_discount_percent are independent
+        # read-only GET calls to the Customer service, so run them concurrently instead of
+        # paying for two sequential round trips. The tier percent is normally only needed
+        # later when subtotal_after_line_discount > 0 (computed further down from the items
+        # loop), but it's cheap/read-only so we fetch it unconditionally here to overlap it
+        # with the customer snapshot fetch; if it turns out unneeded, the result is simply
+        # unused below.
+        customer_snapshot, tier_result = await asyncio.gather(
+            fetch_customer_by_id(payload.customer_id, token),
+            fetch_customer_tier_discount_percent(payload.customer_id, token),
+            return_exceptions=True,
+        )
+        if isinstance(customer_snapshot, BaseException):
+            raise customer_snapshot
         if customer_snapshot is None:
+            # Customer not found: discard the tier fetch outcome (success or error) so the
+            # 404 semantics stay identical to the previous sequential implementation.
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+        if isinstance(tier_result, BaseException):
+            raise tier_result
+        tier_discount_percent = tier_result
 
     line_subtotal = Decimal("0.00")
     line_discount_total = Decimal("0.00")
@@ -214,7 +234,7 @@ async def _prepare_invoice_creation(
         subtotal_after_line_discount = Decimal("0.00")
 
     if payload.customer_id is not None and subtotal_after_line_discount > Decimal("0.00"):
-        tier_discount_percent = await fetch_customer_tier_discount_percent(payload.customer_id, token)
+        # tier_discount_percent was already fetched concurrently with the customer snapshot above.
         tier_discount = _normalize_decimal(subtotal_after_line_discount * tier_discount_percent / Decimal("100"))
         if tier_discount > subtotal_after_line_discount:
             tier_discount = subtotal_after_line_discount
@@ -445,8 +465,11 @@ async def process_checkout(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Cannot create invoice")
 
     if payload.customer_id and context.get("points_earned", 0) > 0:
-        try:
-            earn_result = await customer_internal_post(
+        # points/earn and stats/update are independent Customer-service calls (neither result
+        # feeds the other), and both are already fire-and-forget with exceptions swallowed
+        # individually, so run them concurrently and keep each one's error handling separate.
+        earn_result, stats_result = await asyncio.gather(
+            customer_internal_post(
                 "points/earn",
                 {
                     "customer_id": str(payload.customer_id),
@@ -456,22 +479,20 @@ async def process_checkout(
                     "reference_code": invoice.code,
                     "note": "Invoice checkout",
                 },
-            )
-            invoice.points_earned = int(earn_result.get("points_earned", context["points_earned"]) or 0)
-        except Exception:
-            pass
-
-        try:
-            await customer_internal_post(
+            ),
+            customer_internal_post(
                 "stats/update",
                 {
                     "customer_id": str(payload.customer_id),
                     "order_amount": float(invoice.total_amount),
                     "purchased_at": now_utc().isoformat(),
                 },
-            )
-        except Exception:
-            pass
+            ),
+            return_exceptions=True,
+        )
+        if not isinstance(earn_result, BaseException):
+            invoice.points_earned = int(earn_result.get("points_earned", context["points_earned"]) or 0)
+        # stats_result errors are intentionally ignored, same as before.
 
     if payload.promotion_code and context.get("promotion_validated"):
         try:
@@ -723,7 +744,7 @@ async def list_profit_source_invoices(
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     page: int = Query(default=1, ge=1),
-    size: int = Query(default=100, ge=1, le=200),
+    size: int = Query(default=100, ge=1, le=1000),
 ) -> PageResponse[ProfitSourceInvoiceResponse]:
     stmt = (
         select(Invoice)
@@ -737,7 +758,7 @@ async def list_profit_source_invoices(
     if range_end_at is not None:
         stmt = stmt.where(Invoice.created_at < range_end_at)
 
-    rows, meta = await paginate_scalars(db, stmt, page, size)
+    rows, meta = await paginate_scalars(db, stmt, page, size, max_size=1000)
     return PageResponse[ProfitSourceInvoiceResponse](
         items=[ProfitSourceInvoiceResponse.model_validate(item) for item in rows],
         total=meta.total,
@@ -956,8 +977,12 @@ async def cancel_invoice(
 @router.get("/invoices/{invoice_id}/print", response_model=InvoicePrintResponse)
 async def print_invoice_data(invoice_id: UUID, _: AnyUser, token: AccessToken, db: DbSession) -> InvoicePrintResponse:
     invoice = await _get_invoice_with_details(invoice_id, db)
-    store = await fetch_store_info(token)
-    sale_settings = await fetch_store_settings_group("sale", token)
+    # Store info and the "sale" settings group are independent, read-only Store-service calls;
+    # fetch them concurrently instead of two sequential round trips.
+    store, sale_settings = await asyncio.gather(
+        fetch_store_info(token),
+        fetch_store_settings_group("sale", token),
+    )
 
     payment_name = invoice.payment_method
     if invoice.payment_method == "mixed":
