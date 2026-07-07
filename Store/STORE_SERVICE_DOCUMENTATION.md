@@ -130,9 +130,9 @@ Neu dung token hop le nhung khong phai owner:
 | PUT | `/api/v1/store/info` | Owner |
 | POST | `/api/v1/store/info/logo` | Owner |
 | DELETE | `/api/v1/store/info/logo` | Owner |
-| GET | `/api/v1/store/settings` | Public |
-| GET | `/api/v1/store/settings/{key}` | Public |
-| GET | `/api/v1/store/settings/group/{group}` | Public |
+| GET | `/api/v1/store/settings` | Public (an `backup.sync_api_key` neu khong phai owner) |
+| GET | `/api/v1/store/settings/{key}` | Public (`backup.sync_api_key` chi owner) |
+| GET | `/api/v1/store/settings/group/{group}` | Public (an `backup.sync_api_key` neu khong phai owner) |
 | PUT | `/api/v1/store/settings/{key}` | Owner |
 | PUT | `/api/v1/store/settings` | Owner |
 | POST | `/api/v1/store/settings/reset` | Owner |

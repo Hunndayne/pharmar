@@ -58,9 +58,12 @@ func (h *Handler) routes() http.Handler {
 		r.With(auth.OwnerOnly(h.cfg)).Post("/info/logo", h.uploadLogo)
 		r.With(auth.OwnerOnly(h.cfg)).Delete("/info/logo", h.deleteLogo)
 
-		r.With(auth.Authenticated(h.cfg)).Get("/settings", h.getAllSettings)
-		r.With(auth.Authenticated(h.cfg)).Get("/settings/group/{group}", h.getSettingsByGroup)
-		r.With(auth.Authenticated(h.cfg)).Get("/settings/{key}", h.getSetting)
+		// Settings reads stay public: Sale/Inventory/Customer fetch them
+		// service-to-service with no user token. The sensitive value
+		// (backup.sync_api_key) is redacted for non-owners in the handlers.
+		r.Get("/settings", h.getAllSettings)
+		r.Get("/settings/group/{group}", h.getSettingsByGroup)
+		r.Get("/settings/{key}", h.getSetting)
 		r.With(auth.OwnerOnly(h.cfg)).Put("/settings/{key}", h.updateSetting)
 		r.With(auth.OwnerOnly(h.cfg)).Put("/settings", h.updateSettingsBulk)
 		r.With(auth.OwnerOnly(h.cfg)).Post("/settings/reset", h.resetAllSettings)
@@ -206,10 +209,12 @@ func (h *Handler) deleteLogo(w http.ResponseWriter, r *http.Request) {
 // download the full DB backup via GET /backup/latest/download.
 const syncAPIKeySettingKey = "backup.sync_api_key"
 
-// isOwnerRequest reports whether the authenticated request's role is "owner".
-func isOwnerRequest(r *http.Request) bool {
-	claims, ok := auth.ClaimsFromContext(r.Context())
-	if !ok {
+// isOwnerRequest reports whether the caller presented a valid owner token.
+// The settings GET routes have no auth middleware (service-to-service reads
+// carry no token), so the optional bearer token is parsed here directly.
+func (h *Handler) isOwnerRequest(r *http.Request) bool {
+	claims, err := auth.ParseBearerToken(r.Header.Get("Authorization"), h.cfg)
+	if err != nil {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(claims.Role), "owner")
@@ -222,7 +227,7 @@ func (h *Handler) getAllSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !isOwnerRequest(r) {
+	if !h.isOwnerRequest(r) {
 		delete(settings, syncAPIKeySettingKey)
 	}
 
@@ -236,7 +241,7 @@ func (h *Handler) getSetting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if key == syncAPIKeySettingKey && !isOwnerRequest(r) {
+	if key == syncAPIKeySettingKey && !h.isOwnerRequest(r) {
 		writeError(w, http.StatusForbidden, "Only owner is allowed")
 		return
 	}
@@ -258,7 +263,7 @@ func (h *Handler) getSettingsByGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !isOwnerRequest(r) {
+	if !h.isOwnerRequest(r) {
 		delete(settings, syncAPIKeySettingKey)
 	}
 
