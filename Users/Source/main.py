@@ -12,6 +12,7 @@ from Routers.Users import router as users_router
 
 from .Auth import ensure_default_owner
 from .core.config import get_settings
+from .core.login_guard import close_redis_client
 from .db import models  # noqa: F401
 from .db.base import Base
 from .db.session import SessionLocal, engine
@@ -34,6 +35,7 @@ async def lifespan(_: FastAPI):
         await ensure_default_owner(session)
 
     yield
+    await close_redis_client()
     await engine.dispose()
 
 

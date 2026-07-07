@@ -2,6 +2,20 @@
 
 ---
 
+## V1.10 — 2026-07-07
+
+### Cải thiện
+- **Bảo mật — Gateway chặn endpoint nội bộ**: client ngoài không còn gọi được `/api/v1/*/internal/*` (trả 404, chặn cả biến thể dot-segment `x/../internal/…`); header `X-Internal-API-Key` bị strip khỏi mọi request đi qua gateway
+- **Bảo mật — chống giả mạo IP**: gateway chỉ tin header IP client khi request đến từ proxy trong `TRUSTED_PROXY_IPS` (mặc định không tin ai) — hết bypass rate limit bằng header giả; ưu tiên `CF-Connecting-IP` khi chạy sau Cloudflare Tunnel (phần tử đầu của `X-Forwarded-For` vẫn giả được dù đi qua Cloudflare); thêm rate limit riêng `PUBLIC_RATE_LIMIT_RPM` (30 req/phút) cho các endpoint `public/*` chống dò quét số điện thoại qua tra cứu hóa đơn công khai
+- **Bảo mật — Store service**: 3 endpoint đọc settings giờ yêu cầu đăng nhập và ẩn `backup.sync_api_key` với người không phải chủ cửa hàng — vá chuỗi tấn công đọc key công khai rồi tải toàn bộ backup database qua `/backup/latest/download`; `/expenses/summary` (dữ liệu chi phí) chỉ còn owner xem được
+- **Bảo mật — chống brute-force theo tài khoản**: đăng nhập sai 5 lần cùng một username → khóa 15 phút (trả 429, không tiết lộ username có tồn tại), lưu Redis và fail-open khi Redis lỗi; bổ sung cho rate limit theo IP sẵn có
+- **Bảo mật — docker-compose từ chối chạy với secret mặc định**: mọi secret (`JWT_SECRET_KEY`, `POSTGRES_PASSWORD`, `CUSTOMER_INTERNAL_API_KEY`, RabbitMQ) chuyển sang cú pháp bắt buộc `:?` — thiếu là compose báo lỗi ngay thay vì chạy ngầm với `change-this-secret`/`postgres`/`guest`; Postgres chỉ còn bind `127.0.0.1`; RabbitMQ dùng credentials riêng (đã sinh tự động vào `.env`)
+
+### Khác
+- Gỡ `Users/.env` khỏi git (chỉ chứa giá trị dev mặc định, không có secret thật); xóa 4 file rác `*.go.<số>` bị track trong `Store/`
+
+---
+
 ## V1.9 — 2026-07-07
 
 ### Cải thiện

@@ -58,9 +58,9 @@ func (h *Handler) routes() http.Handler {
 		r.With(auth.OwnerOnly(h.cfg)).Post("/info/logo", h.uploadLogo)
 		r.With(auth.OwnerOnly(h.cfg)).Delete("/info/logo", h.deleteLogo)
 
-		r.Get("/settings", h.getAllSettings)
-		r.Get("/settings/group/{group}", h.getSettingsByGroup)
-		r.Get("/settings/{key}", h.getSetting)
+		r.With(auth.Authenticated(h.cfg)).Get("/settings", h.getAllSettings)
+		r.With(auth.Authenticated(h.cfg)).Get("/settings/group/{group}", h.getSettingsByGroup)
+		r.With(auth.Authenticated(h.cfg)).Get("/settings/{key}", h.getSetting)
 		r.With(auth.OwnerOnly(h.cfg)).Put("/settings/{key}", h.updateSetting)
 		r.With(auth.OwnerOnly(h.cfg)).Put("/settings", h.updateSettingsBulk)
 		r.With(auth.OwnerOnly(h.cfg)).Post("/settings/reset", h.resetAllSettings)
@@ -75,7 +75,7 @@ func (h *Handler) routes() http.Handler {
 		r.With(auth.OwnerOnly(h.cfg)).Put("/drug-groups/{groupID}", h.updateDrugGroup)
 		r.With(auth.OwnerOnly(h.cfg)).Delete("/drug-groups/{groupID}", h.deleteDrugGroup)
 
-		r.Get("/expenses/summary", h.expenseSummary)
+		r.With(auth.OwnerOnly(h.cfg)).Get("/expenses/summary", h.expenseSummary)
 		r.With(auth.OwnerOnly(h.cfg)).Get("/expenses", h.listExpenses)
 		r.With(auth.OwnerOnly(h.cfg)).Get("/expenses/{expenseID}", h.getExpense)
 		r.With(auth.OwnerOnly(h.cfg)).Post("/expenses", h.createExpense)
@@ -201,11 +201,29 @@ func (h *Handler) deleteLogo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// syncAPIKeySettingKey is the settings key holding the backup sync API key.
+// It must never be exposed to non-owner callers: possessing it is enough to
+// download the full DB backup via GET /backup/latest/download.
+const syncAPIKeySettingKey = "backup.sync_api_key"
+
+// isOwnerRequest reports whether the authenticated request's role is "owner".
+func isOwnerRequest(r *http.Request) bool {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(claims.Role), "owner")
+}
+
 func (h *Handler) getAllSettings(w http.ResponseWriter, r *http.Request) {
 	settings, err := h.svc.GetAllSettings(r.Context())
 	if err != nil {
 		h.handleServiceError(w, err)
 		return
+	}
+
+	if !isOwnerRequest(r) {
+		delete(settings, syncAPIKeySettingKey)
 	}
 
 	writeJSON(w, http.StatusOK, settings)
@@ -215,6 +233,11 @@ func (h *Handler) getSetting(w http.ResponseWriter, r *http.Request) {
 	key := chi.URLParam(r, "key")
 	if strings.TrimSpace(key) == "" {
 		writeError(w, http.StatusBadRequest, "setting key is required")
+		return
+	}
+
+	if key == syncAPIKeySettingKey && !isOwnerRequest(r) {
+		writeError(w, http.StatusForbidden, "Only owner is allowed")
 		return
 	}
 
@@ -233,6 +256,10 @@ func (h *Handler) getSettingsByGroup(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.handleServiceError(w, err)
 		return
+	}
+
+	if !isOwnerRequest(r) {
+		delete(settings, syncAPIKeySettingKey)
 	}
 
 	writeJSON(w, http.StatusOK, settings)

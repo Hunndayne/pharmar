@@ -35,6 +35,10 @@ class Settings(BaseSettings):
 
     CORS_ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
+    REDIS_URL: str = "redis://redis:6379/2"
+    LOGIN_MAX_FAILED_ATTEMPTS: int = 5
+    LOGIN_LOCKOUT_MINUTES: int = 15
+
     def validate_secrets(self) -> None:
         """Raise RuntimeError in production if weak/default secrets are detected."""
         import logging

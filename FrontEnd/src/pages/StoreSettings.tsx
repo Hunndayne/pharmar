@@ -399,17 +399,19 @@ export function StoreSettings() {
   )
 
   const loadStoreData = useCallback(async () => {
+    if (!token?.access_token) return
     setStoreLoading(true)
     setStoreError(null)
 
     try {
+      const accessToken = token.access_token
       const [info, saleSettings, inventorySettings, systemSettings, autoPrintSetting] =
         await Promise.all([
           storeApi.getInfo(),
-          storeApi.getSettingsByGroup('sale'),
-          storeApi.getSettingsByGroup('inventory'),
-          storeApi.getSettingsByGroup('system'),
-          storeApi.getSetting('sale.auto_print'),
+          storeApi.getSettingsByGroup(accessToken, 'sale'),
+          storeApi.getSettingsByGroup(accessToken, 'inventory'),
+          storeApi.getSettingsByGroup(accessToken, 'system'),
+          storeApi.getSetting(accessToken, 'sale.auto_print'),
         ])
 
       const mergedSettings = {
@@ -430,7 +432,7 @@ export function StoreSettings() {
     } finally {
       setStoreLoading(false)
     }
-  }, [])
+  }, [token?.access_token])
 
   useEffect(() => {
     void loadStoreData()
@@ -460,8 +462,9 @@ export function StoreSettings() {
   }, [token?.access_token, canManageStore])
 
   const loadBackupSettings = useCallback(async () => {
+    if (!token?.access_token || !canManageStore) return
     try {
-      const bs = await storeApi.getSettingsByGroup('backup')
+      const bs = await storeApi.getSettingsByGroup(token.access_token, 'backup')
       setBkAutoEnabled(asBoolean(bs['backup.auto_enabled'], false))
       setBkAutoInterval(asNumberString(bs['backup.auto_interval_hours'], 24))
       setBkMaxFiles(asNumberString(bs['backup.max_files'], 10))
@@ -471,7 +474,7 @@ export function StoreSettings() {
     } catch {
       // silent
     }
-  }, [])
+  }, [token?.access_token, canManageStore])
 
   useEffect(() => {
     void loadBackups()
@@ -1046,7 +1049,7 @@ export function StoreSettings() {
         }),
       ])
 
-      const autoPrintSetting = await storeApi.getSetting('sale.auto_print')
+      const autoPrintSetting = await storeApi.getSetting(token.access_token, 'sale.auto_print')
       setAutoPrintUpdatedAt(autoPrintSetting.updated_at)
       persistAppTimeZone(normalizedTimeZone)
       setStoreSettingsForm((prev) => ({ ...prev, timezone: normalizedTimeZone }))
@@ -1071,7 +1074,7 @@ export function StoreSettings() {
       const nextValue = asBoolean(response.value, true)
       setStoreSettingsForm((prev) => ({ ...prev, autoPrint: nextValue }))
 
-      const autoPrintSetting = await storeApi.getSetting('sale.auto_print')
+      const autoPrintSetting = await storeApi.getSetting(token.access_token, 'sale.auto_print')
       setAutoPrintUpdatedAt(autoPrintSetting.updated_at)
       setSettingsMessage('Đã reset tự động in hóa đơn về mặc định.')
     } catch (resetError) {

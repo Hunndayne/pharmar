@@ -115,7 +115,7 @@ export function Inventory() {
     try {
       const [stockPage, inventorySettings] = await Promise.all([
         inventoryApi.listStockDrugsPaged({ page, size: pageSize, search: debouncedSearch || undefined, exp_from: expFrom || undefined, exp_to: expTo || undefined, quick_filter: quickFilter }),
-        storeApi.getSettingsByGroup('inventory').catch(() => ({} as Record<string, unknown>)),
+        storeApi.getSettingsByGroup(accessToken, 'inventory').catch(() => ({} as Record<string, unknown>)),
       ])
       setStockItems(stockPage.items)
       setStockSummary(stockPage.summary)
@@ -130,7 +130,7 @@ export function Inventory() {
     } finally {
       setLoading(false)
     }
-  }, [debouncedSearch, expFrom, expTo, page, pageSize, quickFilter])
+  }, [accessToken, debouncedSearch, expFrom, expTo, page, pageSize, quickFilter])
 
   useEffect(() => { void loadInventory() }, [loadInventory])
 

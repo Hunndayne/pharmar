@@ -104,6 +104,8 @@ Response:
 }
 ```
 
+Neu tai khoan dang sai qua nhieu lan (mac dinh 5 lan / 15 phut), API tra ve `429 Too Many Requests` voi thong bao khoa tam thoi, khong phan biet username co ton tai hay khong.
+
 `POST /auth/refresh`
 
 Body:

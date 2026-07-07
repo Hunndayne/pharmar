@@ -1,7 +1,9 @@
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import json
+import posixpath
 import logging
 import secrets
 import time
@@ -47,6 +49,14 @@ class Settings(BaseSettings):
     RATE_LIMIT_RPM: int = 1200
     # Rate limiting for auth endpoints (stricter)
     AUTH_RATE_LIMIT_RPM: int = 120
+    # Rate limiting for unauthenticated public lookup endpoints (stricter still —
+    # these are enumerable by phone/code and have no auth to slow down attackers).
+    PUBLIC_RATE_LIMIT_RPM: int = 30
+
+    # IPs/CIDR networks allowed to set X-Forwarded-For (e.g. the reverse proxy
+    # in front of this gateway). Empty by default so XFF is never trusted from
+    # an arbitrary client — fail secure against rate-limit bypass via spoofing.
+    TRUSTED_PROXY_IPS: list[str] = []
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -56,6 +66,16 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Parsed once at import time so we don't re-parse CIDR strings on every request.
+# Invalid entries are logged and skipped rather than crashing startup.
+_TRUSTED_PROXY_NETWORKS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+for _entry in settings.TRUSTED_PROXY_IPS:
+    try:
+        _TRUSTED_PROXY_NETWORKS.append(ipaddress.ip_network(_entry, strict=False))
+    except ValueError as _exc:
+        logger.warning("Ignoring invalid TRUSTED_PROXY_IPS entry %r: %s", _entry, _exc)
+
 app = FastAPI(title=settings.APP_NAME, version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -185,10 +205,33 @@ async def _check_rate_limit(key: str, rpm: int) -> bool:
 
 
 def _get_client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    direct_host = request.client.host if request.client else None
+
+    # Only honor X-Forwarded-For when the immediate peer is a trusted proxy
+    # (e.g. nginx/docker in front of this gateway) — otherwise any client can
+    # spoof the header to bypass rate limiting.
+    is_trusted_proxy = False
+    if direct_host and _TRUSTED_PROXY_NETWORKS:
+        try:
+            direct_ip = ipaddress.ip_address(direct_host)
+            is_trusted_proxy = any(direct_ip in network for network in _TRUSTED_PROXY_NETWORKS)
+        except ValueError:
+            is_trusted_proxy = False
+
+    if is_trusted_proxy:
+        # Behind Cloudflare (Tunnel/proxy) the verified client IP lives in
+        # CF-Connecting-IP. X-Forwarded-For is NOT safe there: Cloudflare only
+        # appends the real IP at the END, so the first entry remains whatever
+        # the client sent. Prefer the CF header, fall back to XFF for plain
+        # nginx setups.
+        cf_ip = request.headers.get("cf-connecting-ip", "").strip()
+        if cf_ip:
+            return cf_ip
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+
+    return direct_host or "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -415,11 +458,32 @@ async def proxy(service: str, request: Request, resource_path: str = "") -> Resp
     client_ip = _get_client_ip(request)
 
     # ------------------------------------------------------------------
-    # Rate limiting — stricter for auth endpoints
+    # Internal endpoints are service-to-service only (guarded upstream by
+    # X-Internal-API-Key). The gateway must never let external clients reach
+    # them — 404 rather than 403 so we don't even confirm they exist.
+    # ------------------------------------------------------------------
+    # Dot-segments must be collapsed BEFORE the check ("x/../internal/y" would
+    # otherwise pass it, then httpx collapses them the same way when building
+    # the upstream URL and the request lands on the internal endpoint anyway).
+    normalized_resource = posixpath.normpath("/" + resource_path).lstrip("/")
+    first_segment = normalized_resource.split("/", 1)[0]
+    if first_segment.lower() == "internal":
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # ------------------------------------------------------------------
+    # Rate limiting — stricter for auth endpoints and public lookup endpoints
     # ------------------------------------------------------------------
     is_auth_endpoint = service in {"auth", "users"} and resource_path.startswith("login")
-    rpm_limit = settings.AUTH_RATE_LIMIT_RPM if is_auth_endpoint else settings.RATE_LIMIT_RPM
-    scope = "auth" if is_auth_endpoint else "api"
+    is_public_endpoint = normalized_resource.startswith("public/")
+    if is_auth_endpoint:
+        rpm_limit = settings.AUTH_RATE_LIMIT_RPM
+        scope = "auth"
+    elif is_public_endpoint:
+        rpm_limit = settings.PUBLIC_RATE_LIMIT_RPM
+        scope = "public"
+    else:
+        rpm_limit = settings.RATE_LIMIT_RPM
+        scope = "api"
     if not await _check_rate_limit(f"{client_ip}:{service}:{scope}", rpm_limit):
         raise HTTPException(status_code=429, detail="Too many requests. Please slow down.")
 
@@ -451,10 +515,15 @@ async def proxy(service: str, request: Request, resource_path: str = "") -> Resp
     base_path = f"{target_service_url.rstrip('/')}/api/v1/{service}"
     target_url = f"{base_path}/{resource_path}" if resource_path else base_path
 
+    # x-internal-api-key guards service-to-service internal endpoints; services
+    # call each other directly (not through this gateway), so external clients
+    # must never be able to smuggle this header upstream. x-sync-api-key is
+    # intentionally NOT stripped — Store backup sync legitimately goes
+    # gateway-to-gateway with that header.
     filtered_headers: dict[str, Any] = {
         key: value
         for key, value in request.headers.items()
-        if key.lower() not in {"host", "content-length"}
+        if key.lower() not in {"host", "content-length", "x-internal-api-key"}
     }
 
     # Forward correlation ID to upstream services.

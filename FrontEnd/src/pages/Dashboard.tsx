@@ -159,9 +159,9 @@ export function Dashboard() {
   const [restockData, setRestockData] = useState<RestockHighlightResponse | null>(null)
   const [aiInsights, setAiInsights] = useState<DashboardAiInsightsResponse | null>(null)
 
-  const resolveDashboardTimeZone = useCallback(async () => {
+  const resolveDashboardTimeZone = useCallback(async (accessToken: string) => {
     try {
-      const setting = await storeApi.getSetting('system.timezone')
+      const setting = await storeApi.getSetting(accessToken, 'system.timezone')
       return persistAppTimeZone(typeof setting.value === 'string' ? setting.value : '')
     } catch {
       return normalizeTimeZone(readStoredAppTimeZone())
@@ -259,7 +259,7 @@ export function Dashboard() {
     setAiError(null)
 
     try {
-      const timeZone = await resolveDashboardTimeZone()
+      const timeZone = await resolveDashboardTimeZone(accessToken)
       const response = await reportApi.refreshDashboardAiInsights(accessToken)
       setAiInsights(response)
       setUpdatedAt(formatDateTimeInTimeZone(new Date(), timeZone))
@@ -296,7 +296,7 @@ export function Dashboard() {
     setAiError(null)
 
     try {
-      const timeZone = await resolveDashboardTimeZone()
+      const timeZone = await resolveDashboardTimeZone(accessToken)
       const [coreResult, restockResult, aiResult] = await Promise.allSettled([
         loadDashboardCore(accessToken, timeZone),
         loadRestockHighlights(accessToken),

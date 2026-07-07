@@ -209,15 +209,22 @@ export const storeApi = {
       token,
     ),
 
-  getAllSettings: () => requestStoreJson<StoreSettingsMap>('/settings', { method: 'GET' }),
+  getAllSettings: (token: string) =>
+    requestStoreJson<StoreSettingsMap>('/settings', { method: 'GET' }, token),
 
-  getSettingsByGroup: (group: string) =>
-    requestStoreJson<StoreSettingsMap>(`/settings/group/${encodeURIComponent(group)}`, {
-      method: 'GET',
-    }),
+  getSettingsByGroup: (token: string, group: string) =>
+    requestStoreJson<StoreSettingsMap>(
+      `/settings/group/${encodeURIComponent(group)}`,
+      { method: 'GET' },
+      token,
+    ),
 
-  getSetting: (key: string) =>
-    requestStoreJson<StoreSettingItem>(`/settings/${encodeURIComponent(key)}`, { method: 'GET' }),
+  getSetting: (token: string, key: string) =>
+    requestStoreJson<StoreSettingItem>(
+      `/settings/${encodeURIComponent(key)}`,
+      { method: 'GET' },
+      token,
+    ),
 
   updateSetting: (token: string, key: string, value: unknown) =>
     requestStoreJson<{ message: string; key: string; value: unknown }>(

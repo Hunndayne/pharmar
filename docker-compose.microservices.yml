@@ -5,9 +5,9 @@
     environment:
       POSTGRES_DB: pharmar_auth
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing - set in .env}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./Database/init/01-create-databases.sql:/docker-entrypoint-initdb.d/00-create-databases.sql:ro
@@ -22,7 +22,7 @@
     image: postgres:16-alpine
     container_name: pharmar-db-bootstrap
     environment:
-      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing - set in .env}
     command: >
       sh -c "psql -h postgres -U postgres -d postgres -f /scripts/01-create-databases.sql"
     volumes:
@@ -40,8 +40,8 @@
     image: rabbitmq:3.13-management-alpine
     container_name: pharmar-rabbitmq
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?RABBITMQ_USER missing - set in .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD missing - set in .env}
     restart: unless-stopped
 
   users-service:
@@ -51,17 +51,20 @@
     container_name: pharmar-users-service
     environment:
       APP_ENV: ${APP_ENV:-development}
-      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_auth
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing - set in .env}@postgres:5432/pharmar_auth
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY missing - copy .env.example to .env and set a strong secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
       REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      REDIS_URL: redis://redis:6379/2
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
     depends_on:
       postgres:
         condition: service_healthy
       db-bootstrap:
         condition: service_completed_successfully
+      redis:
+        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health', timeout=3).status==200 else 1)"]
       interval: 10s
@@ -78,8 +81,8 @@
     environment:
       APP_ENV: ${APP_ENV:-development}
       REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_inventory
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing - set in .env}@postgres:5432/pharmar_inventory
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY missing - copy .env.example to .env and set a strong secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       STATE_PERSISTENCE: postgres
       STATE_FILE_PATH: /data/runtime_state.json
@@ -110,20 +113,20 @@
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8003
-      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_sale
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing - set in .env}@postgres:5432/pharmar_sale
       STORE_SERVICE_URL: http://store-service:8005
       CATALOG_SERVICE_URL: http://catalog-service:8006
       INVENTORY_SERVICE_URL: http://inventory-service:8002
       CUSTOMER_SERVICE_URL: http://customer-service:8007
-      CUSTOMER_INTERNAL_API_KEY: ${CUSTOMER_INTERNAL_API_KEY:-change-this-internal-key}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      CUSTOMER_INTERNAL_API_KEY: ${CUSTOMER_INTERNAL_API_KEY:?CUSTOMER_INTERNAL_API_KEY missing - set in .env}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY missing - copy .env.example to .env and set a strong secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       HELD_ORDER_EXPIRE_MINUTES: ${HELD_ORDER_EXPIRE_MINUTES:-30}
       ENABLE_HELD_ORDER_CLEANUP_JOB: ${ENABLE_HELD_ORDER_CLEANUP_JOB:-true}
       REQUIRE_SHIFT_FOR_SALE: ${REQUIRE_SHIFT_FOR_SALE:-false}
       DEFAULT_COMMISSION_RATE: ${DEFAULT_COMMISSION_RATE:-1.5}
       RABBITMQ_ENABLED: ${RABBITMQ_ENABLED:-true}
-      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://${RABBITMQ_USER:?RABBITMQ_USER missing - set in .env}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD missing - set in .env}@rabbitmq:5672/}
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-pharmar.events}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
     depends_on:
@@ -162,7 +165,7 @@
       INVENTORY_SERVICE_URL: http://inventory-service:8002
       STORE_SERVICE_URL: http://store-service:8005
       REPORT_CACHE_TTL_SECONDS: ${REPORT_CACHE_TTL_SECONDS:-120}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY missing - copy .env.example to .env and set a strong secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       INTERNAL_SERVICE_TOKEN_EXPIRE_MINUTES: ${INTERNAL_SERVICE_TOKEN_EXPIRE_MINUTES:-30}
       AI_DASHBOARD_INSIGHTS_ENABLED: ${AI_DASHBOARD_INSIGHTS_ENABLED:-false}
@@ -170,7 +173,7 @@
       AI_WORKER_API_KEY: ${AI_WORKER_API_KEY:-}
       AI_WORKER_TIMEOUT_SECONDS: ${AI_WORKER_TIMEOUT_SECONDS:-45}
       RABBITMQ_ENABLED: ${RABBITMQ_ENABLED:-true}
-      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://${RABBITMQ_USER:?RABBITMQ_USER missing - set in .env}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD missing - set in .env}@rabbitmq:5672/}
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-pharmar.events}
       RABBITMQ_QUEUE: ${REPORT_RABBITMQ_QUEUE:-report.sale.events}
       RABBITMQ_ROUTING_KEYS: ${REPORT_RABBITMQ_ROUTING_KEYS:-sale.invoice.created,sale.invoice.cancelled,sale.return.approved}
@@ -195,13 +198,13 @@
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8005
-      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_store?sslmode=disable
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing - set in .env}@postgres:5432/pharmar_store?sslmode=disable
       REDIS_URL: redis://redis:6379/0
       FILE_SERVICE_URL: http://file-service:8009
       INVENTORY_SERVICE_URL: http://inventory-service:8002
       INTERNAL_SERVICE_TOKEN_EXPIRE_MINUTES: ${INTERNAL_SERVICE_TOKEN_EXPIRE_MINUTES:-30}
       SETTINGS_CACHE_TTL_SECONDS: 300
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY missing - copy .env.example to .env and set a strong secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       LOGO_UPLOAD_DIR: /app/uploads
       BACKUP_DIR: /app/backups
@@ -232,8 +235,8 @@
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8006
-      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_catalog
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing - set in .env}@postgres:5432/pharmar_catalog
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY missing - copy .env.example to .env and set a strong secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       INVENTORY_SERVICE_URL: http://inventory-service:8002
       SALE_SERVICE_URL: http://sale-service:8003
@@ -261,10 +264,10 @@
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8007
-      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_customer
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing - set in .env}@postgres:5432/pharmar_customer
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY missing - copy .env.example to .env and set a strong secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      INTERNAL_API_KEY: ${CUSTOMER_INTERNAL_API_KEY:-change-this-internal-key}
+      INTERNAL_API_KEY: ${CUSTOMER_INTERNAL_API_KEY:?CUSTOMER_INTERNAL_API_KEY missing - set in .env}
       STORE_SERVICE_URL: http://store-service:8005
       ENABLE_POINTS_EXPIRY_JOB: ${ENABLE_POINTS_EXPIRY_JOB:-true}
       POINTS_EXPIRY_JOB_INTERVAL_HOURS: ${POINTS_EXPIRY_JOB_INTERVAL_HOURS:-24}
@@ -292,8 +295,8 @@
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8009
-      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_store?sslmode=disable
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing - set in .env}@postgres:5432/pharmar_store?sslmode=disable
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY missing - copy .env.example to .env and set a strong secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
       R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
@@ -323,12 +326,12 @@
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8010
-      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/pharmar_notification
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing - set in .env}@postgres:5432/pharmar_notification
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY missing - copy .env.example to .env and set a strong secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      INTERNAL_API_KEY: ${NOTIFICATION_INTERNAL_API_KEY:-${CUSTOMER_INTERNAL_API_KEY:-change-this-internal-key}}
+      INTERNAL_API_KEY: ${NOTIFICATION_INTERNAL_API_KEY:-${CUSTOMER_INTERNAL_API_KEY:?CUSTOMER_INTERNAL_API_KEY missing - set in .env}}
       RABBITMQ_ENABLED: ${RABBITMQ_ENABLED:-true}
-      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://${RABBITMQ_USER:?RABBITMQ_USER missing - set in .env}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD missing - set in .env}@rabbitmq:5672/}
       RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-pharmar.events}
       RABBITMQ_QUEUE: ${NOTIFICATION_RABBITMQ_QUEUE:-notification.events}
       RABBITMQ_ROUTING_KEYS: ${NOTIFICATION_RABBITMQ_ROUTING_KEYS:-sale.invoice.created,sale.invoice.cancelled,sale.return.approved,inventory.low_stock}
@@ -364,7 +367,7 @@
       APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8008
       VIETQR_URL: ${VIETQR_URL:-https://api.vietqr.io/v2/generate}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-secret}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY missing - copy .env.example to .env and set a strong secret}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8008/health"]
@@ -407,6 +410,8 @@
       FILE_SERVICE_URL: http://file-service:8009
       NOTIFICATION_SERVICE_URL: http://notification-service:8010
       REDIS_URL: redis://redis:6379/0
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-[]}
+      PUBLIC_RATE_LIMIT_RPM: ${PUBLIC_RATE_LIMIT_RPM:-30}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
     ports:
       - "8000:8000"

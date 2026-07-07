@@ -962,11 +962,12 @@ export function Pos() {
     setLoadError(null)
 
     try {
+      const accessToken = token?.access_token ?? ''
       const [posCatalog, inventorySettings, saleSettings, customerSettings, store] = await Promise.all([
         inventoryApi.getPosCatalog(token?.access_token),
-        storeApi.getSettingsByGroup('inventory'),
-        storeApi.getSettingsByGroup('sale'),
-        storeApi.getSettingsByGroup('customer').catch(() => ({})),
+        storeApi.getSettingsByGroup(accessToken, 'inventory'),
+        storeApi.getSettingsByGroup(accessToken, 'sale'),
+        storeApi.getSettingsByGroup(accessToken, 'customer').catch(() => ({})),
         storeApi.getInfo().catch(() => null),
       ])
 

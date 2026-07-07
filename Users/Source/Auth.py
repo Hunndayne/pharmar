@@ -1,3 +1,4 @@
+import math
 from datetime import datetime, timezone
 from hashlib import sha256
 
@@ -6,6 +7,7 @@ from sqlalchemy import Select, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .core.config import get_settings
+from .core.login_guard import clear_failures, is_locked, record_failure
 from .core.security import (
     create_access_token,
     create_refresh_token,
@@ -31,6 +33,16 @@ def build_invalid_credentials_exception() -> HTTPException:
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid credentials",
         headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def build_account_locked_exception(remaining_seconds: int) -> HTTPException:
+    # Same detail regardless of whether the username exists, so the lockout
+    # response never reveals account existence.
+    remaining_minutes = math.ceil(remaining_seconds / 60)
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=f"Tài khoản tạm khóa do đăng nhập sai nhiều lần. Thử lại sau {remaining_minutes} phút.",
     )
 
 
@@ -165,8 +177,13 @@ async def login_user_with_metadata(
     ip_address: str | None,
     user_agent: str | None,
 ) -> tuple[User, str, str]:
+    remaining_lock_seconds = await is_locked(payload.username)
+    if remaining_lock_seconds is not None:
+        raise build_account_locked_exception(remaining_lock_seconds)
+
     user = await _get_user_by_username(payload.username, db)
     if user is None or not verify_password(payload.password, user.hashed_password):
+        await record_failure(payload.username)
         await _record_login_history(
             db=db,
             user_id=None,
@@ -192,6 +209,8 @@ async def login_user_with_metadata(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User is locked",
         )
+
+    await clear_failures(user.username)
 
     user.last_login_at = datetime.now(timezone.utc)
     access_token, refresh_token = _token_pair_for_user(user)
