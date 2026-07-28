@@ -74,16 +74,17 @@ type DrugCategory struct {
 }
 
 type DrugGroup struct {
-	ID           string    `json:"id"`
-	CategoryID   string    `json:"category_id"`
-	Name         string    `json:"name"`
-	Description  *string   `json:"description"`
-	VatRate      float64   `json:"vat_rate"`
-	OtherTaxRate float64   `json:"other_tax_rate"`
-	IsActive     bool      `json:"is_active"`
-	SortOrder    int       `json:"sort_order"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID             string    `json:"id"`
+	CategoryID     string    `json:"category_id"`
+	Name           string    `json:"name"`
+	Description    *string   `json:"description"`
+	VatRate        float64   `json:"vat_rate"`
+	OtherTaxRate   float64   `json:"other_tax_rate"`
+	IsActive       bool      `json:"is_active"`
+	SortOrder      int       `json:"sort_order"`
+	CatalogGroupID *string   `json:"catalog_group_id"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type DrugCategoryWithGroups struct {
@@ -106,23 +107,28 @@ type UpdateDrugCategoryRequest struct {
 }
 
 type CreateDrugGroupRequest struct {
-	CategoryID   string   `json:"category_id"`
-	Name         string   `json:"name"`
-	Description  *string  `json:"description"`
-	VatRate      *float64 `json:"vat_rate"`
-	OtherTaxRate *float64 `json:"other_tax_rate"`
-	IsActive     *bool    `json:"is_active"`
-	SortOrder    *int     `json:"sort_order"`
+	CategoryID     string   `json:"category_id"`
+	Name           string   `json:"name"`
+	Description    *string  `json:"description"`
+	VatRate        *float64 `json:"vat_rate"`
+	OtherTaxRate   *float64 `json:"other_tax_rate"`
+	IsActive       *bool    `json:"is_active"`
+	SortOrder      *int     `json:"sort_order"`
+	CatalogGroupID *string  `json:"catalog_group_id"`
 }
 
+// UpdateDrugGroupRequest.CatalogGroupID follows the same optional-field convention as
+// UpdateStoreInfoRequest (see mergeOptional): nil/absent = keep current value unchanged,
+// "" (empty string) = clear the link (set NULL), any other value must be a valid UUID.
 type UpdateDrugGroupRequest struct {
-	CategoryID   *string  `json:"category_id"`
-	Name         *string  `json:"name"`
-	Description  *string  `json:"description"`
-	VatRate      *float64 `json:"vat_rate"`
-	OtherTaxRate *float64 `json:"other_tax_rate"`
-	IsActive     *bool    `json:"is_active"`
-	SortOrder    *int     `json:"sort_order"`
+	CategoryID     *string  `json:"category_id"`
+	Name           *string  `json:"name"`
+	Description    *string  `json:"description"`
+	VatRate        *float64 `json:"vat_rate"`
+	OtherTaxRate   *float64 `json:"other_tax_rate"`
+	IsActive       *bool    `json:"is_active"`
+	SortOrder      *int     `json:"sort_order"`
+	CatalogGroupID *string  `json:"catalog_group_id"`
 }
 
 type OperatingExpense struct {

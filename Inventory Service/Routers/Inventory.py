@@ -39,9 +39,35 @@ from Source.schemas.inventory import (
     StockAuditUpdateRequest,
 )
 
-router = APIRouter(prefix="/api/v1/inventory", tags=["inventory"])
 runtime_state = SimpleNamespace()
 logger = logging.getLogger(__name__)
+
+
+async def ensure_state_ready() -> None:
+    """Chặn mọi endpoint nghiệp vụ khi chưa nạp được state từ storage.
+
+    Nếu không chặn, service sẽ trả về "kho rỗng" một cách thuyết phục: POS thấy tồn kho 0,
+    báo cáo thấy 0 — sai lệch âm thầm còn tệ hơn là lỗi rõ ràng.
+    """
+    if getattr(runtime_state, "state_unavailable", False):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Inventory service chưa nạp được dữ liệu kho từ storage nên tạm thời "
+                "không phục vụ để tránh trả về số liệu sai. Đang tự động thử lại."
+            ),
+        )
+
+
+router = APIRouter(
+    prefix="/api/v1/inventory",
+    tags=["inventory"],
+    dependencies=[Depends(ensure_state_ready)],
+)
+
+# Router riêng cho endpoint khôi phục: cố tình KHÔNG gắn ensure_state_ready để owner vẫn
+# gọi được khi service đang ở trạng thái không sẵn sàng.
+recovery_router = APIRouter(prefix="/api/v1/inventory", tags=["inventory"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 optional_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 
@@ -846,6 +872,9 @@ def save_runtime_state() -> None:
         "movements": runtime_state.movements,
         "reservations": runtime_state.reservations,
         "sale_events": runtime_state.sale_events,
+        # "audits" (sổ kiểm kê) trước đây bị thiếu ở nhánh lưu file — mỗi lần lưu là mất
+        # sạch dữ liệu kiểm kê vì hàm nạp đọc key này bằng `payload.get("audits") or {}`.
+        "audits": runtime_state.audits,
         "disposal_log": runtime_state.disposal_log,
         "drug_recalls": runtime_state.drug_recalls,
         "catalog_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
@@ -876,7 +905,70 @@ async def _trigger_restock_refresh() -> None:
         pass  # fire-and-forget — do not block or fail the main request
 
 
+# Đọc số bản ghi đang lưu từ các cột đếm (rẻ — không phải detoast blob JSON vài MB) và
+# khóa row trong cùng transaction để không có save nào chen vào giữa kiểm tra và ghi.
+_STORED_COUNTS_SQL = """
+SELECT drug_count AS drugs, batch_count AS batches, receipt_count AS receipts
+FROM inventory_runtime_state
+WHERE id = 1
+FOR UPDATE
+"""
+
+# Giữ lại bao nhiêu bản snapshot lịch sử.
+STATE_HISTORY_KEEP = 96
+
+
+def _is_destructive_write(
+    old_counts: tuple[int, int, int],
+    new_counts: tuple[int, int, int],
+) -> bool:
+    """Ghi đè bị coi là phá hủy khi một nhóm dữ liệu đang có bản ghi mà bản mới về 0,
+    hoặc mất hơn một nửa số bản ghi trong một lần ghi.
+
+    Nghiệp vụ nhà thuốc không bao giờ xóa sạch thuốc/lô/phiếu nhập trong một request,
+    nên hai dấu hiệu này chỉ xuất hiện khi state trong memory đã sai.
+    """
+    for old, new in zip(old_counts, new_counts):
+        if old > 0 and new == 0:
+            return True
+        if old >= 10 and new < old / 2:
+            return True
+    return False
+
+
+async def _archive_current_state(conn: Any, old_counts: tuple[int, int, int]) -> None:
+    await conn.execute(
+        """
+        INSERT INTO inventory_runtime_state_history
+            (payload, drug_count, batch_count, receipt_count)
+        SELECT payload, $1, $2, $3
+        FROM inventory_runtime_state
+        WHERE id = 1
+        """,
+        old_counts[0], old_counts[1], old_counts[2],
+    )
+    await conn.execute(
+        """
+        DELETE FROM inventory_runtime_state_history
+        WHERE id NOT IN (
+            SELECT id FROM inventory_runtime_state_history
+            ORDER BY captured_at DESC
+            LIMIT $1
+        )
+        """,
+        STATE_HISTORY_KEEP,
+    )
+
+
 async def save_runtime_state_safe() -> None:
+    # TRIPWIRE: nếu chưa nạp được state từ storage thì state trong memory KHÔNG phản ánh
+    # dữ liệu thật — ghi nó xuống sẽ hủy dữ liệu đang còn nguyên trong DB.
+    if getattr(runtime_state, "state_unavailable", False):
+        logger.error(
+            "TỪ CHỐI ghi state: chưa nạp được dữ liệu từ storage, ghi lúc này sẽ xóa "
+            "dữ liệu thật trong DB. Đang chờ storage phục hồi."
+        )
+        return
     try:
         if settings.STATE_PERSISTENCE.lower() == "postgres":
             await init_state_store()
@@ -896,16 +988,40 @@ async def save_runtime_state_safe() -> None:
                 "catalog_drugs_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
                 "catalog_suppliers_last_sync_at": runtime_state.catalog_suppliers_last_sync_at,
             }
+            serialized = json.dumps(payload, ensure_ascii=False, default=_json_default)
+            new_counts = (len(payload["drugs"]), len(payload["batches"]), len(payload["receipts"]))
+
             async with runtime_state.pg_pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO inventory_runtime_state(id, payload, updated_at)
-                    VALUES (1, $1::jsonb, NOW())
-                    ON CONFLICT (id)
-                    DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()
-                    """,
-                    json.dumps(payload, ensure_ascii=False, default=_json_default),
-                )
+                async with conn.transaction():
+                    stored = await conn.fetchrow(_STORED_COUNTS_SQL)
+
+                    if stored is not None:
+                        old_counts = (stored["drugs"], stored["batches"], stored["receipts"])
+                        if _is_destructive_write(old_counts, new_counts):
+                            logger.error(
+                                "PHÁT HIỆN ghi đè phá hủy dữ liệu: drugs %s->%s, batches %s->%s, "
+                                "receipts %s->%s. Đã lưu bản cũ vào inventory_runtime_state_history.",
+                                old_counts[0], new_counts[0],
+                                old_counts[1], new_counts[1],
+                                old_counts[2], new_counts[2],
+                            )
+                            await _archive_current_state(conn, old_counts)
+
+                    await conn.execute(
+                        """
+                        INSERT INTO inventory_runtime_state
+                            (id, payload, updated_at, drug_count, batch_count, receipt_count)
+                        VALUES (1, $1::jsonb, NOW(), $2, $3, $4)
+                        ON CONFLICT (id)
+                        DO UPDATE SET
+                            payload       = EXCLUDED.payload,
+                            updated_at    = NOW(),
+                            drug_count    = EXCLUDED.drug_count,
+                            batch_count   = EXCLUDED.batch_count,
+                            receipt_count = EXCLUDED.receipt_count
+                        """,
+                        serialized, new_counts[0], new_counts[1], new_counts[2],
+                    )
         else:
             save_runtime_state()
     except Exception:
@@ -924,6 +1040,9 @@ RUNTIME_STATE_SAVE_RETRY_INTERVAL_SECONDS = 30
 def get_state_persistence_status() -> str:
     """Used by the /health endpoint to surface persistence health without changing
     the top-level status field semantics the gateway relies on."""
+    if getattr(runtime_state, "state_unavailable", False):
+        # Nặng hơn "failing": chưa đọc được dữ liệu, service đang từ chối request.
+        return "unavailable"
     return "failing" if getattr(runtime_state, "save_failed", False) else "ok"
 
 
@@ -938,6 +1057,17 @@ async def retry_failed_runtime_state_save() -> None:
     while True:
         try:
             await asyncio.sleep(RUNTIME_STATE_SAVE_RETRY_INTERVAL_SECONDS)
+
+            # Ưu tiên tự phục hồi: nếu startup chưa nạp được state, thử nạp lại. Chỉ khi
+            # nạp xong service mới được phép ghi và phục vụ request trở lại.
+            if getattr(runtime_state, "state_unavailable", False):
+                logger.warning("Thử nạp lại inventory state sau khi startup thất bại")
+                async with runtime_state.lock:
+                    await reload_runtime_state_from_storage()
+                if not getattr(runtime_state, "state_unavailable", False):
+                    logger.info("Đã nạp lại được inventory state — service sẵn sàng trở lại")
+                continue
+
             if getattr(runtime_state, "save_failed", False):
                 logger.warning("Retrying previously failed inventory runtime state save")
                 # Giữ cùng lock với các handler mutate để bản snapshot retry không
@@ -953,12 +1083,14 @@ async def retry_failed_runtime_state_save() -> None:
 def load_runtime_state() -> bool:
     path = state_file_path()
     if not path.exists():
+        # Ca duy nhất được coi là 'rỗng thật': chưa từng có snapshot nào.
         return False
 
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return False
+    except Exception as exc:
+        # File CÓ tồn tại mà đọc không được => lỗi, không phải 'chưa có dữ liệu'.
+        raise StateLoadError(f"snapshot file {path} không đọc được: {exc}") from exc
 
     return load_runtime_state_from_payload(payload)
 
@@ -982,36 +1114,104 @@ async def init_state_store() -> None:
             )
             """
         )
+        # Cột đếm để tripwire kiểm tra ghi-đè-phá-hủy mà không phải detoast blob JSON.
+        for column in ("drug_count", "batch_count", "receipt_count"):
+            await conn.execute(
+                f"ALTER TABLE inventory_runtime_state "
+                f"ADD COLUMN IF NOT EXISTS {column} INTEGER NOT NULL DEFAULT 0"
+            )
+        # Backfill một lần cho row đã tồn tại từ trước khi có các cột này, nếu không lần
+        # ghi đầu tiên sau khi nâng cấp sẽ thấy old=(0,0,0) và tripwire không bảo vệ được.
+        await conn.execute(
+            """
+            UPDATE inventory_runtime_state
+            SET drug_count   = (SELECT count(*) FROM jsonb_object_keys(COALESCE(payload -> 'drugs',    '{}'::jsonb))),
+                batch_count  = (SELECT count(*) FROM jsonb_object_keys(COALESCE(payload -> 'batches',  '{}'::jsonb))),
+                receipt_count= (SELECT count(*) FROM jsonb_object_keys(COALESCE(payload -> 'receipts', '{}'::jsonb)))
+            WHERE id = 1
+              AND drug_count = 0 AND batch_count = 0 AND receipt_count = 0
+              AND jsonb_typeof(payload -> 'drugs') = 'object'
+            """
+        )
+        # Lịch sử snapshot: toàn bộ kho nằm trên MỘT row duy nhất, nên mọi lần UPDATE
+        # là một cơ hội mất trắng. Bảng này giữ các bản trước đó để còn đường cứu.
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inventory_runtime_state_history (
+              id BIGSERIAL PRIMARY KEY,
+              payload JSONB NOT NULL,
+              drug_count INTEGER NOT NULL DEFAULT 0,
+              batch_count INTEGER NOT NULL DEFAULT 0,
+              receipt_count INTEGER NOT NULL DEFAULT 0,
+              captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_inventory_state_history_captured_at
+              ON inventory_runtime_state_history(captured_at DESC)
+            """
+        )
+
+
+class StateLoadError(Exception):
+    """Không đọc được state đã lưu (lỗi kết nối, payload hỏng, parse thất bại).
+
+    Phải TÁCH BIỆT hoàn toàn với 'chưa có state nào' — nhầm hai ca này là nguyên nhân
+    của sự cố mất trắng toàn bộ kho: lỗi đọc bị hiểu thành 'máy mới' nên seed state
+    rỗng rồi ghi đè lên bản dữ liệu duy nhất trong Postgres.
+    """
 
 
 async def load_runtime_state_safe() -> bool:
-    try:
-        if settings.STATE_PERSISTENCE.lower() == "postgres":
+    """Trả về True nếu đã nạp được state, False nếu storage TRỐNG THẬT (lần chạy đầu).
+
+    Raise StateLoadError khi không đọc được — caller TUYỆT ĐỐI không được seed/ghi đè
+    trong trường hợp này.
+    """
+    if settings.STATE_PERSISTENCE.lower() == "postgres":
+        try:
             await init_state_store()
             async with runtime_state.pg_pool.acquire() as conn:
                 row = await conn.fetchrow("SELECT payload FROM inventory_runtime_state WHERE id = 1")
-            if row and row.get("payload") is not None:
-                payload = row["payload"]
+        except Exception as exc:
+            raise StateLoadError(f"không đọc được inventory_runtime_state: {exc}") from exc
+
+        if row is not None and row.get("payload") is not None:
+            payload = row["payload"]
+            try:
                 if isinstance(payload, str):
                     payload = json.loads(payload)
-                if isinstance(payload, dict):
-                    return load_runtime_state_from_payload(payload)
+            except Exception as exc:
+                raise StateLoadError(f"payload trong DB không phải JSON hợp lệ: {exc}") from exc
+            if not isinstance(payload, dict):
+                raise StateLoadError(f"payload trong DB có kiểu không mong đợi: {type(payload).__name__}")
+            # Row đã tồn tại => parse lỗi là LỖI, không phải 'chưa có dữ liệu'.
+            load_runtime_state_from_payload(payload)
+            return True
 
-            # fallback: migrate file snapshot cũ vào postgres nếu có
+        # Row chưa tồn tại: thử migrate snapshot file cũ, nếu không có thì đây là
+        # lần chạy đầu tiên thật sự.
+        try:
             loaded_from_file = load_runtime_state()
-            if loaded_from_file:
-                await save_runtime_state_safe()
-                return True
-            return False
-        return load_runtime_state()
-    except Exception:
+        except StateLoadError:
+            raise
+        except Exception as exc:
+            raise StateLoadError(f"không đọc được snapshot file: {exc}") from exc
+
+        if loaded_from_file:
+            await save_runtime_state_safe()
+            return True
         return False
+
+    return load_runtime_state()
 
 
 def load_runtime_state_from_payload(payload: dict[str, Any]) -> bool:
     try:
         if not isinstance(payload, dict):
-            return False
+            raise StateLoadError(f"payload state phải là dict, nhận {type(payload).__name__}")
 
         runtime_state.counters = dict(payload.get("counters") or {})
         for key in ("receipt", "receipt_line", "batch", "movement", "reservation", "audit", "disposal", "drug_recall"):
@@ -1054,10 +1254,17 @@ def load_runtime_state_from_payload(payload: dict[str, Any]) -> bool:
             for line in receipt.get("lines", []):
                 if not isinstance(line, dict):
                     continue
-                if line.get("mfg_date") is not None:
-                    line["mfg_date"] = _parse_iso_date(line["mfg_date"])
-                if line.get("exp_date") is not None:
-                    line["exp_date"] = _parse_iso_date(line["exp_date"])
+                for date_field in ("mfg_date", "exp_date"):
+                    if line.get(date_field) is None:
+                        continue
+                    try:
+                        line[date_field] = _parse_iso_date(line[date_field])
+                    except Exception:
+                        logger.warning(
+                            "Bỏ qua %s không hợp lệ trong dòng phiếu nhập %s: %r",
+                            date_field, receipt.get("id"), line.get(date_field),
+                        )
+                        line[date_field] = None
                 line["promo_type"] = _to_enum(PromoType, line.get("promo_type"), PromoType.NONE)
 
         for batch in runtime_state.batches.values():
@@ -1076,18 +1283,31 @@ def load_runtime_state_from_payload(payload: dict[str, Any]) -> bool:
         for movement in runtime_state.movements:
             if not isinstance(movement, dict):
                 continue
+            # Một mốc thời gian hỏng chỉ được phép làm hỏng CHÍNH bản ghi đó, không
+            # được làm cả lần load thất bại (trước đây throw ở đây = mất trắng kho).
             if movement.get("occurred_at") is not None:
-                movement["occurred_at"] = _parse_iso_datetime(movement["occurred_at"])
+                try:
+                    movement["occurred_at"] = _parse_iso_datetime(movement["occurred_at"])
+                except Exception:
+                    logger.warning("Bỏ qua occurred_at không hợp lệ trong movement: %r", movement.get("occurred_at"))
+                    movement["occurred_at"] = None
             movement["event_type"] = _to_enum(MovementType, movement.get("event_type"), MovementType.STOCK_ADJUSTMENT)
 
         for reservation in runtime_state.reservations:
             if not isinstance(reservation, dict):
                 continue
             if reservation.get("reserved_at") is not None:
-                reservation["reserved_at"] = _parse_iso_datetime(reservation["reserved_at"])
+                try:
+                    reservation["reserved_at"] = _parse_iso_datetime(reservation["reserved_at"])
+                except Exception:
+                    logger.warning("Bỏ qua reserved_at không hợp lệ trong reservation: %r", reservation.get("reserved_at"))
+                    reservation["reserved_at"] = None
         return True
-    except Exception:
-        return False
+    except StateLoadError:
+        raise
+    except Exception as exc:
+        # KHÔNG trả về False: caller sẽ hiểu thành 'storage rỗng' rồi seed + ghi đè.
+        raise StateLoadError(f"payload state không parse được: {exc}") from exc
 
 
 def register_provisional_drug_from_line(line: Any) -> dict[str, Any]:
@@ -1848,7 +2068,17 @@ def extract_qr_candidates(raw_value: str) -> list[str]:
     return list(values)
 
 
-def seed_demo_data() -> None:
+def initialize_empty_state() -> None:
+    """Khởi tạo state RỖNG TRONG BỘ NHỚ.
+
+    Chỉ được gọi khi storage chắc chắn chưa có dữ liệu (lần chạy đầu), hoặc để service
+    có cấu trúc hợp lệ mà không crash khi đang ở trạng thái không sẵn sàng. Hàm này
+    KHÔNG ghi xuống DB — row trong DB chỉ được tạo khi có nghiệp vụ thật đầu tiên.
+
+    Trước đây ở đây có `seed_demo_data()` được gọi tự động kèm một lệnh ghi ngay sau đó;
+    đó chính là đường dẫn đã xóa trắng toàn bộ kho. Tính năng tự reset đã được bỏ hẳn:
+    không còn bất kỳ code path nào tự động xóa dữ liệu kho.
+    """
     runtime_state.counters = {"receipt": 0, "receipt_line": 0, "batch": 0, "movement": 0, "reservation": 0, "audit": 0, "disposal": 0, "drug_recall": 0}
     runtime_state.suppliers = {}
     runtime_state.drugs = {}
@@ -1862,46 +2092,6 @@ def seed_demo_data() -> None:
     runtime_state.disposal_log = []
     runtime_state.catalog_drugs_last_sync_at = datetime.fromtimestamp(0, tz=timezone.utc)
     runtime_state.catalog_suppliers_last_sync_at = datetime.fromtimestamp(0, tz=timezone.utc)
-
-
-def cleanup_legacy_seed_data() -> bool:
-    changed = False
-
-    referenced_drug_ids = {
-        str(batch.get("drug_id"))
-        for batch in runtime_state.batches.values()
-        if isinstance(batch, dict) and batch.get("drug_id")
-    }
-    referenced_drug_ids.update(
-        str(line.get("drug_id"))
-        for receipt in runtime_state.receipts.values()
-        if isinstance(receipt, dict)
-        for line in receipt.get("lines", [])
-        if isinstance(line, dict) and line.get("drug_id")
-    )
-
-    for drug_id in list(runtime_state.drugs.keys()):
-        if drug_id in LEGACY_DEMO_DRUG_IDS and drug_id not in referenced_drug_ids:
-            runtime_state.drugs.pop(drug_id, None)
-            changed = True
-
-    referenced_supplier_ids = {
-        str(batch.get("supplier_id"))
-        for batch in runtime_state.batches.values()
-        if isinstance(batch, dict) and batch.get("supplier_id")
-    }
-    referenced_supplier_ids.update(
-        str(receipt.get("supplier_id"))
-        for receipt in runtime_state.receipts.values()
-        if isinstance(receipt, dict) and receipt.get("supplier_id")
-    )
-
-    for supplier_id in list(runtime_state.suppliers.keys()):
-        if supplier_id in LEGACY_DEMO_SUPPLIER_IDS and supplier_id not in referenced_supplier_ids:
-            runtime_state.suppliers.pop(supplier_id, None)
-            changed = True
-
-    return changed
 
 
 async def consume_sale_events() -> None:
@@ -1931,6 +2121,7 @@ async def startup_event() -> None:
     runtime_state.lock = asyncio.Lock()
     runtime_state.pg_pool = None
     runtime_state.save_failed = False
+    runtime_state.state_unavailable = False
     runtime_state.inventory_settings = {
         "data": normalize_inventory_settings(DEFAULT_INVENTORY_SETTINGS),
         "fetched_at": datetime.fromtimestamp(0, tz=timezone.utc),
@@ -1940,16 +2131,67 @@ async def startup_event() -> None:
     runtime_state.state_retry_task = asyncio.create_task(retry_failed_runtime_state_save())
 
 
+STATE_LOAD_MAX_ATTEMPTS = 10
+STATE_LOAD_RETRY_BASE_SECONDS = 3
+
+
 async def reload_runtime_state_from_storage() -> bool:
-    loaded = await load_runtime_state_safe()
-    if loaded:
-        if cleanup_legacy_seed_data():
-            await save_runtime_state_safe()
-    else:
-        seed_demo_data()
-        await save_runtime_state_safe()
-    await fetch_inventory_settings(force=True)
-    return loaded
+    """Nạp state từ storage, thử lại nhiều lần trước khi bỏ cuộc.
+
+    Chỉ seed state rỗng khi CHẮC CHẮN storage trống (lần chạy đầu). Nếu không đọc được,
+    service tự đánh dấu không sẵn sàng và KHÔNG ghi gì — thà tạm ngừng phục vụ còn hơn
+    xóa sạch dữ liệu kho.
+    """
+    last_error: Exception | None = None
+
+    for attempt in range(1, STATE_LOAD_MAX_ATTEMPTS + 1):
+        try:
+            loaded = await load_runtime_state_safe()
+        except StateLoadError as exc:
+            last_error = exc
+            # Pool có thể đang giữ kết nối chết (Postgres vừa restart) — bỏ để tạo lại.
+            await _discard_pg_pool()
+            wait_seconds = min(30, STATE_LOAD_RETRY_BASE_SECONDS * attempt)
+            logger.error(
+                "Nạp inventory state thất bại (lần %s/%s): %s. Thử lại sau %ss.",
+                attempt, STATE_LOAD_MAX_ATTEMPTS, exc, wait_seconds,
+            )
+            if attempt < STATE_LOAD_MAX_ATTEMPTS:
+                await asyncio.sleep(wait_seconds)
+            continue
+
+        runtime_state.state_unavailable = False
+        if not loaded:
+            # Storage trống thật (lần chạy đầu): chỉ dựng cấu trúc rỗng trong bộ nhớ,
+            # KHÔNG ghi gì xuống DB. Row sẽ được tạo bởi nghiệp vụ thật đầu tiên.
+            logger.info("Storage chưa có inventory state — khởi tạo cấu trúc rỗng trong bộ nhớ.")
+            initialize_empty_state()
+        await fetch_inventory_settings(force=True)
+        return loaded
+
+    # Hết lượt thử: KHÔNG seed, KHÔNG ghi. Giữ nguyên dữ liệu trong DB.
+    runtime_state.state_unavailable = True
+    # Cấu trúc rỗng chỉ để service không crash; mọi lệnh ghi đã bị tripwire chặn và mọi
+    # endpoint nghiệp vụ trả 503, nên state rỗng này không bao giờ tới được DB.
+    initialize_empty_state()
+    logger.critical(
+        "KHÔNG nạp được inventory state sau %s lần thử (%s). Service chuyển sang trạng "
+        "thái KHÔNG SẴN SÀNG và sẽ từ chối request để bảo toàn dữ liệu trong DB. "
+        "Sẽ tự thử lại ở tiến trình nền.",
+        STATE_LOAD_MAX_ATTEMPTS, last_error,
+    )
+    return False
+
+
+async def _discard_pg_pool() -> None:
+    pool = getattr(runtime_state, "pg_pool", None)
+    if pool is None:
+        return
+    runtime_state.pg_pool = None
+    try:
+        await pool.close()
+    except Exception:
+        logger.warning("Không đóng được pg_pool cũ, bỏ qua", exc_info=True)
 
 
 async def shutdown_event() -> None:
@@ -1962,7 +2204,9 @@ async def shutdown_event() -> None:
         await runtime_state.pg_pool.close()
 
 
-@router.post("/admin/runtime-state/reload")
+# Đăng ký trên recovery_router (KHÔNG có ensure_state_ready): đây chính là đường thoát
+# khi state đang không sẵn sàng — nếu bị guard chặn thì owner mất luôn cách khôi phục tay.
+@recovery_router.post("/admin/runtime-state/reload")
 async def reload_runtime_state_admin(token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
     actor, role, username = get_current_actor(token)
     if not can_override_receipt_lock(role, username):
@@ -1974,6 +2218,8 @@ async def reload_runtime_state_admin(token: str = Depends(oauth2_scheme)) -> dic
     return {
         "message": "Inventory runtime state reloaded successfully",
         "loaded_from_storage": loaded,
+        "loaded": loaded,
+        "state_unavailable": bool(getattr(runtime_state, "state_unavailable", False)),
         "actor": actor,
     }
 

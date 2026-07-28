@@ -204,6 +204,7 @@
       REDIS_URL: redis://redis:6379/0
       FILE_SERVICE_URL: http://file-service:8009
       INVENTORY_SERVICE_URL: http://inventory-service:8002
+      CATALOG_SERVICE_URL: http://catalog-service:8006
       INTERNAL_SERVICE_TOKEN_EXPIRE_MINUTES: ${INTERNAL_SERVICE_TOKEN_EXPIRE_MINUTES:-30}
       SETTINGS_CACHE_TTL_SECONDS: 300
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY missing - copy .env.example to .env and set a strong secret}

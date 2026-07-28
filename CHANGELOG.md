@@ -2,6 +2,40 @@
 
 ---
 
+## V1.12 — 2026-07-27
+
+### Sửa lỗi
+
+- **🔴 NGHIÊM TRỌNG — Sửa lỗi Inventory tự xóa trắng toàn bộ dữ liệu kho.** Toàn bộ tồn kho được lưu trong MỘT row Postgres (`inventory_runtime_state` id=1). Khi khởi động, `load_runtime_state_safe()` nuốt mọi exception và trả về `False` — không phân biệt được "đọc lỗi" với "chưa có dữ liệu" — nên `reload_runtime_state_from_storage()` seed state rỗng rồi **ghi đè lên bản dữ liệu duy nhất**. Chỉ cần một ngày tháng sai trong một dòng phiếu nhập (`_parse_iso_date` ở dòng phiếu nhập / `occurred_at` của movement / `reserved_at` của reservation đều không có try-except) là đủ để mất sạch kho ở lần restart kế tiếp, kể cả khi Postgres hoàn toàn bình thường. Đã kiểm chứng bằng test so sánh code cũ/mới: code cũ 40 thuốc → 0, code mới giữ nguyên 40.
+- **Bỏ hẳn tính năng tự reset dữ liệu**: xóa `seed_demo_data()` và `cleanup_legacy_seed_data()` — không còn bất kỳ code path nào tự động xóa dữ liệu kho. Thay bằng `initialize_empty_state()` chỉ dựng cấu trúc rỗng **trong bộ nhớ** và không bao giờ ghi xuống DB; row trong DB chỉ được tạo bởi nghiệp vụ thật đầu tiên.
+- **Tăng cửa sổ khôi phục backup**: `backup.max_files` mặc định 10 → 168 (= 24 giờ × 7 ngày). Với backup tự động mỗi giờ, mặc định cũ chỉ cho ~11 giờ lịch sử — một sự cố xảy ra đêm hôm trước là mọi bản backup còn lại đều đã nhiễm lỗi. Đây là lý do sự cố 27/7/2026 không khôi phục được về mốc gần nhất. Ở nhịp backup thực tế 70 phút, 168 bản cho ~8,2 ngày; chi phí lưu trữ tối đa ~285 MB mỗi phía (đĩa local và R2).
+
+### Cải thiện
+
+- **Phân biệt "đọc lỗi" với "chưa có dữ liệu"**: thêm exception `StateLoadError`. Lỗi đọc không bao giờ bị hiểu thành "máy mới" nữa.
+- **Retry khi khởi động**: nạp state thử tối đa 10 lần (backoff tới 30s), tự bỏ pool kết nối chết khi Postgres vừa restart. Xử lý được trường hợp container Inventory tự restart lúc Postgres chưa sẵn sàng — `depends_on: service_healthy` chỉ có tác dụng ở `docker compose up`, không áp dụng cho restart theo `restart: unless-stopped`.
+- **Tripwire chặn ghi**: nếu chưa nạp được state, `save_runtime_state_safe()` từ chối ghi và log ERROR — dữ liệu trong DB được bảo toàn thay vì bị state rỗng trong bộ nhớ ghi đè.
+- **Endpoint trả 503 thay vì báo kho rỗng**: 36 endpoint nghiệp vụ Inventory trả 503 khi chưa nạp được state, tránh POS/báo cáo thấy tồn kho 0 một cách thuyết phục. `/api/v1/inventory/admin/runtime-state/reload` cố tình KHÔNG bị chặn để owner còn đường khôi phục tay.
+- **Tự phục hồi**: tiến trình nền thử nạp lại state mỗi 30s; nạp được là service phục vụ bình thường trở lại, không cần restart.
+- **Lịch sử snapshot để cứu dữ liệu**: thêm bảng `inventory_runtime_state_history` (giữ 96 bản). Mọi lệnh ghi làm mất sạch một nhóm dữ liệu, hoặc mất hơn một nửa số bản ghi, đều archive bản cũ lại trước khi ghi và log ERROR. Dùng cột đếm `drug_count`/`batch_count`/`receipt_count` (rẻ, không phải detoast blob JSON vài MB mỗi lần ghi).
+- **Dữ liệu lỗi chỉ làm hỏng chính bản ghi đó**: mọi chỗ parse ngày tháng khi nạp state đều bọc try-except, ghi log cảnh báo và bỏ qua field lỗi thay vì làm cả lần nạp thất bại.
+- **`/health` báo `state_persistence: "unavailable"`** khi chưa nạp được state (nặng hơn `"failing"`).
+- Thêm 16 test hồi quy (`Inventory Service/tests/test_state_persistence.py`), chạy trên Postgres thật qua `INVENTORY_TEST_DSN`, tự skip khi không có DB.
+
+---
+
+## V1.11 — 2026-07-15
+
+### Tính năng mới
+- **Liên kết nhóm thuốc Store ↔ Catalog bằng ID (`catalog_group_id`)**: thêm cột `catalog_group_id UUID` vào `store.drug_groups` (auto-migrate); form tạo/sửa nhóm thuốc Store có selector "Nhóm Catalog liên kết" kèm auto-gợi ý theo tên khi tạo mới; danh sách nhóm hiển thị badge "⚠ Chưa liên kết" (vàng) hoặc "Đã liên kết: <tên nhóm>" (xanh)
+- **Backfill tự động khi Store service khởi động**: job nền (retry 5 lần, backoff 5s→60s) gọi Catalog `GET /api/v1/catalog/drug-groups` (tự mint JWT HS256 nội bộ) và match theo tên chuẩn hóa (trim + lowercase, khớp logic `normalizeGroupKey` của FE); tên trùng sau chuẩn hóa → bỏ qua (để NULL cho owner chọn tay); idempotent — chỉ xử lý row còn NULL
+
+### Cải thiện
+- **Trang Danh mục thuốc join bằng ID thay vì tên**: ưu tiên join store-group ↔ catalog-group qua `catalog_group_id`; chỉ fallback join theo tên/code tự sinh cho nhóm chưa liên kết; nhóm đã liên kết không còn bị tự tạo nhóm Catalog trùng (code `SG<id>`)
+- Store service thêm config `CATALOG_SERVICE_URL` (compose đã khai báo sẵn, mặc định `http://catalog-service:8006`)
+
+---
+
 ## V1.10 — 2026-07-07
 
 ### Cải thiện

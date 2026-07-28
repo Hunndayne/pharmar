@@ -48,3 +48,6 @@ FrontEnd/nginx.conf
 .claude
 .grapuco
 CLAUDE.md
+
+# Artifacts khôi phục dữ liệu kho 27/07/2026 — chứa payload/backup vài MB, giữ ngoài repo
+recovery/

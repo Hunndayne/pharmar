@@ -18,6 +18,7 @@ type Config struct {
 	RedisURL            string
 	FileServiceURL      string
 	InventoryServiceURL string
+	CatalogServiceURL   string
 	InternalTokenTTL    time.Duration
 	SettingsCacheTTL    time.Duration
 	JWTSecretKey        string
@@ -88,6 +89,7 @@ func Load() (Config, error) {
 		RedisURL:            getEnv("REDIS_URL", "redis://localhost:6379/0"),
 		FileServiceURL:      strings.TrimRight(getEnv("FILE_SERVICE_URL", "http://file-service:8009"), "/"),
 		InventoryServiceURL: strings.TrimRight(getEnv("INVENTORY_SERVICE_URL", "http://inventory-service:8002"), "/"),
+		CatalogServiceURL:   strings.TrimRight(getEnv("CATALOG_SERVICE_URL", "http://catalog-service:8006"), "/"),
 		InternalTokenTTL:    time.Duration(internalTokenTTLMinutes) * time.Minute,
 		SettingsCacheTTL:    time.Duration(settingsCacheTTLSeconds) * time.Second,
 		JWTSecretKey:        getEnv("JWT_SECRET_KEY", "change-this-secret"),

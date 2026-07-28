@@ -75,3 +75,6 @@ ALTER TABLE store.drug_groups
 
 ALTER TABLE store.drug_groups
     ADD COLUMN IF NOT EXISTS other_tax_rate NUMERIC(5,2) NOT NULL DEFAULT 0;
+
+ALTER TABLE store.drug_groups
+    ADD COLUMN IF NOT EXISTS catalog_group_id UUID;

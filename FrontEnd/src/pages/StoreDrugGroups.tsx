@@ -7,6 +7,7 @@ import {
   type UpdateDrugCategoryPayload,
   type UpdateDrugGroupPayload,
 } from '../api/storeService'
+import { catalogApi, type DrugGroupItem } from '../api/catalogService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 
@@ -27,7 +28,11 @@ type GroupFormState = {
   otherTaxRate: string
   sortOrder: string
   isActive: boolean
+  catalogGroupId: string
 }
+
+// Dùng chung logic chuẩn hóa tên với DrugCatalog.tsx để gợi ý auto-match nhóm Catalog cùng tên.
+const normalizeGroupKey = (value: string) => value.trim().toLocaleLowerCase('vi-VN')
 
 const emptyCategoryForm = (): CategoryFormState => ({
   name: '',
@@ -44,6 +49,7 @@ const emptyGroupForm = (categoryId = ''): GroupFormState => ({
   otherTaxRate: '0',
   sortOrder: '100',
   isActive: true,
+  catalogGroupId: '',
 })
 
 const parseSortOrder = (value: string) => {
@@ -78,6 +84,44 @@ export function StoreDrugGroups() {
   const [formError, setFormError] = useState<string | null>(null)
   const [categoryForm, setCategoryForm] = useState<CategoryFormState>(emptyCategoryForm())
   const [groupForm, setGroupForm] = useState<GroupFormState>(emptyGroupForm())
+
+  // Danh sách nhóm Catalog dùng để liên kết với nhóm thuốc Store qua catalog_group_id.
+  const [catalogGroups, setCatalogGroups] = useState<DrugGroupItem[]>([])
+  // Đánh dấu người dùng đã tự chọn nhóm Catalog liên kết, để không bị auto-match theo tên ghi đè.
+  const [catalogGroupTouched, setCatalogGroupTouched] = useState(false)
+
+  useEffect(() => {
+    if (!accessToken) return
+    let cancelled = false
+    catalogApi
+      .listDrugGroups(accessToken, { is_active: true, page: 1, size: 200 })
+      .then((response) => {
+        if (cancelled) return
+        setCatalogGroups(response.items)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setCatalogGroups([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [accessToken])
+
+  const catalogGroupById = useMemo(
+    () => new Map(catalogGroups.map((item) => [item.id, item])),
+    [catalogGroups],
+  )
+
+  const suggestCatalogGroupId = useCallback(
+    (name: string) => {
+      const key = normalizeGroupKey(name)
+      if (!key) return ''
+      const matches = catalogGroups.filter((item) => normalizeGroupKey(item.name) === key)
+      return matches.length === 1 ? matches[0].id : ''
+    },
+    [catalogGroups],
+  )
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -135,6 +179,7 @@ export function StoreDrugGroups() {
 
   const openCreateGroup = (categoryId?: string) => {
     setFormError(null)
+    setCatalogGroupTouched(false)
     setGroupForm(emptyGroupForm(categoryId ?? selectedCategoryId ?? rows[0]?.id ?? ''))
     setGroupModalOpen(true)
   }
@@ -145,6 +190,8 @@ export function StoreDrugGroups() {
     if (!category || !group) return
 
     setFormError(null)
+    // Nhóm đã tồn tại: coi liên kết hiện có là lựa chọn thủ công, không để auto-match theo tên ghi đè.
+    setCatalogGroupTouched(true)
     setGroupForm({
       id: group.id,
       categoryId: category.id,
@@ -154,6 +201,7 @@ export function StoreDrugGroups() {
       otherTaxRate: String(group.other_tax_rate ?? 0),
       sortOrder: String(group.sort_order),
       isActive: group.is_active,
+      catalogGroupId: group.catalog_group_id ?? '',
     })
     setGroupModalOpen(true)
   }
@@ -232,6 +280,8 @@ export function StoreDrugGroups() {
       other_tax_rate: otherTaxRate,
       is_active: groupForm.isActive,
       sort_order: parseSortOrder(groupForm.sortOrder),
+      // Backend (Go mergeOptional): null/thiếu key = giữ nguyên, '' = gỡ liên kết — nên luôn gửi chuỗi.
+      catalog_group_id: groupForm.catalogGroupId,
     }
 
     setFormSubmitting(true)
@@ -464,6 +514,20 @@ export function StoreDrugGroups() {
                     Thuế nhóm: VAT {Number(group.vat_rate || 0)}% | Thuế khác {Number(group.other_tax_rate || 0)}%
                   </p>
                   <p className="mt-2 text-xs text-ink-500">Thứ tự: {group.sort_order}</p>
+                  <p className="mt-2">
+                    {group.catalog_group_id === null ? (
+                      <span
+                        title="Nhóm thuốc này chưa được liên kết với nhóm Catalog tương ứng. Vào Sửa để chọn nhóm Catalog liên kết."
+                        className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700"
+                      >
+                        ⚠ Chưa liên kết
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-brand-500/10 px-2 py-0.5 text-xs text-brand-600">
+                        Đã liên kết: {catalogGroupById.get(group.catalog_group_id)?.name ?? group.catalog_group_id}
+                      </span>
+                    )}
+                  </p>
                   {isOwner ? (
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button
@@ -597,9 +661,43 @@ export function StoreDrugGroups() {
                 <span>Tên nhóm thuốc *</span>
                 <input
                   value={groupForm.name}
-                  onChange={(event) => setGroupForm((prev) => ({ ...prev, name: event.target.value }))}
+                  onChange={(event) => {
+                    const name = event.target.value
+                    setGroupForm((prev) => {
+                      const next = { ...prev, name }
+                      // Chỉ tự gợi ý khi tạo mới và người dùng chưa tự chọn nhóm Catalog liên kết.
+                      if (!prev.id && !catalogGroupTouched) {
+                        next.catalogGroupId = suggestCatalogGroupId(name)
+                      }
+                      return next
+                    })
+                  }}
                   className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
                 />
+              </label>
+              <label className="space-y-2 text-sm text-ink-700">
+                <span>Nhóm Catalog liên kết</span>
+                <select
+                  value={groupForm.catalogGroupId}
+                  onChange={(event) => {
+                    setCatalogGroupTouched(true)
+                    setGroupForm((prev) => ({ ...prev, catalogGroupId: event.target.value }))
+                  }}
+                  className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+                >
+                  <option value="">— Chưa liên kết —</option>
+                  {groupForm.catalogGroupId && !catalogGroupById.has(groupForm.catalogGroupId) ? (
+                    <option value={groupForm.catalogGroupId}>(Nhóm đã liên kết không còn hoạt động)</option>
+                  ) : null}
+                  {catalogGroups.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+                <span className="block text-xs text-ink-500">
+                  Liên kết nhóm thuốc Store này với nhóm Catalog tương ứng để đồng bộ thuế/danh mục thuốc.
+                </span>
               </label>
               <label className="space-y-2 text-sm text-ink-700">
                 <span>Mô tả</span>

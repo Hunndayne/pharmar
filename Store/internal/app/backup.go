@@ -827,8 +827,20 @@ func (s *Service) getSyncAPIKey(ctx context.Context) string {
 	return strings.TrimSpace(key)
 }
 
+// defaultBackupMaxFiles giữ mặc định ĐỦ RỘNG để còn đường khôi phục.
+//
+// Mặc định cũ là 10. Với backup tự động mỗi giờ, 10 file = cửa sổ khôi phục chỉ ~11 giờ:
+// một sự cố hỏng dữ liệu xảy ra đêm hôm trước là mọi bản backup còn lại đều đã nhiễm lỗi.
+// Đây chính là lý do sự cố mất kho tháng 7/2026 không khôi phục được: dữ liệu vẫn nguyên
+// đến lúc bị xóa, nhưng mọi backup trong cửa sổ 11 giờ đều là bản sau khi đã xóa.
+//
+// 168 = 24 giờ × 7 ngày. Với backup mỗi giờ tròn thì đúng 7 ngày; nhịp thực tế là 70 phút
+// (ticker 10 phút + auto_interval_hours 1) nên được ~8,2 ngày — dư một chút cho an toàn.
+// Chi phí: ~1,7 MB/bản ⇒ tối đa ~285 MB ở đĩa local và ~285 MB trên R2.
+const defaultBackupMaxFiles = 168
+
 func (s *Service) getBackupMaxFiles(ctx context.Context) int {
-	maxFiles := 10
+	maxFiles := defaultBackupMaxFiles
 	settings, err := s.GetSettingsByGroup(ctx, "backup")
 	if err == nil {
 		if v, ok := settings["backup.max_files"]; ok {

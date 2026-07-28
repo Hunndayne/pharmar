@@ -93,6 +93,7 @@ func New(ctx context.Context, cfg config.Config) (*Service, error) {
 	jobCtx, jobCancel := context.WithCancel(context.Background())
 	svc.backupCancel = jobCancel
 	go svc.runBackupJob(jobCtx)
+	go svc.runCatalogGroupBackfillJob(jobCtx)
 
 	return svc, nil
 }
@@ -192,6 +193,8 @@ func (s *Service) migrate(ctx context.Context) error {
 		  ADD COLUMN IF NOT EXISTS vat_rate NUMERIC(5,2) NOT NULL DEFAULT 0`,
 		`ALTER TABLE store.drug_groups
 		  ADD COLUMN IF NOT EXISTS other_tax_rate NUMERIC(5,2) NOT NULL DEFAULT 0`,
+		`ALTER TABLE store.drug_groups
+		  ADD COLUMN IF NOT EXISTS catalog_group_id UUID`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_drug_groups_category_name_unique
 		  ON store.drug_groups (category_id, lower(name))`,
 		`CREATE INDEX IF NOT EXISTS idx_drug_groups_category_active_sort
@@ -384,7 +387,7 @@ func (s *Service) ListDrugCategories(ctx context.Context, includeInactive bool, 
 
 	groupRows, err := s.pool.Query(
 		ctx,
-		`SELECT g.id::text, g.category_id::text, g.name, g.description, g.vat_rate, g.other_tax_rate, g.is_active, g.sort_order, g.created_at, g.updated_at
+		`SELECT g.id::text, g.category_id::text, g.name, g.description, g.vat_rate, g.other_tax_rate, g.is_active, g.sort_order, g.catalog_group_id::text, g.created_at, g.updated_at
 		   FROM store.drug_groups g
 		  WHERE g.category_id::text = ANY($1)
 		    AND ($2 OR g.is_active = TRUE)
@@ -606,11 +609,16 @@ func (s *Service) CreateDrugGroup(
 		return domain.DrugGroup{}, fmt.Errorf("%w: other_tax_rate must be between 0 and 100", ErrBadRequest)
 	}
 
+	catalogGroupID, err := normalizeCatalogGroupID(payload.CatalogGroupID)
+	if err != nil {
+		return domain.DrugGroup{}, err
+	}
+
 	row := s.pool.QueryRow(
 		ctx,
-		`INSERT INTO store.drug_groups (category_id, name, description, vat_rate, other_tax_rate, is_active, sort_order, created_by, updated_by)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
-		 RETURNING id::text, category_id::text, name, description, vat_rate, other_tax_rate, is_active, sort_order, created_at, updated_at`,
+		`INSERT INTO store.drug_groups (category_id, name, description, vat_rate, other_tax_rate, is_active, sort_order, catalog_group_id, created_by, updated_by)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+		 RETURNING id::text, category_id::text, name, description, vat_rate, other_tax_rate, is_active, sort_order, catalog_group_id::text, created_at, updated_at`,
 		categoryID,
 		name,
 		normalizeOptionalText(payload.Description),
@@ -618,6 +626,7 @@ func (s *Service) CreateDrugGroup(
 		otherTaxRate,
 		isActive,
 		sortOrder,
+		catalogGroupID,
 		normalizeActor(actor),
 	)
 
@@ -691,6 +700,17 @@ func (s *Service) UpdateDrugGroup(
 		group.SortOrder = *payload.SortOrder
 	}
 
+	// catalog_group_id follows the mergeOptional convention used elsewhere in Update*:
+	// nil/absent = keep current value, "" = clear the link, other = must be a valid UUID.
+	if payload.CatalogGroupID != nil {
+		merged := mergeOptional(group.CatalogGroupID, payload.CatalogGroupID)
+		normalized, err := normalizeCatalogGroupID(merged)
+		if err != nil {
+			return domain.DrugGroup{}, err
+		}
+		group.CatalogGroupID = normalized
+	}
+
 	row := s.pool.QueryRow(
 		ctx,
 		`UPDATE store.drug_groups
@@ -701,10 +721,11 @@ func (s *Service) UpdateDrugGroup(
 		        other_tax_rate = $6,
 		        is_active = $7,
 		        sort_order = $8,
+		        catalog_group_id = $9,
 		        updated_at = NOW(),
-		        updated_by = $9
+		        updated_by = $10
 		  WHERE id = $1
-		  RETURNING id::text, category_id::text, name, description, vat_rate, other_tax_rate, is_active, sort_order, created_at, updated_at`,
+		  RETURNING id::text, category_id::text, name, description, vat_rate, other_tax_rate, is_active, sort_order, catalog_group_id::text, created_at, updated_at`,
 		groupID,
 		group.CategoryID,
 		group.Name,
@@ -713,6 +734,7 @@ func (s *Service) UpdateDrugGroup(
 		group.OtherTaxRate,
 		group.IsActive,
 		group.SortOrder,
+		group.CatalogGroupID,
 		normalizeActor(actor),
 	)
 
@@ -787,7 +809,7 @@ func (s *Service) getDrugGroupByID(ctx context.Context, groupID string) (domain.
 
 	row := s.pool.QueryRow(
 		ctx,
-		`SELECT id::text, category_id::text, name, description, vat_rate, other_tax_rate, is_active, sort_order, created_at, updated_at
+		`SELECT id::text, category_id::text, name, description, vat_rate, other_tax_rate, is_active, sort_order, catalog_group_id::text, created_at, updated_at
 		   FROM store.drug_groups
 		  WHERE id = $1`,
 		groupID,
@@ -1438,6 +1460,25 @@ func mergeOptional(current *string, incoming *string) *string {
 	return &value
 }
 
+// normalizeCatalogGroupID validates and canonicalizes an optional catalog_group_id value.
+// A nil pointer or an empty/whitespace-only string means "no link" (nil, nil). Any other
+// value must parse as a UUID, otherwise ErrBadRequest is returned.
+func normalizeCatalogGroupID(value *string) (*string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil, nil
+	}
+	parsed, err := uuid.Parse(trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid catalog_group_id", ErrBadRequest)
+	}
+	normalized := parsed.String()
+	return &normalized, nil
+}
+
 func parseActorUUID(actor string) *uuid.UUID {
 	parsed, err := uuid.Parse(strings.TrimSpace(actor))
 	if err != nil {
@@ -1527,6 +1568,7 @@ func scanDrugGroup(row pgx.Row) (domain.DrugGroup, error) {
 		&item.OtherTaxRate,
 		&item.IsActive,
 		&item.SortOrder,
+		&item.CatalogGroupID,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 	); err != nil {

@@ -58,6 +58,7 @@ export type StoreDrugGroup = {
   other_tax_rate: number | string
   is_active: boolean
   sort_order: number
+  catalog_group_id: string | null
   created_at: string
   updated_at: string
 }
@@ -101,6 +102,7 @@ export type CreateDrugGroupPayload = {
   other_tax_rate?: number
   is_active?: boolean
   sort_order?: number
+  catalog_group_id?: string | null
 }
 
 export type UpdateDrugGroupPayload = {
@@ -111,6 +113,7 @@ export type UpdateDrugGroupPayload = {
   other_tax_rate?: number
   is_active?: boolean
   sort_order?: number
+  catalog_group_id?: string | null
 }
 
 export type BackupRecord = {

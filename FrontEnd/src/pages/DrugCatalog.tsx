@@ -83,6 +83,9 @@ type StoreGroupMeta = {
   groupName: string
   vatRate: number
   otherTaxRate: number
+  // Liên kết tường minh sang nhóm Catalog (Store.drug_groups.catalog_group_id). Null nếu Store
+  // group chưa được liên kết — trường hợp này mới fallback sang join theo tên/code như cũ.
+  catalogGroupId: string | null
 }
 
 type ScanTarget = 'search' | 'form'
@@ -830,8 +833,10 @@ export function DrugCatalog() {
 
               const vatRate = toPriceNumber(group.vat_rate)
               const otherTaxRate = toPriceNumber(group.other_tax_rate)
+              const catalogGroupId = group.catalog_group_id ?? null
               const groupKey = normalizeGroupKey(groupName)
-              if (groupKey) {
+              // Chỉ tham gia join theo tên (fallback) khi store group CHƯA có liên kết tường minh.
+              if (groupKey && !catalogGroupId) {
                 const categories = categorySetByName.get(groupKey) ?? new Set<string>()
                 categories.add(categoryName)
                 categorySetByName.set(groupKey, categories)
@@ -851,6 +856,7 @@ export function DrugCatalog() {
                 groupName,
                 vatRate,
                 otherTaxRate,
+                catalogGroupId,
               } satisfies StoreGroupMeta
             })
             .filter((item): item is StoreGroupMeta => item !== null)
@@ -876,6 +882,9 @@ export function DrugCatalog() {
         if (canManage && storeGroupMetas.length > 0) {
           let hasSyncedNewGroup = false
           for (const meta of storeGroupMetas) {
+            // Store group đã liên kết tường minh với một nhóm Catalog thật sự — không cần tự tạo
+            // nhóm Catalog theo code SG<id> nữa.
+            if (meta.catalogGroupId) continue
             const targetCode = buildCatalogGroupCodeFromStoreGroupId(meta.storeGroupId)
             if (!targetCode) continue
             if (catalogGroupByCode.has(normalizeCodeKey(targetCode))) continue
@@ -912,13 +921,17 @@ export function DrugCatalog() {
       const catalogGroupByCode = new Map(
         resolvedGroups.map((group) => [normalizeCodeKey(group.code), group]),
       )
+      const catalogGroupById = new Map(resolvedGroups.map((group) => [group.id, group]))
       const nextGroupCategoryById: Record<string, string> = {}
       const nextGroupTaxById: Record<string, { vatRate: number; otherTaxRate: number }> = {}
       const nextGroupIdsByCategorySet = new Map<string, Set<string>>()
 
       for (const meta of storeGroupMetas) {
+        // Ưu tiên join bằng catalog_group_id (liên kết tường minh); chỉ fallback sang join theo
+        // code tự sinh (SG<storeGroupId>) khi store group chưa được liên kết.
+        const linkedCatalogGroup = meta.catalogGroupId ? catalogGroupById.get(meta.catalogGroupId) : undefined
         const code = buildCatalogGroupCodeFromStoreGroupId(meta.storeGroupId)
-        const catalogGroup = catalogGroupByCode.get(normalizeCodeKey(code))
+        const catalogGroup = linkedCatalogGroup ?? catalogGroupByCode.get(normalizeCodeKey(code))
         if (!catalogGroup) continue
 
         nextGroupCategoryById[catalogGroup.id] = meta.categoryName

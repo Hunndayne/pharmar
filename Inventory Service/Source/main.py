@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from Routers.Inventory import get_state_persistence_status
+from Routers.Inventory import recovery_router as inventory_recovery_router
 from Routers.Inventory import router as inventory_router
 from Routers.Inventory import shutdown_event as shutdown_inventory_state
 from Routers.Inventory import startup_event as startup_inventory_state
@@ -24,6 +25,7 @@ app = FastAPI(
 )
 
 app.include_router(inventory_router)
+app.include_router(inventory_recovery_router)
 
 
 @app.get("/health")
