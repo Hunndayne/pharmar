@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     STORE_SETTINGS_TTL_SECONDS: int = 30
     STATE_FILE_PATH: str = "/data/runtime_state.json"
     STATE_PERSISTENCE: str = "postgres"
+    # Chỉ có nghĩa khi STATE_PERSISTENCE=postgres. "blob" = công tắc rollback tức thì: quay về
+    # đúng một row JSONB như trước, không đụng tới các bảng inventory_* mới.
+    STATE_STORAGE_MODE: str = "relational"  # "relational" | "blob"
+    # Giữ blob legacy luôn đồng bộ trong CÙNG transaction với bảng quan hệ để rollback không mất dữ liệu.
+    STATE_LEGACY_BLOB_DUAL_WRITE: bool = True
 
     # Notification Service — trigger restock refresh after nhập hàng
     NOTIFICATION_SERVICE_URL: str = ""  # empty = disabled

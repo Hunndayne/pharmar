@@ -21,6 +21,7 @@ import asyncpg
 import pytest
 
 from Routers import Inventory as inv
+from Source.persistence.relational_store import ALL_TABLES, RelationalStore
 
 DSN = os.environ.get("INVENTORY_TEST_DSN")
 
@@ -58,6 +59,8 @@ def _payload(drugs=40, batches=25, receipts=12, bad_date=False):
 async def _reset_db(payload):
     conn = await asyncpg.connect(DSN)
     try:
+        for table in ALL_TABLES:
+            await conn.execute(f"DROP TABLE IF EXISTS {table}")
         await conn.execute("DROP TABLE IF EXISTS inventory_runtime_state")
         await conn.execute("DROP TABLE IF EXISTS inventory_runtime_state_history")
         await conn.execute(
@@ -104,6 +107,10 @@ def state(monkeypatch):
     inv.runtime_state.save_failed = False
     inv.runtime_state.state_unavailable = False
     inv.runtime_state.lock = asyncio.Lock()
+    inv.runtime_state.save_lock = None
+    inv.runtime_state.relational_store = RelationalStore()
+    inv.runtime_state.relational_ready = False
+    inv.runtime_state.storage_mode = None
     inv.initialize_empty_state()
     yield inv
     asyncio.run(inv._discard_pg_pool())

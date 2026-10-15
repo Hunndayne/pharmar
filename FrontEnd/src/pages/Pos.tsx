@@ -777,6 +777,9 @@ export function Pos() {
   const [selectedDrugId, setSelectedDrugId] = useState('')
   const [selectedUnitId, setSelectedUnitId] = useState('')
   const [selectedQuantity, setSelectedQuantity] = useState('1')
+  const [drugCodeInput, setDrugCodeInput] = useState('')
+  const [drugCodeError, setDrugCodeError] = useState('')
+  const quantityInputRef = useRef<HTMLInputElement>(null)
 
   const [addingByQr, setAddingByQr] = useState(false)
   const [addingByDrug, setAddingByDrug] = useState(false)
@@ -939,6 +942,37 @@ export function Pos() {
     if (selectedDrugId && filteredDrugs.some((drug) => drug.id === selectedDrugId)) return
     setSelectedDrugId(filteredDrugs[0].id)
   }, [drugSearch, filteredDrugs, findDrugByExactSearch, selectedDrugId])
+
+  // Chỉ phản ứng khi thuốc được chọn thay đổi, không ghi đè nội dung đang gõ trong ô mã.
+  const selectedDrugCode = selectedDrug?.code ?? ''
+  useEffect(() => {
+    setDrugCodeInput(selectedDrugCode)
+    setDrugCodeError('')
+  }, [selectedDrugCode])
+
+  const commitDrugCode = useCallback(
+    (focusQuantity: boolean) => {
+      const normalized = normalizeSearchText(drugCodeInput)
+      if (!normalized) {
+        setDrugCodeError('')
+        return
+      }
+      const matchedDrug =
+        searchableDrugs.find((drug) => normalizeSearchText(drug.code) === normalized) ??
+        barcodeIndex.get(normalizeBarcodeText(drugCodeInput))?.drug ??
+        null
+      if (!matchedDrug) {
+        setDrugCodeError(`Không tìm thấy mã ${drugCodeInput.trim()}`)
+        return
+      }
+      setDrugCodeError('')
+      setSelectedDrugId(matchedDrug.id)
+      setDrugSearch(buildDrugSearchLabel(matchedDrug))
+      setDrugCodeInput(matchedDrug.code)
+      if (focusQuantity) quantityInputRef.current?.focus()
+    },
+    [drugCodeInput, searchableDrugs, barcodeIndex],
+  )
 
   useEffect(() => {
     if (!selectedDrug) {
@@ -3408,8 +3442,8 @@ export function Pos() {
             </button>
           </div>
 
-          <div className="mt-2 grid grid-cols-2 gap-2 sm:mt-3 sm:gap-3 md:grid-cols-2 2xl:grid-cols-[minmax(0,1.7fr),minmax(0,1fr),120px,160px,auto]">
-            <div className="col-span-2 space-y-1 min-w-0 2xl:col-span-1">
+          <div className="mt-2 grid grid-cols-2 gap-2 sm:mt-3 sm:gap-3 md:grid-cols-2 2xl:grid-cols-[140px,minmax(0,1fr),120px,160px,auto]">
+            <div className="col-span-full space-y-1 min-w-0">
               <input
                 value={drugSearch}
                 onChange={(event) => {
@@ -3451,6 +3485,27 @@ export function Pos() {
               </datalist>
             </div>
 
+            <div className="min-w-0 space-y-1">
+              <input
+                value={drugCodeInput}
+                onChange={(event) => {
+                  setDrugCodeInput(event.target.value)
+                  setDrugCodeError('')
+                }}
+                onBlur={() => commitDrugCode(false)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter') return
+                  event.preventDefault()
+                  commitDrugCode(true)
+                }}
+                className="w-full min-w-0 rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-sm sm:rounded-2xl sm:px-4 sm:py-2"
+                placeholder="Mã thuốc"
+                aria-label="Mã thuốc"
+                aria-invalid={drugCodeError ? true : undefined}
+              />
+              {drugCodeError && <p className="px-1 text-xs text-red-600">{drugCodeError}</p>}
+            </div>
+
             <select
               value={selectedUnitId}
               onChange={(event) => setSelectedUnitId(event.target.value)}
@@ -3465,6 +3520,7 @@ export function Pos() {
             </select>
 
             <input
+              ref={quantityInputRef}
               value={selectedQuantity}
               onChange={(event) => setSelectedQuantity(event.target.value)}
               className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-sm sm:rounded-2xl sm:px-4 sm:py-2"
@@ -3485,7 +3541,7 @@ export function Pos() {
                 void handleAddByDrug()
               }}
               disabled={addingByDrug || !activeOrder || !selectedDrug || !selectedUnit || selectedDrugOutOfStock}
-              className="rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink-900 disabled:opacity-60 col-span-2 sm:rounded-2xl sm:px-4 sm:py-2 sm:text-sm md:col-span-2 2xl:col-span-1"
+              className="rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink-900 disabled:opacity-60 sm:col-span-2 sm:rounded-2xl sm:px-4 sm:py-2 sm:text-sm md:col-span-2 2xl:col-span-1"
             >
               {addingByDrug ? 'Đang thêm...' : 'Thêm theo gợi ý'}
             </button>
