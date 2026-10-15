@@ -35,7 +35,7 @@ from Source.persistence.relational_store import (  # noqa: E402
 
 DSN = os.environ.get("INVENTORY_TEST_DSN")
 needs_db = pytest.mark.skipif(not DSN, reason="Cần INVENTORY_TEST_DSN trỏ tới một Postgres dùng để test")
-REAL_PAYLOAD_PATH = Path(r"D:\code\Pharmar\recovery\rebuilt_payload.json")
+REAL_PAYLOAD_PATH = Path(__file__).resolve().parents[2] / "recovery" / "rebuilt_payload.json"
 
 
 def _real_payload() -> dict:
