@@ -113,6 +113,8 @@ export type ProductListItem = {
   is_active: boolean
   created_at: string
   updated_at: string
+  // Catalog bản cũ (trước V1.16) không trả field này.
+  units?: ProductUnitItem[]
 }
 
 export type ProductDetailItem = {

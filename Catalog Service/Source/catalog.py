@@ -405,6 +405,8 @@ def to_product_list_item(product: Product) -> ProductListItemResponse:
         is_active=product.is_active,
         created_at=product.created_at,
         updated_at=product.updated_at,
+        # Các truy vấn danh sách đã selectinload units, trả kèm để bảng danh mục khỏi gọi chi tiết từng dòng.
+        units=[to_product_unit_response(unit) for unit in _sort_product_units(product.units)],
     )
 
 

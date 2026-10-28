@@ -346,6 +346,7 @@ class ProductListItemResponse(MoneyOutputModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    units: list[ProductUnitResponse] = Field(default_factory=list)
 
 
 class ProductDetailResponse(BaseModel):
