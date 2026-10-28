@@ -462,73 +462,58 @@ def to_supplier_debt_history(entry: SupplierDebtHistory) -> SupplierDebtHistoryR
     )
 
 
-async def product_has_inventory_batches(product_id: UUID) -> bool:
-    base_url = settings.INVENTORY_SERVICE_URL.strip()
-    if not base_url:
-        return False
+def _inventory_unverifiable(product_id: UUID, reason: str) -> HTTPException:
+    logger.warning("Từ chối xóa sản phẩm %s: không kiểm tra được tồn kho Inventory (%s)", product_id, reason)
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Không kiểm tra được tồn kho bên Inventory nên chưa thể xóa sản phẩm, vui lòng thử lại sau",
+    )
 
-    target_url = f"{base_url.rstrip('/')}/api/v1/inventory/batches"
+
+def _is_inventory_drug_not_found(response: httpx.Response) -> bool:
+    # Inventory trả 404 "Drug not found for '<id>'" khi chưa từng biết thuốc này. 404 khác
+    # (sai URL, sai route) không chứng minh được gì nên không được coi là "không có lô".
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            response = await client.get(
-                target_url,
-                params={
-                    "drug": str(product_id),
-                },
-            )
-    except httpx.RequestError:
+        detail = response.json().get("detail")
+    except (ValueError, AttributeError):
         return False
-
-    if response.status_code >= 400:
-        return False
-
-    data: Any = response.json()
-    if isinstance(data, dict):
-        items = data.get("items")
-        if isinstance(items, list):
-            return any(parse_decimal(item.get("qty_remaining"), Decimal("0")) > 0 for item in items if isinstance(item, dict))
-        total = data.get("total")
-        if isinstance(total, int):
-            return total > 0
-        return False
-
-    if isinstance(data, list):
-        return any(parse_decimal(item.get("qty_remaining"), Decimal("0")) > 0 for item in data if isinstance(item, dict))
-
-    return False
+    return isinstance(detail, str) and detail.startswith("Drug not found")
 
 
-async def product_has_inventory_history(product_id: UUID) -> bool:
+async def fetch_inventory_batches_for_product(product_id: UUID) -> list[dict[str, Any]]:
+    """Mọi lô của sản phẩm bên Inventory; [] khi Inventory chưa từng biết thuốc này.
+
+    Fail-closed: không hỏi được Inventory thì raise 503 chứ không coi là "không có lô". Bản
+    fail-open cũ đã cho xóa Arginine T0386 khi Inventory còn lô, để lại bản ghi mồ côi và mã
+    T0386 bị cấp lại cho thuốc khác.
+    """
     base_url = settings.INVENTORY_SERVICE_URL.strip()
     if not base_url:
-        return True
+        raise _inventory_unverifiable(product_id, "INVENTORY_SERVICE_URL chưa cấu hình")
 
     target_url = f"{base_url.rstrip('/')}/api/v1/inventory/batches"
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             response = await client.get(target_url, params={"drug": str(product_id)})
-    except httpx.RequestError:
-        return True
+    except httpx.HTTPError as exc:
+        raise _inventory_unverifiable(product_id, f"lỗi kết nối {exc.__class__.__name__}") from exc
 
-    if response.status_code == status.HTTP_404_NOT_FOUND:
-        return False
-    if response.status_code >= 400:
-        return True
+    if response.status_code == status.HTTP_404_NOT_FOUND and _is_inventory_drug_not_found(response):
+        return []
+    if response.status_code != status.HTTP_200_OK:
+        raise _inventory_unverifiable(product_id, f"HTTP {response.status_code}")
 
-    data: Any = response.json()
-    if isinstance(data, dict):
-        items = data.get("items")
-        if isinstance(items, list):
-            return any(isinstance(item, dict) for item in items)
-        total = data.get("total")
-        if isinstance(total, int):
-            return total > 0
-        return False
+    try:
+        data: Any = response.json()
+    except ValueError as exc:
+        raise _inventory_unverifiable(product_id, "phản hồi không phải JSON") from exc
+    if not isinstance(data, list):
+        raise _inventory_unverifiable(product_id, "phản hồi không phải danh sách lô")
+    return [item for item in data if isinstance(item, dict)]
 
-    if isinstance(data, list):
-        return any(isinstance(item, dict) for item in data)
 
-    return False
+def inventory_batches_have_stock(batches: list[dict[str, Any]]) -> bool:
+    return any(parse_decimal(item.get("qty_remaining"), Decimal("0")) > 0 for item in batches)
 
 
 async def product_has_sale_history(product_id: UUID, token: str) -> bool:
