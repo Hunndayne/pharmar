@@ -190,6 +190,12 @@ const formatUnits = (units: Unit[]) =>
     .map((unit) => `${unit.name} (${unitLevelLabel[unit.level]}) ${Math.round(unit.price).toLocaleString('vi-VN')}đ`)
     .join(' · ')
 
+const formatUnitsCell = (drug: Drug, detailLoading: boolean) => {
+  if (drug.units.length > 0) return formatUnits(drug.units)
+  if (drug.detailLoaded) return 'Chưa có đơn vị'
+  return detailLoading ? 'Đang tải chi tiết...' : 'Mở chi tiết để xem'
+}
+
 const inferFormFromDrug = (drug: Drug) => {
   const byLevel: Partial<Record<ProductUnitRole, Unit>> = {}
   for (const unit of drug.units) {
@@ -295,7 +301,7 @@ const mapProductListItemToDrug = (item: ProductListItem): Drug => {
     barcode: item.barcode ?? '',
     usage: '',
     note: '',
-    units: [],
+    units: toUiUnitsFromProductUnits(item.units ?? []),
     unitConfigStatus: 'ok',
     active: item.is_active,
     hasTransactions: false,
@@ -2603,13 +2609,22 @@ export function DrugCatalog() {
                     <td className="px-6 py-4 text-ink-700">{drug.group}</td>
                     <td className="px-6 py-4 text-ink-700">{drug.maker}</td>
                     <td className="px-6 py-4 text-ink-900">
-                      {drug.detailLoaded
-                        ? formatUnits(drug.units)
-                        : (detailLoadingMap[drug.id] ? 'Đang tải chi tiết...' : 'Mở chi tiết để xem')}
+                      {drug.units.length > 0 ? (
+                        <div className="space-y-0.5 whitespace-nowrap">
+                          {drug.units.map((unit) => (
+                            <p key={unit.id}>
+                              <span className="font-semibold">{unit.name}</span>{' '}
+                              <span className="text-ink-600">{Math.round(unit.price).toLocaleString('vi-VN')}đ</span>
+                            </p>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-ink-600">{formatUnitsCell(drug, Boolean(detailLoadingMap[drug.id]))}</span>
+                      )}
                     </td>
                     <td className="px-6 py-4 text-ink-700">{drug.barcode || '-'}</td>
                     <td className="px-6 py-4">
-                      <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusStyles[drug.active ? 'Đang bán' : 'Ngừng bán']}`}>
+                      <span className={`inline-block whitespace-nowrap rounded-full px-3 py-1 text-xs font-semibold ${statusStyles[drug.active ? 'Đang bán' : 'Ngừng bán']}`}>
                         {drug.active ? 'Đang bán' : 'Ngừng bán'}
                       </span>
                     </td>
@@ -2695,7 +2710,7 @@ export function DrugCatalog() {
                         <p className="mt-1 text-xs text-ink-600">Hoạt chất: {drug.activeIngredient}</p>
                       ) : null}
                     </div>
-                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusStyles[drug.active ? 'Đang bán' : 'Ngừng bán']}`}>
+                    <span className={`shrink-0 whitespace-nowrap rounded-full px-3 py-1 text-xs font-semibold ${statusStyles[drug.active ? 'Đang bán' : 'Ngừng bán']}`}>
                       {drug.active ? 'Đang bán' : 'Ngừng bán'}
                     </span>
                   </div>
@@ -2708,9 +2723,7 @@ export function DrugCatalog() {
                   </div>
                   <p className="mt-3 text-xs text-ink-700">
                     <span className="font-semibold text-ink-900">Đơn vị:</span>{' '}
-                    {drug.detailLoaded
-                      ? formatUnits(drug.units)
-                      : (detailLoadingMap[drug.id] ? 'Đang tải chi tiết...' : 'Mở chi tiết để xem')}
+                    {formatUnitsCell(drug, Boolean(detailLoadingMap[drug.id]))}
                   </p>
 
                   <div className="mt-3 flex flex-wrap gap-2">

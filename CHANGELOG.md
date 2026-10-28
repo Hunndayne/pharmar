@@ -2,6 +2,16 @@
 
 ---
 
+## V1.16 — 2026-10-29
+
+### Cải thiện
+- **Danh mục thuốc hiện đơn vị & giá ngay trên bảng.** Trước đây cột "Đơn vị & giá" chỉ hiện "Mở chi tiết để xem" cho tới khi bấm Chi tiết từng thuốc, vì API danh sách sản phẩm không trả đơn vị (dù truy vấn đã nạp sẵn). `GET /api/v1/catalog/products` và `/products/search` nay trả thêm `units` (cùng định dạng với API chi tiết, giữ nguyên `base_unit`/`base_price` cho client cũ); bảng desktop liệt kê mỗi đơn vị một dòng kèm giá, thẻ mobile dùng chung dữ liệu. Thêm 2 test (`Catalog Service/tests/test_product_list_units.py`).
+
+### Sửa lỗi
+- Badge trạng thái "Đang bán"/"Ngừng bán" trong Danh mục thuốc bị vỡ thành hai dòng khi cột hẹp.
+
+---
+
 ## V1.15 — 2026-10-29
 
 ### Sửa lỗi
