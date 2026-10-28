@@ -2,6 +2,31 @@
 
 ---
 
+## V1.14 — 2026-10-28
+
+### Tính năng mới
+- **Inventory — endpoint gộp thuốc mồ côi `POST /api/v1/inventory/admin/merge-drugs`** (chỉ owner/admin): đổi mọi tham chiếu `drug_id`, `unit_id` và `sku` của dòng giữ chỗ (lô, dòng phiếu nhập, movement, giữ chỗ, kiểm kê, thu hồi…) từ thuốc nguồn sang thuốc đích rồi xóa bản ghi nguồn. Mặc định `dry_run=true` chỉ trả báo cáo; ghi thật phải gửi `dry_run=false`. Chạy dưới `runtime_state.lock`, chụp snapshot vào `inventory_runtime_state_history` trước khi ghi, tự hoàn tác trong bộ nhớ nếu lưu thất bại. Từ chối khi: thuốc nguồn còn trong Catalog (kể cả đã xóa mềm, vì đồng bộ không lọc `is_active` nên sẽ kéo nó về lại), thuốc đích không có trong Catalog, tên hai thuốc khác nhau, hoặc thuốc đích thiếu đơn vị mà nguồn đang dùng. Việc kiểm tra Catalog chỉ coi là "không có" khi Catalog trả đúng 404; timeout/5xx trả 502 thay vì fail-open. Logic nằm ở `Source/drug_merge.py`, có 22 test (`tests/test_drug_merge.py`) gồm một test chạy trên backup production thật khi đặt `PHARMAR_BACKUP_SQL` và hai test end-to-end trên Postgres khi đặt thêm `INVENTORY_TEST_DSN`.
+
+### Sửa lỗi
+- **Arginine xuất hiện hai lần trên POS (T0182 và T0386, mã T0386 trùng với Natri clorid).** Nguyên nhân: sản phẩm Arginine T0386 bị xóa khỏi Catalog ngày 27/05/2026 trong khi Inventory còn lô của nó; Inventory giữ lại bản cũ không cập nhật theo Catalog, còn mã T0386 được Catalog cấp lại cho Natri clorid. Dùng endpoint gộp ở trên để xử lý; kiểm tra xóa fail-open của Catalog và log cảnh báo khi đồng bộ vẫn chưa được sửa.
+
+---
+
+## V1.13 — 2026-10-15
+
+### Cải thiện
+- **Inventory — lưu kho theo từng bản ghi thay vì một blob JSON duy nhất (giai đoạn 1 của chuyển Inventory sang DB thật)**: mỗi thuốc, lô, phiếu nhập, movement, giữ chỗ, kiểm kê, thu hồi… nằm trên một dòng riêng (`inventory_drugs`, `inventory_batches`, `inventory_receipts`, `inventory_movements`, …), toàn bộ field giữ nguyên trong cột `data JSONB` kèm các cột trích xuất có index (drug_id, exp_date, receipt_date, occurred_at…) để truy vấn SQL sau này. Không còn cảnh một lần ghi lỗi là mất trắng cả kho. Logic nghiệp vụ của 36 endpoint giữ nguyên.
+- **Mỗi lần lưu chỉ ghi các dòng thực sự thay đổi**; mọi dòng bị xóa (hoặc bị ghi đè bất thường) đều được chép vào `inventory_deleted_rows` trước khi xóa — không có đường xóa dữ liệu nào không để lại bản lưu.
+- **Migrate tự động và an toàn khi khởi động**: lần đầu chạy bản mới, dữ liệu được chuyển từ blob sang bảng trong một transaction, đọc lại và so khớp từng bản ghi; lệch bất kỳ chỗ nào thì rollback và tự chạy tiếp ở chế độ blob như cũ.
+- **Rollback tức thì không cần build lại**: đặt `INVENTORY_STATE_STORAGE_MODE=blob` để quay về cách lưu cũ. Blob cũ vẫn được ghi song song (`INVENTORY_STATE_LEGACY_BLOB_DUAL_WRITE=true`, mặc định) nên luôn cập nhật; nếu sau đó bật lại chế độ bảng, hệ thống tự phát hiện blob mới hơn và migrate lại.
+- `/health` của Inventory thêm trường `state_storage` (`relational` / `blob` / `blob-fallback` / `file`).
+- Thêm 43 test (`tests/test_relational_store.py`, `tests/test_storage_modes.py`) và script `scripts/verify_relational_roundtrip.py` kiểm chứng trọn vòng migrate → ghi → khởi động lại trên dữ liệu kho thật (chỉ chạy trên database test).
+
+### Tính năng mới
+- **POS — tách ô nhập mã thuốc riêng**: ô tìm kiếm thuốc chiếm trọn một hàng; hàng dưới có ô "Mã thuốc" riêng — gõ mã (hoặc barcode) rồi Enter để chọn đúng thuốc và nhảy sang ô số lượng, mã sai báo đỏ ngay dưới ô. Hai ô tự đồng bộ khi chọn thuốc từ ô tìm kiếm.
+
+---
+
 ## V1.12 — 2026-07-27
 
 ### Sửa lỗi

@@ -18,6 +18,7 @@ from redis.asyncio import Redis
 from types import SimpleNamespace
 
 from Source.core.config import settings
+from Source.persistence.relational_store import RelationalStateMismatch, RelationalStore
 from Source.domain import (
     BatchStatus,
     MovementType,
@@ -34,10 +35,12 @@ from Source.schemas.inventory import (
     ReserveRequest,
     StockAdjustmentRequest,
     DrugRecallCreateRequest,
+    DrugMergeRequest,
     DrugRecallUpdateRequest,
     StockAuditCreateRequest,
     StockAuditUpdateRequest,
 )
+from Source.drug_merge import DrugMergeError, apply_plan, plan_drug_merge, revert_plan
 
 runtime_state = SimpleNamespace()
 logger = logging.getLogger(__name__)
@@ -495,6 +498,32 @@ async def fetch_catalog_json(
         return None
     payload = response.json()
     return payload if isinstance(payload, dict) else None
+
+
+async def fetch_catalog_product_strict(product_id: str, token: str) -> dict[str, Any] | None:
+    """Đọc một sản phẩm Catalog; chỉ trả None khi Catalog trả 404, mọi lỗi khác thành 502.
+
+    fetch_catalog_json gộp timeout/5xx vào None. Với thao tác phá hủy như gộp thuốc, lỗi mạng bị
+    hiểu thành "sản phẩm không tồn tại" là đủ để gộp nhầm một thuốc Catalog vẫn đang giữ.
+    """
+    url = f"{settings.CATALOG_SERVICE_URL.rstrip('/')}/api/v1/catalog/products/{product_id}"
+    timeout = httpx.Timeout(settings.CATALOG_SYNC_TIMEOUT_SECONDS)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Không liên lạc được Catalog") from exc
+
+    if response.status_code == 404:
+        return None
+    if response.status_code in {401, 403}:
+        raise HTTPException(status_code=response.status_code, detail="Unauthorized to read catalog product")
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Catalog trả lỗi {response.status_code}")
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="Catalog trả dữ liệu sản phẩm không hợp lệ")
+    return payload
 
 
 def upsert_drug_from_catalog_product(
@@ -960,6 +989,170 @@ async def _archive_current_state(conn: Any, old_counts: tuple[int, int, int]) ->
     )
 
 
+async def _archive_state_snapshot() -> bool:
+    """Chụp state đang lưu vào history trước một thao tác sửa dữ liệu hàng loạt.
+
+    Trả False khi storage không phải Postgres (chế độ file) nên không có history để ghi.
+    """
+    pool = getattr(runtime_state, "pg_pool", None)
+    if settings.STATE_PERSISTENCE.lower() != "postgres" or pool is None:
+        return False
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            stored = await conn.fetchrow(_STORED_COUNTS_SQL)
+            if stored is None:
+                return False
+            await _archive_current_state(conn, (stored["drugs"], stored["batches"], stored["receipts"]))
+    return True
+
+
+def _effective_storage_mode() -> str:
+    """"file" | "blob" | "relational" | "blob-fallback".
+
+    Mọi giá trị STATE_STORAGE_MODE khác "relational" (kể cả gõ sai) đều rơi về "blob" —
+    đường cũ — để công tắc rollback không bao giờ vô tình bật đường mới.
+    """
+    if settings.STATE_PERSISTENCE.lower() != "postgres":
+        return "file"
+    if getattr(runtime_state, "storage_mode", None) == "blob-fallback":
+        return "blob-fallback"
+    return "relational" if settings.STATE_STORAGE_MODE.strip().lower() == "relational" else "blob"
+
+
+def get_state_storage_mode() -> str:
+    return _effective_storage_mode()
+
+
+def _get_store() -> RelationalStore:
+    store = getattr(runtime_state, "relational_store", None)
+    if store is None:
+        store = runtime_state.relational_store = RelationalStore()
+    return store
+
+
+def _get_save_lock() -> asyncio.Lock:
+    # Khóa riêng cho save/load quan hệ: KHÔNG dùng runtime_state.lock vì caller (handler, vòng
+    # retry) đã giữ nó — dùng chung sẽ deadlock.
+    lock = getattr(runtime_state, "save_lock", None)
+    if lock is None:
+        lock = runtime_state.save_lock = asyncio.Lock()
+    return lock
+
+
+def _build_state_payload() -> dict[str, Any]:
+    return {
+        "counters": runtime_state.counters,
+        "suppliers": runtime_state.suppliers,
+        "drugs": runtime_state.drugs,
+        "receipts": runtime_state.receipts,
+        "batches": runtime_state.batches,
+        "movements": runtime_state.movements,
+        "reservations": runtime_state.reservations,
+        "sale_events": runtime_state.sale_events,
+        "audits": runtime_state.audits,
+        "drug_recalls": runtime_state.drug_recalls,
+        "disposal_log": runtime_state.disposal_log,
+        "catalog_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
+        "catalog_drugs_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
+        "catalog_suppliers_last_sync_at": runtime_state.catalog_suppliers_last_sync_at,
+    }
+
+
+async def _write_blob_state(conn: Any, serialized: str, new_counts: tuple[int, int, int]) -> datetime:
+    """Ghi blob legacy (kiểm tra ghi-đè-phá-hủy + archive). Phải chạy trong transaction của caller.
+
+    Trả về updated_at đúng như đã lưu để caller ghi blob sync marker.
+    """
+    stored = await conn.fetchrow(_STORED_COUNTS_SQL)
+
+    if stored is not None:
+        old_counts = (stored["drugs"], stored["batches"], stored["receipts"])
+        if _is_destructive_write(old_counts, new_counts):
+            logger.error(
+                "PHÁT HIỆN ghi đè phá hủy dữ liệu: drugs %s->%s, batches %s->%s, "
+                "receipts %s->%s. Đã lưu bản cũ vào inventory_runtime_state_history.",
+                old_counts[0], new_counts[0],
+                old_counts[1], new_counts[1],
+                old_counts[2], new_counts[2],
+            )
+            await _archive_current_state(conn, old_counts)
+
+    return await conn.fetchval(
+        """
+        INSERT INTO inventory_runtime_state
+            (id, payload, updated_at, drug_count, batch_count, receipt_count)
+        VALUES (1, $1::jsonb, NOW(), $2, $3, $4)
+        ON CONFLICT (id)
+        DO UPDATE SET
+            payload       = EXCLUDED.payload,
+            updated_at    = NOW(),
+            drug_count    = EXCLUDED.drug_count,
+            batch_count   = EXCLUDED.batch_count,
+            receipt_count = EXCLUDED.receipt_count
+        RETURNING updated_at
+        """,
+        serialized, new_counts[0], new_counts[1], new_counts[2],
+    )
+
+
+async def _save_blob_only(payload: dict[str, Any]) -> None:
+    serialized = json.dumps(payload, ensure_ascii=False, default=_json_default)
+    new_counts = (len(payload["drugs"]), len(payload["batches"]), len(payload["receipts"]))
+    async with runtime_state.pg_pool.acquire() as conn:
+        async with conn.transaction():
+            await _write_blob_state(conn, serialized, new_counts)
+
+
+async def _save_relational(payload: dict[str, Any]) -> None:
+    store = _get_store()
+    # Từ lúc tính diff tới lúc serialize KHÔNG có await: plan và blob phản ánh cùng một thời điểm.
+    plan = store.compute_diff(payload)
+    if plan.destructive:
+        # Không chặn (xóa thật vẫn có thể hợp lệ); các dòng bị xóa đã được module archive
+        # vào inventory_deleted_rows trong cùng transaction.
+        logger.error(
+            "PHÁT HIỆN diff phá hủy dữ liệu (relational): %s. Các dòng bị xóa được lưu vào "
+            "inventory_deleted_rows. Chi tiết: %s",
+            "; ".join(plan.destructive), plan.summary(),
+        )
+    ready = bool(getattr(runtime_state, "relational_ready", False))
+    if ready and plan.is_empty():
+        return  # không có gì đổi: không đụng DB
+
+    serialized = json.dumps(payload, ensure_ascii=False, default=_json_default)
+    new_counts = (len(payload["drugs"]), len(payload["batches"]), len(payload["receipts"]))
+    dual_write = bool(settings.STATE_LEGACY_BLOB_DUAL_WRITE)
+
+    async with runtime_state.pg_pool.acquire() as conn:
+        if not ready and not await store.is_migrated(conn):
+            # Lần lưu đầu của cài mới (chưa có bảng quan hệ, chưa có blob): ghi blob trước trong
+            # transaction riêng (đường đã được kiểm chứng), rồi migrate từ chính nội dung blob đó.
+            async with conn.transaction():
+                blob_ts = await _write_blob_state(conn, serialized, new_counts)
+            try:
+                await store.ensure_schema(conn)
+                await store.migrate_from_payload(conn, json.loads(serialized), blob_ts)
+                runtime_state.relational_ready = True
+            except Exception as exc:
+                # Blob đã commit nên dữ liệu AN TOÀN -> không đặt save_failed. Lần khởi động sau
+                # (hoặc lần lưu kế tiếp, vì chưa có marker) sẽ migrate lại từ blob.
+                if isinstance(exc, RelationalStateMismatch):
+                    runtime_state.storage_mode = "blob-fallback"
+                logger.critical(
+                    "Migrate sang bảng quan hệ thất bại ở lần lưu đầu, dữ liệu vẫn nằm trong blob: %s",
+                    exc, exc_info=True,
+                )
+            return
+
+        async with conn.transaction():
+            await store.apply_diff(conn, plan)
+            if dual_write:
+                blob_ts = await _write_blob_state(conn, serialized, new_counts)
+                await store.write_blob_sync_marker(conn, blob_ts)
+        # Không có await giữa COMMIT và commit_diff; nếu bị cancel đúng lúc, diff lần sau idempotent.
+        store.commit_diff(plan)
+
+
 async def save_runtime_state_safe() -> None:
     # TRIPWIRE: nếu chưa nạp được state từ storage thì state trong memory KHÔNG phản ánh
     # dữ liệu thật — ghi nó xuống sẽ hủy dữ liệu đang còn nguyên trong DB.
@@ -971,57 +1164,17 @@ async def save_runtime_state_safe() -> None:
         return
     try:
         if settings.STATE_PERSISTENCE.lower() == "postgres":
-            await init_state_store()
-            payload = {
-                "counters": runtime_state.counters,
-                "suppliers": runtime_state.suppliers,
-                "drugs": runtime_state.drugs,
-                "receipts": runtime_state.receipts,
-                "batches": runtime_state.batches,
-                "movements": runtime_state.movements,
-                "reservations": runtime_state.reservations,
-                "sale_events": runtime_state.sale_events,
-                "audits": runtime_state.audits,
-                "drug_recalls": runtime_state.drug_recalls,
-                "disposal_log": runtime_state.disposal_log,
-                "catalog_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
-                "catalog_drugs_last_sync_at": runtime_state.catalog_drugs_last_sync_at,
-                "catalog_suppliers_last_sync_at": runtime_state.catalog_suppliers_last_sync_at,
-            }
-            serialized = json.dumps(payload, ensure_ascii=False, default=_json_default)
-            new_counts = (len(payload["drugs"]), len(payload["batches"]), len(payload["receipts"]))
-
-            async with runtime_state.pg_pool.acquire() as conn:
-                async with conn.transaction():
-                    stored = await conn.fetchrow(_STORED_COUNTS_SQL)
-
-                    if stored is not None:
-                        old_counts = (stored["drugs"], stored["batches"], stored["receipts"])
-                        if _is_destructive_write(old_counts, new_counts):
-                            logger.error(
-                                "PHÁT HIỆN ghi đè phá hủy dữ liệu: drugs %s->%s, batches %s->%s, "
-                                "receipts %s->%s. Đã lưu bản cũ vào inventory_runtime_state_history.",
-                                old_counts[0], new_counts[0],
-                                old_counts[1], new_counts[1],
-                                old_counts[2], new_counts[2],
-                            )
-                            await _archive_current_state(conn, old_counts)
-
-                    await conn.execute(
-                        """
-                        INSERT INTO inventory_runtime_state
-                            (id, payload, updated_at, drug_count, batch_count, receipt_count)
-                        VALUES (1, $1::jsonb, NOW(), $2, $3, $4)
-                        ON CONFLICT (id)
-                        DO UPDATE SET
-                            payload       = EXCLUDED.payload,
-                            updated_at    = NOW(),
-                            drug_count    = EXCLUDED.drug_count,
-                            batch_count   = EXCLUDED.batch_count,
-                            receipt_count = EXCLUDED.receipt_count
-                        """,
-                        serialized, new_counts[0], new_counts[1], new_counts[2],
-                    )
+            if _effective_storage_mode() == "relational":
+                async with _get_save_lock():
+                    # Kiểm tra lại trong lock: state có thể vừa bị đánh dấu không sẵn sàng khi chờ.
+                    if getattr(runtime_state, "state_unavailable", False):
+                        logger.error("TỪ CHỐI ghi state: state không sẵn sàng (kiểm tra trong lock).")
+                        return
+                    await init_state_store()
+                    await _save_relational(_build_state_payload())
+            else:
+                await init_state_store()
+                await _save_blob_only(_build_state_payload())
         else:
             save_runtime_state()
     except Exception:
@@ -1164,6 +1317,98 @@ class StateLoadError(Exception):
     """
 
 
+def _blob_row_to_payload(row: Any) -> dict[str, Any]:
+    payload = row["payload"]
+    try:
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+    except Exception as exc:
+        raise StateLoadError(f"payload trong DB không phải JSON hợp lệ: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise StateLoadError(f"payload trong DB có kiểu không mong đợi: {type(payload).__name__}")
+    return payload
+
+
+def _fall_back_to_blob(reason: str) -> None:
+    runtime_state.storage_mode = "blob-fallback"
+    runtime_state.relational_ready = False
+    logger.critical(
+        "Lưu trữ quan hệ lỗi (%s). Tiến trình này chuyển sang chế độ blob-fallback: chỉ đọc/ghi "
+        "blob legacy như trước. Dữ liệu trong blob vẫn nguyên vẹn.",
+        reason,
+    )
+
+
+async def _load_relational_state() -> tuple[str, Any]:
+    """Nạp state ở chế độ relational. Trả về (trạng_thái, row_blob):
+
+    - "loaded":   đã nạp xong (từ bảng, hoặc từ blob vừa migrate).
+    - "fallback": bảng quan hệ không dùng được nhưng blob là bản mới nhất -> caller nạp từ row_blob.
+    - "empty":    chưa có blob lẫn bảng (cài mới) -> caller đi tiếp đường migrate file cũ.
+    Mọi lỗi đọc => StateLoadError, không bao giờ coi là "rỗng".
+    """
+    store = _get_store()
+    runtime_state.relational_ready = False
+    # Cache cũ không bao giờ được sống sót qua một lần nạp: cache cũ + state mới có thể sinh DELETE.
+    store.reset_cache()
+    try:
+        await init_state_store()
+        async with runtime_state.pg_pool.acquire() as conn:
+            async with _get_save_lock():
+                row = await conn.fetchrow(
+                    "SELECT payload, updated_at, drug_count, batch_count, receipt_count "
+                    "FROM inventory_runtime_state WHERE id = 1"
+                )
+                blob_updated_at = row["updated_at"] if row is not None else None
+
+                try:
+                    await store.ensure_schema(conn)
+                except Exception as exc:
+                    # Chỉ được lùi về blob khi bảng chưa từng là nguồn chính thức.
+                    if await store.is_migrated(conn):
+                        raise
+                    _fall_back_to_blob(f"không tạo được schema: {exc}")
+                    return "fallback", row
+
+                if await store.needs_migration_from_blob(conn, blob_updated_at):
+                    blob_payload = _blob_row_to_payload(row)
+                    try:
+                        await store.migrate_from_payload(conn, blob_payload, blob_updated_at)
+                    except (RelationalStateMismatch, ValueError) as exc:
+                        _fall_back_to_blob(f"migrate thất bại: {exc}")
+                        return "fallback", row
+                    load_runtime_state_from_payload(blob_payload)
+                    runtime_state.relational_ready = True
+                    logger.info("Đã migrate inventory state từ blob sang bảng quan hệ.")
+                    return "loaded", row
+
+                if await store.is_migrated(conn):
+                    payload = await store.load_payload(conn)
+                    if payload is None:
+                        raise StateLoadError("marker migrate biến mất giữa hai lần đọc")
+                    if row is not None and _is_destructive_write(
+                        (row["drug_count"], row["batch_count"], row["receipt_count"]),
+                        (len(payload.get("drugs") or {}), len(payload.get("batches") or {}), len(payload.get("receipts") or {})),
+                    ):
+                        # Chỉ cảnh báo: blob có thể cũ hợp lệ (khi tắt dual-write) nên không tự lùi về blob.
+                        logger.critical(
+                            "Bảng quan hệ có ít bản ghi hơn hẳn blob legacy (drugs/batches/receipts: blob=%s/%s/%s). "
+                            "Cần kiểm tra thủ công trước khi tiếp tục ghi.",
+                            row["drug_count"], row["batch_count"], row["receipt_count"],
+                        )
+                    load_runtime_state_from_payload(payload)
+                    runtime_state.relational_ready = True
+                    return "loaded", row
+
+                return "empty", row
+    except StateLoadError:
+        store.reset_cache()
+        raise
+    except Exception as exc:
+        store.reset_cache()
+        raise StateLoadError(f"không đọc được trạng thái quan hệ: {exc}") from exc
+
+
 async def load_runtime_state_safe() -> bool:
     """Trả về True nếu đã nạp được state, False nếu storage TRỐNG THẬT (lần chạy đầu).
 
@@ -1171,22 +1416,24 @@ async def load_runtime_state_safe() -> bool:
     trong trường hợp này.
     """
     if settings.STATE_PERSISTENCE.lower() == "postgres":
-        try:
-            await init_state_store()
-            async with runtime_state.pg_pool.acquire() as conn:
-                row = await conn.fetchrow("SELECT payload FROM inventory_runtime_state WHERE id = 1")
-        except Exception as exc:
-            raise StateLoadError(f"không đọc được inventory_runtime_state: {exc}") from exc
+        row = None
+        if _effective_storage_mode() == "relational":
+            status, row = await _load_relational_state()
+            if status == "loaded":
+                return True
+        else:
+            # Blob/blob-fallback không dùng cache quan hệ; xóa để cache cũ không thể sống sót.
+            _get_store().reset_cache()
+            runtime_state.relational_ready = False
+            try:
+                await init_state_store()
+                async with runtime_state.pg_pool.acquire() as conn:
+                    row = await conn.fetchrow("SELECT payload FROM inventory_runtime_state WHERE id = 1")
+            except Exception as exc:
+                raise StateLoadError(f"không đọc được inventory_runtime_state: {exc}") from exc
 
         if row is not None and row.get("payload") is not None:
-            payload = row["payload"]
-            try:
-                if isinstance(payload, str):
-                    payload = json.loads(payload)
-            except Exception as exc:
-                raise StateLoadError(f"payload trong DB không phải JSON hợp lệ: {exc}") from exc
-            if not isinstance(payload, dict):
-                raise StateLoadError(f"payload trong DB có kiểu không mong đợi: {type(payload).__name__}")
+            payload = _blob_row_to_payload(row)
             # Row đã tồn tại => parse lỗi là LỖI, không phải 'chưa có dữ liệu'.
             load_runtime_state_from_payload(payload)
             return True
@@ -2119,6 +2366,10 @@ async def consume_sale_events() -> None:
 async def startup_event() -> None:
     runtime_state.redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     runtime_state.lock = asyncio.Lock()
+    runtime_state.save_lock = asyncio.Lock()
+    runtime_state.relational_store = RelationalStore()
+    runtime_state.relational_ready = False
+    runtime_state.storage_mode = None
     runtime_state.pg_pool = None
     runtime_state.save_failed = False
     runtime_state.state_unavailable = False
@@ -2171,6 +2422,9 @@ async def reload_runtime_state_from_storage() -> bool:
 
     # Hết lượt thử: KHÔNG seed, KHÔNG ghi. Giữ nguyên dữ liệu trong DB.
     runtime_state.state_unavailable = True
+    # Lớp bảo vệ thứ hai ngoài tripwire: cache rỗng + state rỗng không bao giờ sinh DELETE.
+    _get_store().reset_cache()
+    runtime_state.relational_ready = False
     # Cấu trúc rỗng chỉ để service không crash; mọi lệnh ghi đã bị tripwire chặn và mọi
     # endpoint nghiệp vụ trả 503, nên state rỗng này không bao giờ tới được DB.
     initialize_empty_state()
@@ -2264,6 +2518,74 @@ async def get_pos_catalog(token: str = Depends(oauth2_scheme)) -> list[dict[str,
         })
     result.sort(key=lambda d: d["name"])
     return result
+
+
+@router.post("/admin/merge-drugs")
+async def merge_drugs(payload: DrugMergeRequest, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+    """Gộp thuốc "mồ côi" (đã bị xóa khỏi Catalog nhưng còn lô/phiếu/movement) vào thuốc đúng.
+
+    Mặc định dry_run=true chỉ trả báo cáo. Ghi thật: lưu snapshot vào history, đổi mọi tham
+    chiếu drug_id/unit_id sang thuốc đích rồi xóa bản ghi nguồn, tất cả dưới runtime_state.lock.
+    """
+    actor, role, username = get_current_actor(token)
+    if not can_override_receipt_lock(role, username):
+        raise HTTPException(status_code=403, detail="Only owner/admin can merge drugs")
+
+    source_id = payload.source_drug_id.strip()
+    target_id = payload.target_drug_id.strip()
+
+    # Thuốc nguồn mà Catalog còn giữ (kể cả đã xóa mềm: đồng bộ không lọc is_active) thì lần
+    # đồng bộ kế tiếp sẽ tạo lại nó, nên chỉ gộp khi Catalog trả 404 thật cho thuốc nguồn.
+    if await fetch_catalog_product_strict(target_id, token) is None:
+        raise HTTPException(status_code=409, detail="Thuốc đích không có trong Catalog")
+    source_product = await fetch_catalog_product_strict(source_id, token)
+    if source_product is not None:
+        if source_product.get("is_active") is False:
+            detail = (
+                "Thuốc nguồn đã xóa mềm ở Catalog nhưng vẫn được đồng bộ về Inventory, "
+                "gộp xong sẽ bị tạo lại; phải xóa hẳn ở Catalog trước"
+            )
+        else:
+            detail = "Thuốc nguồn vẫn còn trong Catalog; gộp/xóa ở Catalog trước, nếu không đồng bộ sẽ tạo lại nó"
+        raise HTTPException(status_code=409, detail=detail)
+
+    async with runtime_state.lock:
+        try:
+            plan = plan_drug_merge(
+                drugs=runtime_state.drugs,
+                collections=_build_state_payload(),
+                batches=runtime_state.batches,
+                source_id=source_id,
+                target_id=target_id,
+            )
+        except DrugMergeError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+        source = runtime_state.drugs[source_id]
+        report = plan.report(source, runtime_state.drugs[target_id])
+        if payload.dry_run:
+            return {"dry_run": True, **report}
+
+        if getattr(runtime_state, "save_failed", False):
+            raise HTTPException(
+                status_code=409,
+                detail="State trong bộ nhớ chưa lưu được xuống storage; chờ lưu xong rồi gộp để snapshot đúng",
+            )
+        archived = await _archive_state_snapshot()
+        if not archived and settings.STATE_PERSISTENCE.lower() == "postgres":
+            raise HTTPException(status_code=500, detail="Không lưu được snapshot history; hủy gộp")
+
+        apply_plan(plan, runtime_state.drugs)
+        await save_runtime_state_safe()
+        if getattr(runtime_state, "save_failed", False):
+            revert_plan(plan, runtime_state.drugs, source)
+            raise HTTPException(status_code=500, detail="Không lưu được kết quả gộp; đã hoàn tác trong bộ nhớ")
+
+        logger.warning(
+            "MERGE DRUG bởi %s: %s (%s) -> %s, đổi %s trường, records=%s",
+            actor, source_id, source.get("code"), target_id, len(plan.edits), dict(plan.changed_by_collection),
+        )
+        return {"dry_run": False, "archived_snapshot": archived, "actor": actor, **report}
 
 
 @router.get("/meta/suppliers")

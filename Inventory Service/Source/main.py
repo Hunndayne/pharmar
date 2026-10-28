@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from Routers.Inventory import get_state_persistence_status
+from Routers.Inventory import get_state_persistence_status, get_state_storage_mode
 from Routers.Inventory import recovery_router as inventory_recovery_router
 from Routers.Inventory import router as inventory_router
 from Routers.Inventory import shutdown_event as shutdown_inventory_state
@@ -36,4 +36,5 @@ async def health() -> dict[str, str]:
         "service": "inventory",
         "status": "ok",
         "state_persistence": get_state_persistence_status(),
+        "state_storage": get_state_storage_mode(),
     }

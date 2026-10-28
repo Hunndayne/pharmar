@@ -161,3 +161,10 @@ class DrugRecallUpdateRequest(BaseModel):
 
 class BatchCostLookupRequest(BaseModel):
     batch_ids: list[str] = Field(min_length=1)
+
+
+class DrugMergeRequest(BaseModel):
+    source_drug_id: str = Field(min_length=1, max_length=100)
+    target_drug_id: str = Field(min_length=1, max_length=100)
+    # Mặc định chỉ xem trước: ghi thật phải gửi dry_run=false một cách tường minh.
+    dry_run: bool = True
