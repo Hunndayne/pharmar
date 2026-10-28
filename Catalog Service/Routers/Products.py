@@ -22,8 +22,8 @@ from Source.catalog import (
     normalize_optional_string,
     paginate_scalars,
     parse_decimal,
-    product_has_inventory_batches,
-    product_has_inventory_history,
+    fetch_inventory_batches_for_product,
+    inventory_batches_have_stock,
     product_has_sale_history,
     round_money_decimal,
     search_filter,
@@ -452,13 +452,14 @@ async def delete_product(
     db: DbSession,
 ):
     product = await get_product_or_404(product_id, db)
-    if await product_has_inventory_batches(product.id):
+    inventory_batches = await fetch_inventory_batches_for_product(product.id)
+    if inventory_batches_have_stock(inventory_batches):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot delete product because inventory still has stock for this product",
         )
 
-    inventory_has_history = await product_has_inventory_history(product.id)
+    inventory_has_history = bool(inventory_batches)
     sale_has_history = await product_has_sale_history(product.id, token)
 
     if not inventory_has_history and not sale_has_history:

@@ -2,6 +2,13 @@
 
 ---
 
+## V1.15 — 2026-10-29
+
+### Sửa lỗi
+- **Catalog xóa được sản phẩm đang còn lô trong Inventory (gốc lỗi Arginine T0386 ở V1.14).** Kiểm tra trước khi xóa trong `DELETE /api/v1/catalog/products/{id}` từng fail-open: Inventory lỗi kết nối, timeout, 5xx hay 503 (đang nạp state) đều bị hiểu là "không có lô", còn 404 bất kỳ (kể cả sai URL/route) bị hiểu là "chưa có lịch sử" nên cho xóa hẳn. Nay fail-closed: chỉ coi là "chưa có lịch sử" khi Inventory trả đúng 404 `Drug not found`, chỉ tin danh sách lô khi Inventory trả 200 kèm một mảng; mọi trường hợp khác trả 503 "Không kiểm tra được tồn kho" và không xóa gì. Gộp hai lần gọi Inventory thành một (`fetch_inventory_batches_for_product`). 15 test mới ở `Catalog Service/tests/test_delete_product_guard.py` (10 test fail trên code cũ).
+
+---
+
 ## V1.14 — 2026-10-28
 
 ### Tính năng mới
