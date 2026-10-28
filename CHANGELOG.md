@@ -2,6 +2,16 @@
 
 ---
 
+## V1.14 — 2026-10-28
+
+### Tính năng mới
+- **Inventory — endpoint gộp thuốc mồ côi `POST /api/v1/inventory/admin/merge-drugs`** (chỉ owner/admin): đổi mọi tham chiếu `drug_id`, `unit_id` và `sku` của dòng giữ chỗ (lô, dòng phiếu nhập, movement, giữ chỗ, kiểm kê, thu hồi…) từ thuốc nguồn sang thuốc đích rồi xóa bản ghi nguồn. Mặc định `dry_run=true` chỉ trả báo cáo; ghi thật phải gửi `dry_run=false`. Chạy dưới `runtime_state.lock`, chụp snapshot vào `inventory_runtime_state_history` trước khi ghi, tự hoàn tác trong bộ nhớ nếu lưu thất bại. Từ chối khi: thuốc nguồn còn trong Catalog (kể cả đã xóa mềm, vì đồng bộ không lọc `is_active` nên sẽ kéo nó về lại), thuốc đích không có trong Catalog, tên hai thuốc khác nhau, hoặc thuốc đích thiếu đơn vị mà nguồn đang dùng. Việc kiểm tra Catalog chỉ coi là "không có" khi Catalog trả đúng 404; timeout/5xx trả 502 thay vì fail-open. Logic nằm ở `Source/drug_merge.py`, có 22 test (`tests/test_drug_merge.py`) gồm một test chạy trên backup production thật khi đặt `PHARMAR_BACKUP_SQL` và hai test end-to-end trên Postgres khi đặt thêm `INVENTORY_TEST_DSN`.
+
+### Sửa lỗi
+- **Arginine xuất hiện hai lần trên POS (T0182 và T0386, mã T0386 trùng với Natri clorid).** Nguyên nhân: sản phẩm Arginine T0386 bị xóa khỏi Catalog ngày 27/05/2026 trong khi Inventory còn lô của nó; Inventory giữ lại bản cũ không cập nhật theo Catalog, còn mã T0386 được Catalog cấp lại cho Natri clorid. Dùng endpoint gộp ở trên để xử lý; kiểm tra xóa fail-open của Catalog và log cảnh báo khi đồng bộ vẫn chưa được sửa.
+
+---
+
 ## V1.13 — 2026-10-15
 
 ### Cải thiện

@@ -35,10 +35,12 @@ from Source.schemas.inventory import (
     ReserveRequest,
     StockAdjustmentRequest,
     DrugRecallCreateRequest,
+    DrugMergeRequest,
     DrugRecallUpdateRequest,
     StockAuditCreateRequest,
     StockAuditUpdateRequest,
 )
+from Source.drug_merge import DrugMergeError, apply_plan, plan_drug_merge, revert_plan
 
 runtime_state = SimpleNamespace()
 logger = logging.getLogger(__name__)
@@ -496,6 +498,32 @@ async def fetch_catalog_json(
         return None
     payload = response.json()
     return payload if isinstance(payload, dict) else None
+
+
+async def fetch_catalog_product_strict(product_id: str, token: str) -> dict[str, Any] | None:
+    """Đọc một sản phẩm Catalog; chỉ trả None khi Catalog trả 404, mọi lỗi khác thành 502.
+
+    fetch_catalog_json gộp timeout/5xx vào None. Với thao tác phá hủy như gộp thuốc, lỗi mạng bị
+    hiểu thành "sản phẩm không tồn tại" là đủ để gộp nhầm một thuốc Catalog vẫn đang giữ.
+    """
+    url = f"{settings.CATALOG_SERVICE_URL.rstrip('/')}/api/v1/catalog/products/{product_id}"
+    timeout = httpx.Timeout(settings.CATALOG_SYNC_TIMEOUT_SECONDS)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Không liên lạc được Catalog") from exc
+
+    if response.status_code == 404:
+        return None
+    if response.status_code in {401, 403}:
+        raise HTTPException(status_code=response.status_code, detail="Unauthorized to read catalog product")
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Catalog trả lỗi {response.status_code}")
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="Catalog trả dữ liệu sản phẩm không hợp lệ")
+    return payload
 
 
 def upsert_drug_from_catalog_product(
@@ -959,6 +987,23 @@ async def _archive_current_state(conn: Any, old_counts: tuple[int, int, int]) ->
         """,
         STATE_HISTORY_KEEP,
     )
+
+
+async def _archive_state_snapshot() -> bool:
+    """Chụp state đang lưu vào history trước một thao tác sửa dữ liệu hàng loạt.
+
+    Trả False khi storage không phải Postgres (chế độ file) nên không có history để ghi.
+    """
+    pool = getattr(runtime_state, "pg_pool", None)
+    if settings.STATE_PERSISTENCE.lower() != "postgres" or pool is None:
+        return False
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            stored = await conn.fetchrow(_STORED_COUNTS_SQL)
+            if stored is None:
+                return False
+            await _archive_current_state(conn, (stored["drugs"], stored["batches"], stored["receipts"]))
+    return True
 
 
 def _effective_storage_mode() -> str:
@@ -2473,6 +2518,74 @@ async def get_pos_catalog(token: str = Depends(oauth2_scheme)) -> list[dict[str,
         })
     result.sort(key=lambda d: d["name"])
     return result
+
+
+@router.post("/admin/merge-drugs")
+async def merge_drugs(payload: DrugMergeRequest, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+    """Gộp thuốc "mồ côi" (đã bị xóa khỏi Catalog nhưng còn lô/phiếu/movement) vào thuốc đúng.
+
+    Mặc định dry_run=true chỉ trả báo cáo. Ghi thật: lưu snapshot vào history, đổi mọi tham
+    chiếu drug_id/unit_id sang thuốc đích rồi xóa bản ghi nguồn, tất cả dưới runtime_state.lock.
+    """
+    actor, role, username = get_current_actor(token)
+    if not can_override_receipt_lock(role, username):
+        raise HTTPException(status_code=403, detail="Only owner/admin can merge drugs")
+
+    source_id = payload.source_drug_id.strip()
+    target_id = payload.target_drug_id.strip()
+
+    # Thuốc nguồn mà Catalog còn giữ (kể cả đã xóa mềm: đồng bộ không lọc is_active) thì lần
+    # đồng bộ kế tiếp sẽ tạo lại nó, nên chỉ gộp khi Catalog trả 404 thật cho thuốc nguồn.
+    if await fetch_catalog_product_strict(target_id, token) is None:
+        raise HTTPException(status_code=409, detail="Thuốc đích không có trong Catalog")
+    source_product = await fetch_catalog_product_strict(source_id, token)
+    if source_product is not None:
+        if source_product.get("is_active") is False:
+            detail = (
+                "Thuốc nguồn đã xóa mềm ở Catalog nhưng vẫn được đồng bộ về Inventory, "
+                "gộp xong sẽ bị tạo lại; phải xóa hẳn ở Catalog trước"
+            )
+        else:
+            detail = "Thuốc nguồn vẫn còn trong Catalog; gộp/xóa ở Catalog trước, nếu không đồng bộ sẽ tạo lại nó"
+        raise HTTPException(status_code=409, detail=detail)
+
+    async with runtime_state.lock:
+        try:
+            plan = plan_drug_merge(
+                drugs=runtime_state.drugs,
+                collections=_build_state_payload(),
+                batches=runtime_state.batches,
+                source_id=source_id,
+                target_id=target_id,
+            )
+        except DrugMergeError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+        source = runtime_state.drugs[source_id]
+        report = plan.report(source, runtime_state.drugs[target_id])
+        if payload.dry_run:
+            return {"dry_run": True, **report}
+
+        if getattr(runtime_state, "save_failed", False):
+            raise HTTPException(
+                status_code=409,
+                detail="State trong bộ nhớ chưa lưu được xuống storage; chờ lưu xong rồi gộp để snapshot đúng",
+            )
+        archived = await _archive_state_snapshot()
+        if not archived and settings.STATE_PERSISTENCE.lower() == "postgres":
+            raise HTTPException(status_code=500, detail="Không lưu được snapshot history; hủy gộp")
+
+        apply_plan(plan, runtime_state.drugs)
+        await save_runtime_state_safe()
+        if getattr(runtime_state, "save_failed", False):
+            revert_plan(plan, runtime_state.drugs, source)
+            raise HTTPException(status_code=500, detail="Không lưu được kết quả gộp; đã hoàn tác trong bộ nhớ")
+
+        logger.warning(
+            "MERGE DRUG bởi %s: %s (%s) -> %s, đổi %s trường, records=%s",
+            actor, source_id, source.get("code"), target_id, len(plan.edits), dict(plan.changed_by_collection),
+        )
+        return {"dry_run": False, "archived_snapshot": archived, "actor": actor, **report}
 
 
 @router.get("/meta/suppliers")
