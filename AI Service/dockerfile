@@ -1,0 +1,24 @@
+FROM golang:1.23-alpine AS build
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# CGO-free: libavif runs as WASM inside wazero (github.com/gen2brain/avif).
+# nodynamic: without it the lib tries to dlopen a system libavif via purego and segfaults at startup on Linux.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags nodynamic -o /bin/ai-service ./cmd/ai-service
+
+FROM alpine:3.20 AS runtime
+
+RUN apk add --no-cache ca-certificates
+
+WORKDIR /app
+
+COPY --from=build /bin/ai-service /app/ai-service
+
+EXPOSE 8011
+
+CMD ["/app/ai-service"]

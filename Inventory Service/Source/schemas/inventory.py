@@ -1,6 +1,6 @@
 from datetime import date
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..domain import BatchStatus, PaymentMethod, PaymentStatus, PromoType
 
@@ -54,7 +54,39 @@ class ImportReceiptLineRequest(BaseModel):
         return self
 
 
-class ImportReceiptCreateRequest(BaseModel):
+class ImportReceiptInvoiceFields(BaseModel):
+    invoice_serial: str | None = Field(default=None, max_length=32)
+    invoice_number: str | None = Field(default=None, max_length=32)
+    invoice_date: date | None = None
+    invoice_file_ids: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("invoice_serial", "invoice_number", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
+
+    @field_validator("invoice_file_ids", mode="before")
+    @classmethod
+    def _clean_file_ids(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [v.strip() if isinstance(v, str) else v for v in value]
+        return value
+
+    @field_validator("invoice_file_ids")
+    @classmethod
+    def _check_file_ids(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if not 1 <= len(item) <= 64:
+                raise ValueError("invoice_file_ids items must be 1-64 characters")
+        return value
+
+
+class ImportReceiptCreateRequest(ImportReceiptInvoiceFields):
     receipt_date: date
     supplier_id: str = Field(min_length=1, max_length=64)
     shipping_carrier: str | None = Field(default=None, max_length=64)
@@ -64,7 +96,7 @@ class ImportReceiptCreateRequest(BaseModel):
     lines: list[ImportReceiptLineRequest] = Field(min_length=1)
 
 
-class ImportReceiptUpdateRequest(BaseModel):
+class ImportReceiptUpdateRequest(ImportReceiptInvoiceFields):
     receipt_date: date
     supplier_id: str = Field(min_length=1, max_length=64)
     shipping_carrier: str | None = Field(default=None, max_length=64)

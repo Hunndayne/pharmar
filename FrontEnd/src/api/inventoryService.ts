@@ -113,6 +113,10 @@ export type InventoryReceipt = {
   line_count: number
   lines: InventoryReceiptLine[]
   can_edit: boolean
+  invoice_serial?: string | null
+  invoice_number?: string | null
+  invoice_date?: string | null
+  invoice_file_ids?: string[]
 }
 
 export type InventoryReceiptListItem = {
@@ -131,6 +135,10 @@ export type InventoryReceiptListItem = {
   created_at: string
   updated_at: string
   can_edit: boolean
+  invoice_serial?: string | null
+  invoice_number?: string | null
+  invoice_date?: string | null
+  invoice_file_ids?: string[]
 }
 
 export type InventoryBatch = {
@@ -304,6 +312,10 @@ export type InventoryCreateReceiptPayload = {
   payment_status?: InventoryPaymentStatus
   payment_method?: InventoryPaymentMethod
   note?: string | null
+  invoice_serial?: string | null
+  invoice_number?: string | null
+  invoice_date?: string | null
+  invoice_file_ids?: string[]
   lines: Array<{
     drug_id?: string
     drug_code?: string

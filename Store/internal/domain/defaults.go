@@ -235,6 +235,14 @@ func DefaultSettings() map[string]DefaultSetting {
 			IsPublic:    true,
 		},
 		{
+			Key:         "purchase.ai_price_includes_vat",
+			Value:       true,
+			GroupName:   "purchase",
+			DataType:    "boolean",
+			Description: "Gia nhap tu hoa don AI da gom VAT",
+			IsPublic:    true,
+		},
+		{
 			Key:         "customer.enable_points",
 			Value:       true,
 			GroupName:   "customer",

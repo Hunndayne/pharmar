@@ -323,6 +323,53 @@
       start_period: 20s
     restart: unless-stopped
 
+  ai-service:
+    build:
+      context: ./AI Service
+      dockerfile: dockerfile
+    container_name: pharmar-ai-service
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      APP_PORT: 8011
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing - set in .env}@postgres:5432/pharmar_store?sslmode=disable
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY missing - copy .env.example to .env and set a strong secret}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_VISION_MODEL: ${DEEPSEEK_VISION_MODEL:-deepseek-flash}
+      DEEPSEEK_AGENT_MODEL: ${DEEPSEEK_AGENT_MODEL:-deepseek-flash}
+      DEEPSEEK_PRICE_INPUT_MISS: ${DEEPSEEK_PRICE_INPUT_MISS:-0.3}
+      DEEPSEEK_PRICE_INPUT_HIT: ${DEEPSEEK_PRICE_INPUT_HIT:-0.006}
+      DEEPSEEK_PRICE_OUTPUT: ${DEEPSEEK_PRICE_OUTPUT:-1.2}
+      AI_DAILY_BUDGET_USD: ${AI_DAILY_BUDGET_USD:-1.0}
+      AI_KEEP_PDF_MAX_BYTES: ${AI_KEEP_PDF_MAX_BYTES:-1048576}
+      AI_REQUEST_TIMEOUT_SECONDS: ${AI_REQUEST_TIMEOUT_SECONDS:-90}
+      FILE_SERVICE_URL: http://file-service:8009
+      INVENTORY_SERVICE_URL: http://inventory-service:8002
+      CATALOG_SERVICE_URL: http://catalog-service:8006
+      STORE_SERVICE_URL: http://store-service:8005
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
+      file-service:
+        condition: service_healthy
+      inventory-service:
+        condition: service_healthy
+      catalog-service:
+        condition: service_healthy
+      store-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8011/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
   notification-service:
     build:
       context: ./Notification Service
@@ -414,6 +461,7 @@
       AUTH_RATE_LIMIT_RPM: ${AUTH_RATE_LIMIT_RPM:-120}
       FILE_SERVICE_URL: http://file-service:8009
       NOTIFICATION_SERVICE_URL: http://notification-service:8010
+      AI_SERVICE_URL: http://ai-service:8011
       REDIS_URL: redis://redis:6379/0
       TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-[]}
       PUBLIC_RATE_LIMIT_RPM: ${PUBLIC_RATE_LIMIT_RPM:-30}

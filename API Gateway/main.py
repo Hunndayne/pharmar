@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     PAYMENT_QR_SERVICE_URL: str = "http://payment-qr-service:8008"
     FILE_SERVICE_URL: str = "http://file-service:8009"
     NOTIFICATION_SERVICE_URL: str = "http://notification-service:8010"
+    AI_SERVICE_URL: str = "http://ai-service:8011"
 
     REDIS_URL: str = "redis://redis:6379/0"
 
@@ -92,6 +93,9 @@ app.add_middleware(
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
+# AI extraction can take ~90s upstream (vision model + agent loop).
+AI_PROXY_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
+
 SERVICE_URLS: dict[str, str] = {
     "auth": settings.AUTH_SERVICE_URL,
     "users": settings.AUTH_SERVICE_URL,
@@ -104,6 +108,7 @@ SERVICE_URLS: dict[str, str] = {
     "payment-qr": settings.PAYMENT_QR_SERVICE_URL,
     "file": settings.FILE_SERVICE_URL,
     "notification": settings.NOTIFICATION_SERVICE_URL,
+    "ai": settings.AI_SERVICE_URL,
 }
 
 HEALTH_TARGETS: dict[str, str] = {
@@ -117,6 +122,7 @@ HEALTH_TARGETS: dict[str, str] = {
     "payment-qr": settings.PAYMENT_QR_SERVICE_URL,
     "file": settings.FILE_SERVICE_URL,
     "notification": settings.NOTIFICATION_SERVICE_URL,
+    "ai": settings.AI_SERVICE_URL,
 }
 
 # ---------------------------------------------------------------------------
@@ -540,6 +546,7 @@ async def proxy(service: str, request: Request, resource_path: str = "") -> Resp
             params=request.query_params,
             content=request_body,
             headers=filtered_headers,
+            timeout=AI_PROXY_TIMEOUT if service == "ai" else httpx.USE_CLIENT_DEFAULT,
         )
     except httpx.RequestError as exc:
         logger.error(

@@ -2,6 +2,46 @@
 
 ---
 
+## V1.18 — 2026-11-01
+
+### Tính năng mới
+- **Nhập phiếu nhập hàng từ ảnh/PDF hóa đơn bằng AI.** Trong form "Tạo phiếu nhập" có nút "Đọc hóa đơn tự động" (cạnh "Thêm dòng thuốc"). AI điền thẳng vào phiếu đang tạo, có hỏi trước khi thay các dòng đã nhập tay; sau khi điền, đầu form hiện "Đã điền từ hóa đơn … · Xem hóa đơn" để đối chiếu trong lúc nhập số lô.
+  - **Đầu vào:** chọn nhiều ảnh hoặc PDF (hóa đơn nhiều trang). Ảnh được nén ngay trên trình duyệt (JPEG, cạnh dài 1600px); PDF render bằng pdf.js, lấy kèm lớp chữ nếu có.
+  - **Service mới `ai-service` (Go, cổng 8011)** gọi DeepSeek (`deepseek-flash`):
+    1. Đọc nhà cung cấp, mã số thuế, ký hiệu/số/ngày hóa đơn, các dòng hàng, VAT và tổng tiền.
+    2. Code tự kiểm tra số lượng × đơn giá và tổng tiền, báo hóa đơn đã nhập trước đó (trùng ký hiệu + số), khớp nhà cung cấp theo mã số thuế.
+    3. Ghép thuốc: tìm sẵn ứng viên trong danh mục theo tên đã bỏ dấu (chịu được lỗi đọc dấu như "TRÍ"/"TRĨ"), rồi để agent DeepSeek chọn hoặc tự tra thêm.
+  - **Kết quả là phiếu nháp:**
+    - Tự quy đổi về đơn vị nhập và cộng VAT vào giá (tùy chọn trong Cài đặt, mặc định giá gồm VAT).
+    - Dòng hàng tặng giữ giá 0 kèm nhãn "Hàng tặng – tự xử lý".
+    - Số lô, NSX, HSD để người dùng tự điền vì hóa đơn VAT không có.
+    - Mỗi dòng hiện tên trên hóa đơn và độ tin cậy của AI.
+  - **Ghi nhớ:** sau khi lưu, cặp "tên trên hóa đơn → thuốc" được ghi nhớ theo nhà cung cấp, lần sau khớp ngay không cần gọi AI.
+  - **Chi phí và giới hạn:** hạn mức chi tiêu AI theo ngày (`AI_DAILY_BUDGET_USD`, mặc định $1). Chạy thử với hóa đơn thật: khoảng 9 giây, khoảng $0,001–0,002 mỗi hóa đơn, ghép đúng 4/4 dòng ở cả 3 lần chạy.
+- **Lưu và xem lại hóa đơn gốc.**
+  - **Cách lưu lên R2:** ảnh lưu dạng AVIF 1600px (hóa đơn mẫu 120 KB/trang, chữ nhỏ vẫn đọc rõ). PDF văn bản nhẹ (≤ 1 MB) lưu nguyên file; PDF scan hoặc nặng chỉ lưu ảnh các trang.
+  - **Phiếu nhập lưu thêm** ký hiệu, số, ngày hóa đơn và danh sách file.
+  - **Xem lại:** trong khung chi tiết phiếu có nút "Xem hóa đơn". Popup cho phóng to/kéo ảnh, chuyển trang (nút và phím ←/→), xem PDF ngay trong trang, mở tab mới hoặc tải về.
+- **Inventory:**
+  - Thêm `GET /api/v1/inventory/import-receipts/by-invoice?serial=&number=` để kiểm tra hóa đơn đã nhập; số hóa đơn so sánh bỏ số 0 đầu.
+  - Ô tìm kiếm trang Nhập hàng tìm được theo số/ký hiệu hóa đơn.
+- **Store:** setting mới `purchase.ai_price_includes_vat` (tự thêm khi khởi động, không cần migration).
+
+### Cải thiện
+- API Gateway cho request `/api/v1/ai/*` chờ tối đa 120 giây; nginx frontend `proxy_read_timeout 150s`, CSP thêm `frame-src 'self' https:` để xem PDF từ R2, phục vụ worker `.mjs` của pdf.js đúng MIME.
+- Docker build frontend dùng Node 22 (pdf.js 6 yêu cầu Node ≥ 22.13).
+
+### Sửa lỗi
+- Menu bên trái: bấm một mục trong "Sổ GPP" khi đang ở trang dùng chung đường dẫn với nhóm "Cửa hàng" (ví dụ từ "Sổ thuốc thu hồi" sang "Sổ kiểm soát chất lượng") làm nhóm "Cửa hàng" tự bung ra dù người dùng vừa đóng, khiến menu bị nhảy. Ngay lúc bấm, menu đã nhớ mục mới nhưng đường dẫn vẫn là trang cũ, nên tạm chọn mục cùng đường dẫn của "Cửa hàng" và mở nhóm đó. Nay menu chỉ tự mở nhóm khi trang thật sự đổi, và ưu tiên giữ mục trong cùng nhóm với mục vừa bấm.
+
+### Ghi chú triển khai
+- **Build lại:** `ai-service` (mới), `inventory-service`, `store-service`, `api-gateway`, `frontend`.
+- **`.env` server:** thêm `DEEPSEEK_API_KEY`, có thể thêm `AI_DAILY_BUDGET_USD`. Thiếu key thì chỉ tính năng đọc hóa đơn báo "Chưa cấu hình AI", phần còn lại chạy bình thường. Gateway không phụ thuộc vào `ai-service` khi khởi động.
+- **`nginx.conf` trên server** đang tách khỏi git (CSP riêng), nên phải tự thêm 3 thay đổi trên: `frame-src`, `location ~* \.mjs$`, `proxy_read_timeout 150s`.
+- **RAM:** `ai-service` dùng khoảng 210–260 MB khi mã hóa AVIF.
+
+---
+
 ## V1.17 — 2026-11-01
 
 ### Cải thiện

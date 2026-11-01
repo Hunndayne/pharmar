@@ -1494,6 +1494,11 @@ def load_runtime_state_from_payload(payload: dict[str, Any]) -> bool:
                 receipt["updated_at"] = _parse_iso_datetime(receipt.get("updated_at"))
             except Exception:
                 continue
+            if receipt.get("invoice_date"):
+                try:
+                    receipt["invoice_date"] = _parse_iso_date(receipt["invoice_date"])
+                except Exception:
+                    receipt["invoice_date"] = None
             receipt["status"] = _to_enum(ReceiptStatus, receipt.get("status"), ReceiptStatus.CONFIRMED)
             receipt["payment_status"] = _to_enum(PaymentStatus, receipt.get("payment_status"), PaymentStatus.PAID)
             receipt["payment_method"] = _to_enum(PaymentMethod, receipt.get("payment_method"), PaymentMethod.BANK)
@@ -1866,6 +1871,15 @@ def receipt_is_editable(
     return True
 
 
+def _apply_invoice_fields(receipt: dict[str, Any], payload: Any) -> None:
+    """Chỉ ghi các trường hóa đơn client thực sự gửi; không gửi thì giữ giá trị cũ."""
+    for key in ("invoice_serial", "invoice_number", "invoice_date"):
+        if key in payload.model_fields_set:
+            receipt[key] = getattr(payload, key)
+    if "invoice_file_ids" in payload.model_fields_set:
+        receipt["invoice_file_ids"] = list(payload.invoice_file_ids)
+
+
 def receipt_to_view(receipt: dict[str, Any]) -> dict[str, Any]:
     supplier = runtime_state.suppliers.get(receipt["supplier_id"])
     supplier_name = supplier["name"] if supplier else receipt.get("supplier_name", "")
@@ -1902,6 +1916,10 @@ def receipt_to_view(receipt: dict[str, Any]) -> dict[str, Any]:
         "shipping_carrier": receipt.get("shipping_carrier"),
         "payment_status": receipt.get("payment_status", PaymentStatus.PAID),
         "payment_method": receipt.get("payment_method", PaymentMethod.BANK),
+        "invoice_serial": receipt.get("invoice_serial"),
+        "invoice_number": receipt.get("invoice_number"),
+        "invoice_date": receipt.get("invoice_date"),
+        "invoice_file_ids": list(receipt.get("invoice_file_ids") or []),
         "note": receipt["note"],
         "status": receipt["status"],
         "created_by": receipt["created_by"],
@@ -1931,6 +1949,10 @@ def receipt_list_item_to_view(receipt: dict[str, Any]) -> dict[str, Any]:
         "shipping_carrier": receipt.get("shipping_carrier"),
         "payment_status": receipt.get("payment_status", PaymentStatus.PAID),
         "payment_method": receipt.get("payment_method", PaymentMethod.BANK),
+        "invoice_serial": receipt.get("invoice_serial"),
+        "invoice_number": receipt.get("invoice_number"),
+        "invoice_date": receipt.get("invoice_date"),
+        "invoice_file_ids": list(receipt.get("invoice_file_ids") or []),
         "status": receipt["status"],
         "total_value": round_money_value(receipt["total_value"]),
         "line_count": len(receipt.get("lines", [])),
@@ -1973,6 +1995,8 @@ def filter_import_receipts(
             if keyword in normalize_key(str(receipt.get("code", "")))
             or keyword in normalize_key(str(receipt.get("note", "")))
             or keyword in normalize_key(str(receipt.get("supplier_name", "")))
+            or keyword in normalize_key(str(receipt.get("invoice_number") or ""))
+            or keyword in normalize_key(str(receipt.get("invoice_serial") or ""))
             or keyword
             in normalize_key(
                 runtime_state.suppliers.get(receipt["supplier_id"], {}).get("name", ""),
@@ -2829,6 +2853,40 @@ async def list_import_receipts_paged(
     }
 
 
+def _invoice_number_key(value: str | None) -> str:
+    text = (value or "").strip().lower()
+    return text.lstrip("0") or ("0" if text else "")
+
+
+@router.get("/import-receipts/by-invoice")
+async def find_import_receipts_by_invoice(
+    serial: str | None = Query(default=None),
+    number: str = Query(min_length=1),
+) -> list[dict[str, Any]]:
+    number_key = _invoice_number_key(number)
+    if not number_key:
+        return []
+    serial_key = (serial or "").strip().lower()
+    matches = []
+    for receipt in runtime_state.receipts.values():
+        if _invoice_number_key(receipt.get("invoice_number")) != number_key:
+            continue
+        if serial_key and (receipt.get("invoice_serial") or "").strip().lower() != serial_key:
+            continue
+        matches.append(receipt)
+    matches.sort(key=lambda r: (r["receipt_date"], r["created_at"]), reverse=True)
+    return [
+        {
+            "id": r["id"],
+            "code": r["code"],
+            "receipt_date": r["receipt_date"],
+            "supplier_id": r["supplier_id"],
+            "status": r["status"],
+        }
+        for r in matches
+    ]
+
+
 @router.get("/import-receipts/{receipt_id}")
 async def get_import_receipt(receipt_id: str) -> dict[str, Any]:
     return receipt_to_view(get_receipt_or_404(receipt_id))
@@ -2942,6 +3000,10 @@ async def create_import_receipt(payload: ImportReceiptCreateRequest, token: str 
             "shipping_carrier": payload.shipping_carrier,
             "payment_status": payload.payment_status,
             "payment_method": payload.payment_method,
+            "invoice_serial": payload.invoice_serial,
+            "invoice_number": payload.invoice_number,
+            "invoice_date": payload.invoice_date,
+            "invoice_file_ids": list(payload.invoice_file_ids),
             "note": payload.note,
             "status": ReceiptStatus.CONFIRMED,
             "created_by": actor,
@@ -3183,6 +3245,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
             receipt["shipping_carrier"] = payload.shipping_carrier
             receipt["payment_status"] = payload.payment_status
             receipt["payment_method"] = payload.payment_method
+            _apply_invoice_fields(receipt, payload)
             receipt["note"] = payload.note
             receipt["lines"] = lines
             receipt["total_value"] = round_money_value(total)
@@ -3317,6 +3380,7 @@ async def update_import_receipt(receipt_id: str, payload: ImportReceiptUpdateReq
         receipt["shipping_carrier"] = payload.shipping_carrier
         receipt["payment_status"] = payload.payment_status
         receipt["payment_method"] = payload.payment_method
+        _apply_invoice_fields(receipt, payload)
         receipt["note"] = payload.note
         receipt["lines"] = lines
         receipt["total_value"] = round_money_value(total)
