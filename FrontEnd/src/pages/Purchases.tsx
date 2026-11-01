@@ -17,6 +17,7 @@ import { aiApi, type AiMappingItem } from '../api/aiService'
 import { AiLineHint } from '../components/invoice/AiLineHint'
 import { InvoiceFilesViewer } from '../components/invoice/InvoiceFilesViewer'
 import { InvoiceImportModal } from '../components/invoice/InvoiceImportModal'
+import { CheckIcon, CloseIcon, IconActionButton, PlusIcon, AiSparkleIcon, TrashIcon } from '../components/IconActionButton'
 import { buildAiLineHint, type AiLineHintData, type InvoiceImportResult } from '../components/invoice/types'
 import { ApiError, type ApiValidationDetailItem } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
@@ -1618,6 +1619,13 @@ export function Purchases() {
     setScanOpen(false)
     setAiLineHints(null)
     setInvoiceImportOpen(false)
+  }
+
+  // "Đóng" keeps the autosaved draft for next time; "Hủy" throws it away.
+  const discardDraft = () => {
+    if (!window.confirm('Hủy phiếu đang soạn? Bản nháp sẽ bị xóa và không khôi phục được.')) return
+    clearPurchaseFormDraft()
+    closeModal()
   }
 
   const applyAiDraftToForm = (result: InvoiceImportResult) => {
@@ -3316,8 +3324,14 @@ export function Purchases() {
                   </div>
                 </div>
               </div>
-              <button onClick={closeModal} className="shrink-0 rounded-full border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900">
-                Đóng
+              <button
+                type="button"
+                onClick={closeModal}
+                title="Đóng (giữ bản nháp)"
+                aria-label="Đóng"
+                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-ink-900/10 bg-white/80 text-ink-900 hover:border-ink-900/25"
+              >
+                <CloseIcon />
               </button>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-6">
@@ -3735,38 +3749,37 @@ export function Purchases() {
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ink-900/10 px-6 py-4">
-              <div className="text-sm text-ink-700">
-                Tổng cộng: <span className="font-semibold text-ink-900">{formatCurrency(calcOrderTotal(form.lines))}</span>
+            <div className="flex items-center justify-between gap-2 border-t border-ink-900/10 px-4 py-3 sm:gap-3 sm:px-6 sm:py-4">
+              <div className="min-w-0 text-sm text-ink-700">
+                <span className="hidden sm:inline">Tổng cộng: </span>
+                <span className="font-semibold text-ink-900">{formatCurrency(calcOrderTotal(form.lines))}</span>
               </div>
-              <div className="flex flex-wrap gap-3">
+              <div className="flex shrink-0 items-center gap-2 sm:gap-3">
                 {!editingId ? (
-                  <button
-                    type="button"
+                  <IconActionButton
+                    label="Đọc hóa đơn tự động"
+                    icon={<AiSparkleIcon />}
+                    tone="brand"
                     onClick={() => setInvoiceImportOpen(true)}
-                    className="rounded-full border border-brand-500/30 bg-brand-500/10 px-5 py-2 text-sm font-semibold text-brand-700 hover:bg-brand-500/15"
-                  >
-                    Đọc hóa đơn tự động
-                  </button>
+                  />
                 ) : null}
-                <button
-                  type="button"
+                <IconActionButton
                   ref={setFormFieldRef('action-add-line')}
+                  label="Thêm dòng thuốc"
+                  icon={<PlusIcon />}
                   onClick={addLine}
-                  className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900"
-                >
-                  Thêm dòng thuốc
-                </button>
-                <button
-                  onClick={saveOrder}
+                />
+                <IconActionButton
+                  label={savingOrder ? 'Đang lưu...' : 'Lưu phiếu nhập'}
+                  shortLabel={savingOrder ? 'Đang lưu' : 'Lưu'}
+                  icon={<CheckIcon />}
+                  tone="primary"
+                  onClick={() => void saveOrder()}
                   disabled={savingOrder}
-                  className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift disabled:opacity-60"
-                >
-                  {savingOrder ? 'Đang lưu...' : 'Lưu phiếu nhập'}
-                </button>
-                <button onClick={closeModal} className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900">
-                  Hủy
-                </button>
+                />
+                {!editingId ? (
+                  <IconActionButton label="Hủy và xóa bản nháp" icon={<TrashIcon />} tone="danger" onClick={discardDraft} />
+                ) : null}
               </div>
             </div>
           </div>

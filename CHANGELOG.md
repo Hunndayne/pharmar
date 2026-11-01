@@ -28,6 +28,8 @@
 - **Store:** setting mới `purchase.ai_price_includes_vat` (tự thêm khi khởi động, không cần migration).
 
 ### Cải thiện
+- Form tạo/sửa phiếu nhập: hàng nút dưới cùng có icon. Trên điện thoại chỉ hiện icon (riêng nút lưu vẫn ghi "Lưu") nên vừa một dòng; trên máy tính giữ cả icon lẫn chữ. Nút "Đóng" ở góc trên đổi thành biểu tượng ×.
+- Nút "Hủy" trong form tạo phiếu giờ **xóa bản nháp** (hỏi xác nhận trước). Nút × chỉ đóng form và giữ bản nháp cho lần sau. Khi sửa phiếu cũ thì không có nút "Hủy".
 - API Gateway cho request `/api/v1/ai/*` chờ tối đa 120 giây; nginx frontend `proxy_read_timeout 150s`, CSP thêm `frame-src 'self' https:` để xem PDF từ R2, phục vụ worker `.mjs` của pdf.js đúng MIME.
 - Docker build frontend dùng Node 22 (pdf.js 6 yêu cầu Node ≥ 22.13).
 
