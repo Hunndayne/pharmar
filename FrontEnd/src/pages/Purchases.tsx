@@ -1534,16 +1534,11 @@ export function Purchases() {
     downloadCsv(`nhap-hang-${dateKey}.csv`, headers, rows)
   }
 
-  const openCreate = (prefilled?: OrderFormState) => {
+  const openCreate = () => {
     setErrors({})
     setEditingId(null)
-    if (prefilled) {
-      setForm(prefilled)
-      setLineDrugSearch(buildLineDrugSearch(prefilled.lines))
-      setModalOpen(true)
-      return
-    }
     setAiLineHints(null)
+    setInvoiceImportOpen(false)
     const fallback = createEmptyOrder(orders, todayISO(), supplierOptions)
     const draft = loadPurchaseFormDraft()
     if (!draft) {
@@ -1622,12 +1617,15 @@ export function Purchases() {
     setLineDrugSearch({})
     setScanOpen(false)
     setAiLineHints(null)
+    setInvoiceImportOpen(false)
   }
 
-  const openAiDraft = (result: InvoiceImportResult) => {
+  const applyAiDraftToForm = (result: InvoiceImportResult) => {
     const { extraction } = result
-    const date = result.invoiceDate || todayISO()
-    const base = createEmptyOrder(orders, date, supplierOptions)
+    const hasUserLines = form.lines.some(
+      (line) => line.drugId || line.quantity.trim() || line.lotNumber.trim() || line.price.trim(),
+    )
+    if (hasUserLines && !window.confirm('Thay các dòng thuốc hiện có bằng dữ liệu từ hóa đơn?')) return
     const hints: Record<string, AiLineHintData> = {}
     const lines = extraction.lines.map((aiLine, index) => {
       const line = createLine(index + 1)
@@ -1649,19 +1647,38 @@ export function Purchases() {
       result.invoiceSerial,
       result.invoiceNumber ? `số ${result.invoiceNumber}` : '',
     ].filter(Boolean)
-    const prefilled: OrderFormState = {
-      ...base,
-      supplierId: result.supplierId,
-      note: noteParts.length ? `HĐ ${noteParts.join(' ')}` : '',
-      lines: lines.length ? lines : base.lines,
-      invoiceSerial: result.invoiceSerial || null,
-      invoiceNumber: result.invoiceNumber || null,
-      invoiceDate: result.invoiceDate || null,
-      invoiceFileIds: (extraction.files ?? []).map((file) => file.file_id).filter(Boolean),
-    }
-    setInvoiceImportOpen(false)
+    const invoiceNote = noteParts.length ? `HĐ ${noteParts.join(' ')}` : ''
+    const nextLines = lines.length ? lines : [createLine(1)]
+    setForm((prev) => {
+      const prevNote = prev.note.trim()
+      const note = !invoiceNote || prevNote.includes(invoiceNote)
+        ? prev.note
+        : prevNote ? `${prevNote} - ${invoiceNote}` : invoiceNote
+      return {
+        ...prev,
+        date: result.invoiceDate || prev.date,
+        supplierId: result.supplierId,
+        note,
+        lines: nextLines,
+        invoiceSerial: result.invoiceSerial || null,
+        invoiceNumber: result.invoiceNumber || null,
+        invoiceDate: result.invoiceDate || null,
+        invoiceFileIds: (extraction.files ?? []).map((file) => file.file_id).filter(Boolean),
+      }
+    })
+    setLineDrugSearch(buildLineDrugSearch(nextLines))
+    setErrors({})
     setAiLineHints(hints)
-    openCreate(prefilled)
+    setInvoiceImportOpen(false)
+  }
+
+  const openAiInvoiceViewer = () => {
+    if (!form.invoiceFileIds?.length) return
+    const label = [form.invoiceSerial, form.invoiceNumber ? `số ${form.invoiceNumber}` : ''].filter(Boolean).join(' ')
+    setInvoiceViewer({
+      fileIds: form.invoiceFileIds,
+      title: label ? `Hóa đơn ${label}` : 'Hóa đơn nhà cung cấp',
+    })
   }
 
   const openInvoiceViewer = (order: PurchaseOrder) => {
@@ -2798,14 +2815,6 @@ export function Purchases() {
           </button>
           <button
             type="button"
-            onClick={() => setInvoiceImportOpen(true)}
-            disabled={loadingOrders}
-            className="rounded-full border border-brand-500/30 bg-brand-500/10 px-5 py-2 text-sm font-semibold text-brand-700 disabled:opacity-60"
-          >
-            Nhập từ hóa đơn
-          </button>
-          <button
-            type="button"
             onClick={exportOrdersExcel}
             disabled={loadingOrders || paged.length === 0}
             className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
@@ -3260,7 +3269,7 @@ export function Purchases() {
           accessToken={accessToken}
           suppliers={supplierOptions}
           onClose={() => setInvoiceImportOpen(false)}
-          onOpenDraft={openAiDraft}
+          onOpenDraft={applyAiDraftToForm}
         />
       ) : null}
 
@@ -3312,6 +3321,20 @@ export function Purchases() {
               </button>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-6">
+              {!editingId && aiLineHints ? (
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-2xl border border-brand-500/20 bg-brand-500/5 px-4 py-2 text-xs text-ink-700">
+                  <span className="font-medium text-brand-700">
+                    {['Đã điền từ hóa đơn', form.invoiceSerial, form.invoiceNumber ? `số ${form.invoiceNumber}` : '']
+                      .filter(Boolean)
+                      .join(' ')}
+                  </span>
+                  {form.invoiceFileIds?.length ? (
+                    <button type="button" onClick={openAiInvoiceViewer} className="font-semibold text-brand-700 underline underline-offset-2">
+                      Xem hóa đơn ({form.invoiceFileIds.length})
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="grid grid-cols-2 gap-3">
                 <label className="space-y-2 text-sm text-ink-700">
                   <span>Mã phiếu nhập</span>
@@ -3712,6 +3735,15 @@ export function Purchases() {
                 Tổng cộng: <span className="font-semibold text-ink-900">{formatCurrency(calcOrderTotal(form.lines))}</span>
               </div>
               <div className="flex flex-wrap gap-3">
+                {!editingId ? (
+                  <button
+                    type="button"
+                    onClick={() => setInvoiceImportOpen(true)}
+                    className="rounded-full border border-brand-500/30 bg-brand-500/10 px-5 py-2 text-sm font-semibold text-brand-700 hover:bg-brand-500/15"
+                  >
+                    Đọc hóa đơn tự động
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   ref={setFormFieldRef('action-add-line')}

@@ -213,7 +213,7 @@ export function InvoiceImportModal({ accessToken, suppliers, onClose, onOpenDraf
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-ink-900/40 sm:items-center sm:p-4"
+      className="fixed inset-0 z-[60] flex items-end justify-center bg-ink-900/40 sm:items-center sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-label="Nhập từ hóa đơn"
@@ -224,7 +224,7 @@ export function InvoiceImportModal({ accessToken, suppliers, onClose, onOpenDraf
             <p className="text-xs uppercase tracking-[0.3em] text-ink-600">Nhập từ hóa đơn</p>
             <p className="mt-1 text-sm text-ink-600">
               {result
-                ? 'Kiểm tra kết quả AI đọc được trước khi mở phiếu nháp.'
+                ? 'Kiểm tra kết quả AI đọc được trước khi điền vào phiếu.'
                 : 'Chụp hoặc chọn ảnh / PDF hóa đơn của nhà cung cấp, AI sẽ điền sẵn phiếu nhập.'}
             </p>
           </div>
@@ -514,7 +514,7 @@ export function InvoiceImportModal({ accessToken, suppliers, onClose, onOpenDraf
                 disabled={!supplierId}
                 className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift disabled:opacity-50"
               >
-                Mở phiếu nháp
+                Điền vào phiếu
               </button>
             </>
           ) : (

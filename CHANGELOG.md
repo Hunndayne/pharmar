@@ -5,7 +5,7 @@
 ## V1.18 — 2026-11-01
 
 ### Tính năng mới
-- **Nhập phiếu nhập hàng từ ảnh/PDF hóa đơn bằng AI.** Trang Nhập hàng có nút "Nhập từ hóa đơn".
+- **Nhập phiếu nhập hàng từ ảnh/PDF hóa đơn bằng AI.** Trong form "Tạo phiếu nhập" có nút "Đọc hóa đơn tự động" (cạnh "Thêm dòng thuốc"). AI điền thẳng vào phiếu đang tạo, có hỏi trước khi thay các dòng đã nhập tay; sau khi điền, đầu form hiện "Đã điền từ hóa đơn … · Xem hóa đơn" để đối chiếu trong lúc nhập số lô.
   - **Đầu vào:** chọn nhiều ảnh hoặc PDF (hóa đơn nhiều trang). Ảnh được nén ngay trên trình duyệt (JPEG, cạnh dài 1600px); PDF render bằng pdf.js, lấy kèm lớp chữ nếu có.
   - **Service mới `ai-service` (Go, cổng 8011)** gọi DeepSeek (`deepseek-flash`):
     1. Đọc nhà cung cấp, mã số thuế, ký hiệu/số/ngày hóa đơn, các dòng hàng, VAT và tổng tiền.
@@ -30,6 +30,9 @@
 ### Cải thiện
 - API Gateway cho request `/api/v1/ai/*` chờ tối đa 120 giây; nginx frontend `proxy_read_timeout 150s`, CSP thêm `frame-src 'self' https:` để xem PDF từ R2, phục vụ worker `.mjs` của pdf.js đúng MIME.
 - Docker build frontend dùng Node 22 (pdf.js 6 yêu cầu Node ≥ 22.13).
+
+### Sửa lỗi
+- Menu bên trái: bấm một mục trong "Sổ GPP" khi đang ở trang dùng chung đường dẫn với nhóm "Cửa hàng" (ví dụ từ "Sổ thuốc thu hồi" sang "Sổ kiểm soát chất lượng") làm nhóm "Cửa hàng" tự bung ra dù người dùng vừa đóng, khiến menu bị nhảy. Ngay lúc bấm, menu đã nhớ mục mới nhưng đường dẫn vẫn là trang cũ, nên tạm chọn mục cùng đường dẫn của "Cửa hàng" và mở nhóm đó. Nay menu chỉ tự mở nhóm khi trang thật sự đổi, và ưu tiên giữ mục trong cùng nhóm với mục vừa bấm.
 
 ### Ghi chú triển khai
 - **Build lại:** `ai-service` (mới), `inventory-service`, `store-service`, `api-gateway`, `frontend`.

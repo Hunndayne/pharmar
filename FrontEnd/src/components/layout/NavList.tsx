@@ -50,15 +50,24 @@ export function NavList({ items, onNavigate }: NavListProps) {
   )
 
   const matches = entries.filter((entry) => entry.path === pathname)
-  const activeEntry = matches.find((entry) => entry.key === remembered) ?? matches[0] ?? null
+  const rememberedGroup = entries.find((entry) => entry.key === remembered)?.group ?? null
+  // Right after a click the remembered key already points at the new page while pathname is still
+  // the old one; staying in the clicked entry's group keeps the highlight from hopping to another group.
+  const activeEntry =
+    matches.find((entry) => entry.key === remembered) ??
+    matches.find((entry) => entry.group === rememberedGroup) ??
+    matches[0] ??
+    null
   const activeKey = activeEntry?.key ?? null
   const activeGroup = activeEntry?.group ?? null
 
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({})
 
-  const [syncedGroup, setSyncedGroup] = useState<string | null>(null)
-  if (activeGroup !== syncedGroup) {
-    setSyncedGroup(activeGroup)
+  // Auto-open only when the page actually changes, never on the transient render between click and
+  // navigation, so a group the user just collapsed doesn't pop open again.
+  const [syncedPath, setSyncedPath] = useState<string | null>(null)
+  if (pathname !== syncedPath) {
+    setSyncedPath(pathname)
     if (activeGroup) setOpenGroups((prev) => ({ ...prev, [activeGroup]: true }))
   }
 
