@@ -62,6 +62,7 @@ type StoreSettingsForm = {
   expiryWarningDays: string
   nearDateDays: string
   enableFefo: boolean
+  aiPriceIncludesVat: boolean
   fefoThresholdDays: string
   restockSalesWindowDays: string
   restockTargetCoverDays: string
@@ -102,6 +103,7 @@ const defaultStoreSettings: StoreSettingsForm = {
   expiryWarningDays: '30',
   nearDateDays: '90',
   enableFefo: true,
+  aiPriceIncludesVat: true,
   fefoThresholdDays: '180',
   restockSalesWindowDays: '60',
   restockTargetCoverDays: '14',
@@ -314,6 +316,7 @@ const mapSettingsToForm = (settings: StoreSettingsMap): StoreSettingsForm => ({
   expiryWarningDays: asNumberString(settings['inventory.expiry_warning_days'], 30),
   nearDateDays: asNumberString(settings['inventory.near_date_days'], 90),
   enableFefo: asBoolean(settings['inventory.enable_fefo'], true),
+  aiPriceIncludesVat: asBoolean(settings['purchase.ai_price_includes_vat'], true),
   fefoThresholdDays: asNumberString(settings['inventory.fefo_threshold_days'], 180),
   restockSalesWindowDays: asNumberString(settings['inventory.restock_sales_window_days'], 60),
   restockTargetCoverDays: asNumberString(settings['inventory.restock_target_cover_days'], 14),
@@ -1041,6 +1044,7 @@ export function StoreSettings() {
           'inventory.expiry_warning_days': Math.trunc(expiryDays),
           'inventory.near_date_days': Math.trunc(nearDateDays),
           'inventory.enable_fefo': storeSettingsForm.enableFefo,
+          'purchase.ai_price_includes_vat': storeSettingsForm.aiPriceIncludesVat,
           'inventory.fefo_threshold_days': Math.trunc(fefoThresholdDays),
           'inventory.restock_sales_window_days': Math.trunc(restockSalesWindowDays),
           'inventory.restock_target_cover_days': Math.trunc(restockTargetCoverDays),
@@ -1858,6 +1862,23 @@ export function StoreSettings() {
                   <span className="block font-medium text-ink-900">Bat FEFO cho lo co HSD ngan</span>
                   <span className="mt-1 block text-xs text-ink-500">
                     Uu tien xuat lo gan het han truoc khi dat nguong FEFO.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm text-ink-700 sm:col-span-2">
+                <input
+                  type="checkbox"
+                  checked={storeSettingsForm.aiPriceIncludesVat}
+                  onChange={(event) =>
+                    setStoreSettingsForm((prev) => ({ ...prev, aiPriceIncludesVat: event.target.checked }))
+                  }
+                  disabled={!canManageStore || storeLoading}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="block font-medium text-ink-900">Giá nhập từ hóa đơn (AI) đã gồm VAT</span>
+                  <span className="mt-1 block text-xs text-ink-500">
+                    Bật: giá nhập AI điền vào phiếu = đơn giá trên hóa đơn cộng thuế VAT. Tắt: dùng đơn giá trước VAT.
                   </span>
                 </span>
               </label>

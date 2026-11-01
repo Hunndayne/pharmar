@@ -126,6 +126,9 @@ export const fileApi = {
       token,
     ),
 
+  getFile: (token: string, fileId: string) =>
+    requestFileJson<FileRecord>(`/${encodeURIComponent(fileId)}`, { method: 'GET' }, token),
+
   presignDownload: (token: string, fileId: string) =>
     requestFileJson<PresignedUrlResponse>(
       `/presign/download/${encodeURIComponent(fileId)}`,

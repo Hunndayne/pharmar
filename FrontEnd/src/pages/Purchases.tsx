@@ -13,6 +13,11 @@ import {
   type InventoryReceiptLineUnitPrice,
 } from '../api/inventoryService'
 import { catalogApi } from '../api/catalogService'
+import { aiApi, type AiMappingItem } from '../api/aiService'
+import { AiLineHint } from '../components/invoice/AiLineHint'
+import { InvoiceFilesViewer } from '../components/invoice/InvoiceFilesViewer'
+import { InvoiceImportModal } from '../components/invoice/InvoiceImportModal'
+import { buildAiLineHint, type AiLineHintData, type InvoiceImportResult } from '../components/invoice/types'
 import { ApiError, type ApiValidationDetailItem } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
@@ -87,6 +92,11 @@ type OrderFormState = {
   paymentStatus: PaymentStatus
   paymentMethod: PaymentMethod
   lines: LineItemForm[]
+  // Left undefined when unknown so the update payload omits them and the backend keeps stored values.
+  invoiceSerial?: string | null
+  invoiceNumber?: string | null
+  invoiceDate?: string | null
+  invoiceFileIds?: string[]
 }
 
 type PurchaseOrder = OrderFormState & {
@@ -762,8 +772,21 @@ const mapInventoryReceiptToPurchaseOrder = (
       : Date.now(),
     canEdit: receipt.can_edit,
     receiptStatus: receipt.status,
+    invoiceSerial: receipt.invoice_serial,
+    invoiceNumber: receipt.invoice_number,
+    invoiceDate: receipt.invoice_date,
+    invoiceFileIds: receipt.invoice_file_ids,
   }
 }
+
+const describeOrderInvoice = (order: OrderFormState) =>
+  [
+    order.invoiceSerial?.trim(),
+    order.invoiceNumber?.trim() ? `số ${order.invoiceNumber.trim()}` : '',
+    order.invoiceDate ? formatDate(order.invoiceDate) : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
 const buildReceiptExtraFromOrder = (order: OrderFormState): ReceiptExtra => ({
   shippingCarrier: order.shippingCarrier,
@@ -798,6 +821,10 @@ const buildInventoryPayloadFromForm = (
   payment_status: paymentStatusToApi(order.paymentStatus),
   payment_method: paymentMethodToApi(order.paymentMethod),
   note: order.note.trim() || null,
+  invoice_serial: order.invoiceSerial,
+  invoice_number: order.invoiceNumber,
+  invoice_date: order.invoiceDate,
+  invoice_file_ids: order.invoiceFileIds,
   lines: order.lines.map((line) => {
     const selectedDrug = drugMap.get(line.drugId)
     const resolvedBatchCode = options?.includeBatchCode
@@ -963,6 +990,9 @@ export function Purchases() {
   const [labelCounts, setLabelCounts] = useState<Record<string, string>>({})
   const [labelPrintError, setLabelPrintError] = useState<string | null>(null)
   const [labelPrinting, setLabelPrinting] = useState(false)
+  const [invoiceImportOpen, setInvoiceImportOpen] = useState(false)
+  const [aiLineHints, setAiLineHints] = useState<Record<string, AiLineHintData> | null>(null)
+  const [invoiceViewer, setInvoiceViewer] = useState<{ fileIds: string[]; title: string } | null>(null)
 
   const [scanOpen, setScanOpen] = useState(false)
   const [scanError, setScanError] = useState<string | null>(null)
@@ -1504,9 +1534,16 @@ export function Purchases() {
     downloadCsv(`nhap-hang-${dateKey}.csv`, headers, rows)
   }
 
-  const openCreate = () => {
+  const openCreate = (prefilled?: OrderFormState) => {
     setErrors({})
     setEditingId(null)
+    if (prefilled) {
+      setForm(prefilled)
+      setLineDrugSearch(buildLineDrugSearch(prefilled.lines))
+      setModalOpen(true)
+      return
+    }
+    setAiLineHints(null)
     const fallback = createEmptyOrder(orders, todayISO(), supplierOptions)
     const draft = loadPurchaseFormDraft()
     if (!draft) {
@@ -1548,6 +1585,7 @@ export function Purchases() {
     }
     setErrors({})
     setEditingId(order.id)
+    setAiLineHints(null)
     const nextForm = {
       id: order.id,
       code: order.code,
@@ -1557,6 +1595,10 @@ export function Purchases() {
       note: order.note,
       paymentStatus: order.paymentStatus,
       paymentMethod: order.paymentMethod,
+      invoiceSerial: order.invoiceSerial,
+      invoiceNumber: order.invoiceNumber,
+      invoiceDate: order.invoiceDate,
+      invoiceFileIds: order.invoiceFileIds,
       lines: order.lines.map((line) => ({
         ...line,
         batchId: line.batchId ?? '',
@@ -1579,6 +1621,78 @@ export function Purchases() {
     setEditingId(null)
     setLineDrugSearch({})
     setScanOpen(false)
+    setAiLineHints(null)
+  }
+
+  const openAiDraft = (result: InvoiceImportResult) => {
+    const { extraction } = result
+    const date = result.invoiceDate || todayISO()
+    const base = createEmptyOrder(orders, date, supplierOptions)
+    const hints: Record<string, AiLineHintData> = {}
+    const lines = extraction.lines.map((aiLine, index) => {
+      const line = createLine(index + 1)
+      const productId = aiLine.match?.product_id ?? ''
+      const drug = productId ? drugMap.get(productId) : undefined
+      const quantity = Number(aiLine.draft.quantity) || 0
+      const importPrice = aiLine.is_free ? 0 : Math.max(0, Math.round(Number(aiLine.draft.import_price) || 0))
+      hints[line.id] = buildAiLineHint(aiLine)
+      return {
+        ...line,
+        drugId: drug?.id ?? '',
+        barcode: drug?.barcode ?? '',
+        unitRetailPrices: drug ? buildRetailPrices(drug.id) : [],
+        quantity: quantity > 0 ? String(quantity) : '',
+        price: String(importPrice),
+      }
+    })
+    const noteParts = [
+      result.invoiceSerial,
+      result.invoiceNumber ? `số ${result.invoiceNumber}` : '',
+    ].filter(Boolean)
+    const prefilled: OrderFormState = {
+      ...base,
+      supplierId: result.supplierId,
+      note: noteParts.length ? `HĐ ${noteParts.join(' ')}` : '',
+      lines: lines.length ? lines : base.lines,
+      invoiceSerial: result.invoiceSerial || null,
+      invoiceNumber: result.invoiceNumber || null,
+      invoiceDate: result.invoiceDate || null,
+      invoiceFileIds: (extraction.files ?? []).map((file) => file.file_id).filter(Boolean),
+    }
+    setInvoiceImportOpen(false)
+    setAiLineHints(hints)
+    openCreate(prefilled)
+  }
+
+  const openInvoiceViewer = (order: PurchaseOrder) => {
+    if (!order.invoiceFileIds?.length) return
+    const invoiceLabel = describeOrderInvoice(order)
+    setInvoiceViewer({
+      fileIds: order.invoiceFileIds,
+      title: invoiceLabel ? `Hóa đơn ${invoiceLabel} – phiếu ${order.code}` : `Hóa đơn phiếu ${order.code}`,
+    })
+  }
+
+  const closeInvoiceViewer = useCallback(() => setInvoiceViewer(null), [])
+
+  const confirmAiMappings = (order: OrderFormState, hints: Record<string, AiLineHintData>) => {
+    if (!accessToken || !order.supplierId) return
+    const items: AiMappingItem[] = order.lines.flatMap((line) => {
+      const hint = hints[line.id]
+      if (!hint || !line.drugId || !hint.rawName.trim()) return []
+      return [
+        {
+          raw_name: hint.rawName,
+          raw_unit: hint.rawUnit,
+          product_id: line.drugId,
+          unit_id: line.drugId === hint.productId ? hint.unitId : null,
+        },
+      ]
+    })
+    if (!items.length) return
+    aiApi.confirmMappings(accessToken, { supplier_id: order.supplierId, items }).catch((error: unknown) => {
+      console.warn('Không lưu được ghi nhớ tên thuốc từ hóa đơn', error)
+    })
   }
 
   const updateForm = (field: keyof OrderFormState, value: OrderFormState[keyof OrderFormState]) => {
@@ -1932,6 +2046,8 @@ export function Purchases() {
         nextExtras[receipt.id],
       )
 
+      if (isCreating && aiLineHints) confirmAiMappings(effectiveForm, aiLineHints)
+      setAiLineHints(null)
       setModalOpen(false)
       setEditingId(null)
       setErrors({})
@@ -2674,11 +2790,19 @@ export function Purchases() {
         </div>
         <div className="flex flex-wrap gap-3">
           <button
-            onClick={openCreate}
+            onClick={() => openCreate()}
             disabled={loadingOrders}
             className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white shadow-lift disabled:opacity-60"
           >
             Tạo phiếu nhập
+          </button>
+          <button
+            type="button"
+            onClick={() => setInvoiceImportOpen(true)}
+            disabled={loadingOrders}
+            className="rounded-full border border-brand-500/30 bg-brand-500/10 px-5 py-2 text-sm font-semibold text-brand-700 disabled:opacity-60"
+          >
+            Nhập từ hóa đơn
           </button>
           <button
             type="button"
@@ -2916,9 +3040,20 @@ export function Purchases() {
                                     <h4 className="mt-2 text-lg font-semibold text-ink-900">{order.code}</h4>
                                     <p className="mt-1 text-sm text-ink-600">Ngày nhập {formatDate(order.date)}</p>
                                   </div>
-                                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${paymentStatusStyles[order.paymentStatus]}`}>
-                                    {order.paymentStatus}
-                                  </span>
+                                  <div className="flex flex-wrap items-center justify-end gap-2">
+                                    {order.invoiceFileIds?.length ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => openInvoiceViewer(order)}
+                                        className="rounded-full border border-brand-500/30 bg-brand-500/10 px-3 py-1 text-xs font-semibold text-brand-700"
+                                      >
+                                        Xem hóa đơn{order.invoiceFileIds.length > 1 ? ` (${order.invoiceFileIds.length})` : ''}
+                                      </button>
+                                    ) : null}
+                                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${paymentStatusStyles[order.paymentStatus]}`}>
+                                      {order.paymentStatus}
+                                    </span>
+                                  </div>
                                 </div>
                                 <div className="mt-4 grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
                                   <ReceiptMetaItem label="Nhà phân phối" value={supplierMap.get(order.supplierId)?.name || '-'} />
@@ -2927,6 +3062,9 @@ export function Purchases() {
                                   <ReceiptMetaItem label="Địa chỉ" value={supplierMap.get(order.supplierId)?.address || '-'} />
                                   <ReceiptMetaItem label="Vận chuyển" value={order.shippingCarrier || '-'} />
                                   <ReceiptMetaItem label="PT thanh toán" value={order.paymentMethod || '-'} />
+                                  {describeOrderInvoice(order) ? (
+                                    <ReceiptMetaItem label="Hóa đơn" value={describeOrderInvoice(order)} />
+                                  ) : null}
                                 </div>
                                 <div className="mt-3 rounded-2xl bg-fog-50/90 px-4 py-3">
                                   <p className="text-[11px] uppercase tracking-[0.22em] text-ink-500">Ghi chú</p>
@@ -3050,6 +3188,22 @@ export function Purchases() {
 
                 {isExpanded ? (
                   <div className="mt-3 space-y-3 rounded-2xl border border-ink-900/10 bg-gradient-to-br from-white via-white to-fog-50/80 p-3 text-xs text-ink-700">
+                    {order.invoiceFileIds?.length || describeOrderInvoice(order) ? (
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="min-w-0 text-xs text-ink-700">
+                          <span className="font-semibold text-ink-900">Hóa đơn:</span> {describeOrderInvoice(order) || '-'}
+                        </p>
+                        {order.invoiceFileIds?.length ? (
+                          <button
+                            type="button"
+                            onClick={() => openInvoiceViewer(order)}
+                            className="shrink-0 rounded-full border border-brand-500/30 bg-brand-500/10 px-3 py-1 text-xs font-semibold text-brand-700"
+                          >
+                            Xem hóa đơn{order.invoiceFileIds.length > 1 ? ` (${order.invoiceFileIds.length})` : ''}
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
                     <div className="grid gap-2 sm:grid-cols-2">
                       <ReceiptMetaItem label="Người liên hệ" value={supplierMap.get(order.supplierId)?.contactName || '-'} />
                       <ReceiptMetaItem label="Số điện thoại" value={supplierMap.get(order.supplierId)?.phone || '-'} />
@@ -3100,6 +3254,24 @@ export function Purchases() {
           <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} className="rounded-full border border-ink-900/10 bg-white/80 px-3 py-1 text-xs font-semibold text-ink-900">Sau</button>
         </div>
       </section>
+
+      {invoiceImportOpen ? (
+        <InvoiceImportModal
+          accessToken={accessToken}
+          suppliers={supplierOptions}
+          onClose={() => setInvoiceImportOpen(false)}
+          onOpenDraft={openAiDraft}
+        />
+      ) : null}
+
+      {invoiceViewer ? (
+        <InvoiceFilesViewer
+          accessToken={accessToken}
+          fileIds={invoiceViewer.fileIds}
+          title={invoiceViewer.title}
+          onClose={closeInvoiceViewer}
+        />
+      ) : null}
 
       {/* ========== MODAL TẠO/SỬA PHIẾU NHẬP ========== */}
       {modalOpen ? (
@@ -3292,6 +3464,11 @@ export function Purchases() {
                               <span className="text-xs text-coral-500">{errors[`line-drug-${index}`]}</span>
                             ) : null}
                           </label>
+                          {aiLineHints?.[line.id] ? (
+                            <div className="col-span-2">
+                              <AiLineHint hint={aiLineHints[line.id]} currentDrugId={line.drugId} />
+                            </div>
+                          ) : null}
 
                           <label className="space-y-1 text-xs text-ink-600">
                             Số đăng ký

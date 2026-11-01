@@ -13,6 +13,7 @@
     "@ericblade/quagga2": "^1.10.2",
     "jspdf": "^4.2.0",
     "jspdf-autotable": "^5.0.7",
+    "pdfjs-dist": "6.4.299",
     "qrcode": "^1.5.4",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
