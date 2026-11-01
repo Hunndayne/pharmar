@@ -1656,7 +1656,7 @@ export function Purchases() {
         : prevNote ? `${prevNote} - ${invoiceNote}` : invoiceNote
       return {
         ...prev,
-        date: result.invoiceDate || prev.date,
+        // Receipt date stays the day goods are entered; the supplier's invoice date is kept separately.
         supplierId: result.supplierId,
         note,
         lines: nextLines,
@@ -3324,7 +3324,12 @@ export function Purchases() {
               {!editingId && aiLineHints ? (
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-2xl border border-brand-500/20 bg-brand-500/5 px-4 py-2 text-xs text-ink-700">
                   <span className="font-medium text-brand-700">
-                    {['Đã điền từ hóa đơn', form.invoiceSerial, form.invoiceNumber ? `số ${form.invoiceNumber}` : '']
+                    {[
+                      'Đã điền từ hóa đơn',
+                      form.invoiceSerial,
+                      form.invoiceNumber ? `số ${form.invoiceNumber}` : '',
+                      form.invoiceDate ? `ngày ${formatDate(form.invoiceDate)}` : '',
+                    ]
                       .filter(Boolean)
                       .join(' ')}
                   </span>

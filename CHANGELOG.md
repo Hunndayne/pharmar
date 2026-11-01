@@ -32,6 +32,7 @@
 - Docker build frontend dùng Node 22 (pdf.js 6 yêu cầu Node ≥ 22.13).
 
 ### Sửa lỗi
+- Nhập từ hóa đơn: "Ngày nhập" của phiếu không còn bị đổi thành ngày xuất hóa đơn; ngày nhập giữ ngày đang nhập lên hệ thống (mặc định hôm nay), ngày hóa đơn vẫn lưu riêng ở `invoice_date` và hiện trong dòng "Đã điền từ hóa đơn … ngày …".
 - Menu bên trái: bấm một mục trong "Sổ GPP" khi đang ở trang dùng chung đường dẫn với nhóm "Cửa hàng" (ví dụ từ "Sổ thuốc thu hồi" sang "Sổ kiểm soát chất lượng") làm nhóm "Cửa hàng" tự bung ra dù người dùng vừa đóng, khiến menu bị nhảy. Ngay lúc bấm, menu đã nhớ mục mới nhưng đường dẫn vẫn là trang cũ, nên tạm chọn mục cùng đường dẫn của "Cửa hàng" và mở nhóm đó. Nay menu chỉ tự mở nhóm khi trang thật sự đổi, và ưu tiên giữ mục trong cùng nhóm với mục vừa bấm.
 
 ### Ghi chú triển khai
