@@ -387,6 +387,22 @@ def to_product_unit_response(unit: ProductUnit) -> ProductUnitResponse:
     )
 
 
+def _to_group_ref(product: Product) -> ProductGroupRef | None:
+    if not product.group:
+        return None
+    return ProductGroupRef(id=product.group.id, code=product.group.code, name=product.group.name)
+
+
+def _to_manufacturer_ref(product: Product) -> ProductManufacturerRef | None:
+    if not product.manufacturer:
+        return None
+    return ProductManufacturerRef(
+        id=product.manufacturer.id,
+        code=product.manufacturer.code,
+        name=product.manufacturer.name,
+    )
+
+
 def to_product_list_item(product: Product) -> ProductListItemResponse:
     base_unit = get_primary_product_unit(product)
     return ProductListItemResponse(
@@ -407,6 +423,11 @@ def to_product_list_item(product: Product) -> ProductListItemResponse:
         updated_at=product.updated_at,
         # Các truy vấn danh sách đã selectinload units, trả kèm để bảng danh mục khỏi gọi chi tiết từng dòng.
         units=[to_product_unit_response(unit) for unit in _sort_product_units(product.units)],
+        instructions=product.instructions,
+        note=product.note,
+        group=_to_group_ref(product),
+        manufacturer=_to_manufacturer_ref(product),
+        unit_config_status=get_unit_config_status(product),
     )
 
 
@@ -419,24 +440,8 @@ def to_product_detail(product: Product) -> ProductDetailResponse:
         name=product.name,
         active_ingredient=product.active_ingredient,
         registration_number=product.registration_number,
-        group=(
-            ProductGroupRef(
-                id=product.group.id,
-                code=product.group.code,
-                name=product.group.name,
-            )
-            if product.group
-            else None
-        ),
-        manufacturer=(
-            ProductManufacturerRef(
-                id=product.manufacturer.id,
-                code=product.manufacturer.code,
-                name=product.manufacturer.name,
-            )
-            if product.manufacturer
-            else None
-        ),
+        group=_to_group_ref(product),
+        manufacturer=_to_manufacturer_ref(product),
         instructions=product.instructions,
         note=product.note,
         vat_rate=product.vat_rate,

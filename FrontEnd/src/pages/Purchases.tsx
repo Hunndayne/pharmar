@@ -1103,6 +1103,7 @@ export function Purchases() {
               : paymentStatusToApi(paymentStatusFilter as PaymentStatus),
             date_from: dateFrom || undefined,
             date_to: dateTo || undefined,
+            include_lines: true,
           }),
         ])
 
@@ -1119,6 +1120,8 @@ export function Purchases() {
 
         const receiptDetails = await Promise.all(
           receiptPage.items.map(async (item) => {
+            if ('lines' in item && Array.isArray(item.lines)) return item
+            // older inventory service without include_lines
             try {
               return await inventoryApi.getImportReceipt(item.id)
             } catch {

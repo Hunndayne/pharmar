@@ -172,7 +172,7 @@ export type PaginatedResponse<T> = {
   pages: number
 }
 
-export type InventoryImportReceiptPagedResponse = PaginatedResponse<InventoryReceiptListItem>
+export type InventoryImportReceiptPagedResponse = PaginatedResponse<InventoryReceiptListItem | InventoryReceipt>
 
 export type InventoryBatchPagedResponse = PaginatedResponse<InventoryBatch> & {
   summary: {
@@ -510,6 +510,7 @@ export const inventoryApi = {
     status?: 'confirmed' | 'cancelled'
     payment_status?: InventoryPaymentStatus
     search?: string
+    include_lines?: boolean
   }) =>
     requestInventoryJson<InventoryImportReceiptPagedResponse>(
       '/inventory/import-receipts/paged',

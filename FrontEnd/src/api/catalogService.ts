@@ -115,6 +115,12 @@ export type ProductListItem = {
   updated_at: string
   // Catalog bản cũ (trước V1.16) không trả field này.
   units?: ProductUnitItem[]
+  // Catalog bản cũ (trước V1.17) không trả các field dưới đây.
+  instructions?: string | null
+  note?: string | null
+  group?: ProductGroupRef | null
+  manufacturer?: ProductManufacturerRef | null
+  unit_config_status?: ProductUnitConfigStatus
 }
 
 export type ProductDetailItem = {

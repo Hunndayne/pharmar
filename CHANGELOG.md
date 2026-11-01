@@ -2,6 +2,24 @@
 
 ---
 
+## V1.17 — 2026-11-01
+
+### Cải thiện
+- **Dashboard làm lại cho gọn.** Bốn thẻ chỉ số đầu trang: doanh thu hôm nay (so với hôm qua, kèm tiền trả/hủy nếu có), số đơn hôm nay (giá trị trung bình mỗi đơn), doanh thu 7 ngày qua (% so với 7 ngày trước đó) và doanh thu tháng. Xu hướng 14 ngày đổi từ các thanh ngang thành biểu đồ cột: hôm nay tô đậm, rê chuột vào cột để xem doanh thu và số đơn. Gợi ý nhập hàng rút còn 6 dòng với 5 cột chính (tồn, bán/ngày, còn đủ, nên nhập, mức ưu tiên). Top bán chạy có thêm thanh so sánh doanh thu. Có khung chờ khi đang tải, nút tải lại hiện trạng thái quay.
+- **Thay khối "AI Insight" bằng khối "Cần xử lý".** Snapshot AI chủ yếu chạy bản fallback (worker AI tắt mặc định), nên chỉ lặp lại các con số đã có trên dashboard. Khối mới đếm trực tiếp từ tồn kho và gợi ý nhập: lô hết hạn, hết hàng, cần nhập gấp, sắp hết hạn, cận date, tồn thấp. Mỗi dòng bấm vào là sang đúng trang xử lý, kèm thanh tỷ lệ tồn kho an toàn. API `/report/ai/dashboard-insights` ở Report service vẫn giữ nguyên, chỉ không còn hiển thị trên dashboard.
+- **Trang Tồn kho có bảng riêng cho máy tính.** Trước đây mỗi thuốc là một thẻ lớn xếp chồng, 20 thẻ mỗi trang. Nay màn hình từ cỡ `sm` trở lên hiện bảng gồm: thuốc (mã, nhóm), tồn kho (quy đổi hộp/vỉ/viên), số lô, HSD gần nhất (số ngày còn lại tô màu theo ngưỡng cảnh báo), trạng thái dạng badge màu. Bấm vào dòng để mở bảng lô con (số lô, lô NCC, hạn dùng, tồn, nhà phân phối, nút Điều chỉnh / In QR). Bộ lọc gom về một hàng, có nhãn cho ô ngày; "Reset" đổi thành "Xóa lọc". Khi tải lại, danh sách cũ vẫn hiện (làm mờ) thay vì biến mất. Bản điện thoại giữ nguyên dạng thẻ.
+- **Bán hàng — nút nhập nhanh tiền khách đưa.** Dưới ô "Khách đưa" có 4 nút: số tiền vừa đủ và các mức tròn gần nhất (ví dụ đơn 15.000đ → 15.000 / 20.000 / 50.000 / 100.000). Bấm là điền luôn và tính tiền trả lại. Chỉ hiện khi thanh toán tiền mặt và đơn đã có thuốc.
+- **Bán hàng — đơn thuốc mẫu tìm được theo tên và dùng được khi bật "Bán theo lô".** Trước đây nút "Đơn thuốc mẫu" bị ẩn khi bật cài đặt bán theo lô (`sale.enforce_lot_policy`, mặc định bật), nên nhà thuốc không thấy nút. Nay nút luôn hiện khi có đơn mẫu đang bật. Bấm vào mở bảng có ô tìm theo tên hoặc mã, không phân biệt dấu (gõ "da day" ra "Đau dạ dày"); dùng phím mũi tên lên/xuống + Enter để chọn, Esc để đóng. Khi áp đơn mẫu, từng thuốc đi qua cùng luồng với nút "Thêm theo gợi ý" (tự chọn lô theo FEFO khi bán theo lô, tự phân bổ lô khi không). Thuốc nào không thêm được (hết hàng, đã xóa khỏi danh mục…) được liệt kê lý do, các thuốc còn lại vẫn được thêm.
+- **Bán hàng — khung thanh toán gọn hơn.** Phí dịch vụ và cách tính phí nằm chung một hàng. Hình thức thanh toán đổi từ ô chọn sang nút gạt Tiền mặt / Mua nợ. Tiền trả lại / còn nợ gói vào một dòng. Sửa các nhãn bị mất dấu ("Tam tinh thuoc", "Thanh tien", "Tien tra lai", "Khách đưa chua du tien"…) và bỏ dòng hướng dẫn điểm bị lặp.
+- **Menu bên trái.** Vài mục trong "Sổ GPP" dùng chung đường dẫn với mục khác (ví dụ "Sổ thông tin bệnh nhân" và "Khách hàng" cùng là `/khach-hang`), nên trước đây hai mục sáng cùng lúc và cả hai nhóm tự mở. Nay chỉ mục vừa bấm sáng, ghi nhớ trong phiên; vào trang bằng đường khác thì sáng mục đầu tiên khớp. Tiêu đề nhóm ("Cửa hàng", "Sổ GPP") không còn tô nền đậm như mục đang chọn, có mũi tên xoay khi mở/đóng, mục con có đường kẻ dọc dẫn hướng.
+- **Trang Nhập hàng tải nhanh hơn (bỏ N+1 request).** Trước đây trang lấy danh sách phiếu rồi gọi thêm `GET /import-receipts/{id}` cho từng phiếu (20 request mỗi trang), chờ xong hết mới hiển thị. `GET /api/v1/inventory/import-receipts/paged` nhận thêm `include_lines=true` để trả luôn chi tiết dòng thuốc trong 1 request; mặc định vẫn trả dạng rút gọn như cũ. Frontend dùng tham số này, gặp Inventory bản cũ chưa có thì tự quay lại cách gọi từng phiếu. Thêm 3 test (`Inventory Service/tests/test_import_receipts_paged.py`).
+- **Danh mục thuốc: bấm "Chi tiết" hiện ngay.** API danh sách sản phẩm (`/catalog/products`, `/products/search`, tra barcode, batch) trả thêm `instructions`, `note`, `group`, `manufacturer`, `unit_config_status`, giống API chi tiết, nên bảng không phải gọi chi tiết từng thuốc khi mở "Chi tiết" hoặc "Sửa". Catalog bản cũ vẫn chạy theo cách cũ. Thêm 2 test vào `Catalog Service/tests/test_product_list_units.py`.
+
+### Sửa lỗi
+- Từ ngày 15 trở đi, "Doanh thu tháng này" trên dashboard bị tính thiếu: dashboard chỉ lấy dữ liệu 14 ngày gần nhất rồi lọc theo tháng, nên mất các ngày đầu tháng. Nay dữ liệu được lấy từ đầu tháng (hoặc từ đầu cửa sổ 14 ngày nếu ngày đó sớm hơn).
+
+---
+
 ## V1.16 — 2026-10-29
 
 ### Cải thiện
