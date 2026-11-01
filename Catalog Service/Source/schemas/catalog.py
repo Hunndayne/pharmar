@@ -347,6 +347,12 @@ class ProductListItemResponse(MoneyOutputModel):
     created_at: datetime
     updated_at: datetime
     units: list[ProductUnitResponse] = Field(default_factory=list)
+    # Bằng ProductDetailResponse để bảng danh mục khỏi gọi chi tiết từng dòng; mặc định để client cũ vẫn parse được.
+    instructions: str | None = None
+    note: str | None = None
+    group: ProductGroupRef | None = None
+    manufacturer: ProductManufacturerRef | None = None
+    unit_config_status: UnitConfigStatus = "ok"
 
 
 class ProductDetailResponse(BaseModel):

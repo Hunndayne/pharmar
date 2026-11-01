@@ -285,6 +285,8 @@ const mergeManufacturerLists = (...groups: ManufacturerItem[][]) => {
 }
 
 const mapProductListItemToDrug = (item: ProductListItem): Drug => {
+  // Catalog mới (V1.17+) trả đủ field như chi tiết; bản cũ thì để ensureDrugDetail bù khi mở chi tiết.
+  const hasFullInfo = item.unit_config_status !== undefined
   return {
     id: item.id,
     code: item.code,
@@ -294,18 +296,18 @@ const mapProductListItemToDrug = (item: ProductListItem): Drug => {
     category: '-',
     vatRate: toPriceNumber(item.vat_rate),
     otherTaxRate: toPriceNumber(item.other_tax_rate),
-    groupId: null,
-    group: item.group_name ?? '-',
-    makerId: null,
-    maker: item.manufacturer_name ?? '-',
+    groupId: hasFullInfo ? (item.group?.id ?? null) : null,
+    group: item.group?.name ?? item.group_name ?? '-',
+    makerId: hasFullInfo ? (item.manufacturer?.id ?? null) : null,
+    maker: item.manufacturer?.name ?? item.manufacturer_name ?? '-',
     barcode: item.barcode ?? '',
-    usage: '',
-    note: '',
+    usage: hasFullInfo ? (item.instructions ?? '') : '',
+    note: hasFullInfo ? (item.note ?? '') : '',
     units: toUiUnitsFromProductUnits(item.units ?? []),
-    unitConfigStatus: 'ok',
+    unitConfigStatus: item.unit_config_status ?? 'ok',
     active: item.is_active,
     hasTransactions: false,
-    detailLoaded: false,
+    detailLoaded: hasFullInfo,
   }
 }
 

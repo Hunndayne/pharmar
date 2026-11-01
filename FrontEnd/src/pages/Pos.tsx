@@ -254,6 +254,17 @@ const roundCashTotalByStep = (amount: number, step: number) => {
   return Math.round(safeAmount / safeStep) * safeStep
 }
 
+const QUICK_CASH_STEPS = [10_000, 50_000, 100_000, 200_000, 500_000]
+
+// Exact amount first, then the round notes a customer is likely to hand over.
+const buildQuickCashAmounts = (total: number) => {
+  const safeTotal = roundMoneyAmount(total)
+  if (safeTotal <= 0) return []
+  const amounts = new Set<number>([safeTotal])
+  for (const step of QUICK_CASH_STEPS) amounts.add(Math.ceil(safeTotal / step) * step)
+  return Array.from(amounts).sort((a, b) => a - b).slice(0, 4)
+}
+
 const applyMinimumDebtThreshold = (
   totalAmount: number,
   amountPaid: number,
@@ -768,6 +779,15 @@ export function Pos() {
   const [templateDropdownOpen, setTemplateDropdownOpen] = useState(false)
   const [applyingTemplate, setApplyingTemplate] = useState(false)
   const templateDropdownRef = useRef<HTMLDivElement>(null)
+  const [templateQuery, setTemplateQuery] = useState('')
+  const [templateHighlight, setTemplateHighlight] = useState(0)
+  const filteredTemplates = useMemo(() => {
+    const needle = normalizeSearchText(templateQuery)
+    if (!needle) return templates
+    return templates.filter(
+      (t) => normalizeSearchText(t.name).includes(needle) || normalizeSearchText(t.code).includes(needle),
+    )
+  }, [templates, templateQuery])
 
   const [orders, setOrders] = useState<PosOrder[]>([createEmptyOrder()])
   const [activeOrderId, setActiveOrderId] = useState<string>('')
@@ -2136,6 +2156,42 @@ export function Pos() {
     }
   }, [scanOpen, selectedCameraId, stopCameraScanner, addByLotQrValue, sellByLot])
 
+  const addDrugBySuggestion = useCallback(
+    async (
+      orderId: string,
+      drug: PosDrug,
+      unit: PosDrugUnit,
+      quantity: number,
+    ): Promise<'auto_fill' | 'batch'> => {
+      const baseQuantity = quantity * unit.conversion
+      const suggestion = await inventoryApi.suggestIssueByDrug({
+        drug_id: drug.id,
+        quantity: baseQuantity,
+      }, token?.access_token)
+      const suggestedBatch = suggestion.allocations[0]
+      if (!suggestedBatch || suggestion.shortage > 0) {
+        throw new ApiError(`Không đủ tồn kho cho ${drug.name}.`, 409)
+      }
+
+      if (!sellByLot && unit.conversion === 1) {
+        await buildAutoFillItem(orderId, drug, unit, quantity)
+        return 'auto_fill'
+      }
+
+      if (!sellByLot && (suggestion.allocations.length > 1 || suggestedBatch.allocated < baseQuantity)) {
+        throw new ApiError(
+          `Đơn vị ${unit.name} chỉ bán được khi một lô đủ tồn. Vui lòng đổi về đơn vị lẻ hoặc chọn lô cụ thể.`,
+          409,
+        )
+      }
+
+      const batchDetail = await inventoryApi.getBatchDetail(suggestedBatch.batch_id)
+      await buildItemFromBatch(batchDetail, orderId, quantity, drug, unit)
+      return 'batch'
+    },
+    [buildAutoFillItem, buildItemFromBatch, sellByLot, token?.access_token],
+  )
+
   const handleAddByDrug = useCallback(async () => {
     if (!activeOrder || !selectedDrug || !selectedUnit) return
 
@@ -2145,41 +2201,18 @@ export function Pos() {
       return
     }
 
-    const baseQuantity = quantity * selectedUnit.conversion
-
     setAddingByDrug(true)
     setActionError(null)
     setActionMessage(null)
 
     let succeeded = false
     try {
-      const suggestion = await inventoryApi.suggestIssueByDrug({
-        drug_id: selectedDrug.id,
-        quantity: baseQuantity,
-      }, token?.access_token)
-      const suggestedBatch = suggestion.allocations[0]
-      if (!suggestedBatch || suggestion.shortage > 0) {
-        throw new ApiError(`Không đủ tồn kho cho ${selectedDrug.name}.`, 409)
-      }
-
-      if (!sellByLot && selectedUnit.conversion === 1) {
-        await buildAutoFillItem(activeOrder.id, selectedDrug, selectedUnit, quantity)
+      const mode = await addDrugBySuggestion(activeOrder.id, selectedDrug, selectedUnit, quantity)
+      if (mode === 'auto_fill') {
         setActionMessage(
           `Đã thêm ${selectedDrug.name}; hệ thống sẽ tự phân bổ lô khi thanh toán.`,
         )
-        succeeded = true
-        return
       }
-
-      if (!sellByLot && (suggestion.allocations.length > 1 || suggestedBatch.allocated < baseQuantity)) {
-        throw new ApiError(
-          `Đơn vị ${selectedUnit.name} chỉ bán được khi một lô đủ tồn. Vui lòng đổi về đơn vị lẻ hoặc chọn lô cụ thể.`,
-          409,
-        )
-      }
-
-      const batchDetail = await inventoryApi.getBatchDetail(suggestedBatch.batch_id)
-      await buildItemFromBatch(batchDetail, activeOrder.id, quantity, selectedDrug, selectedUnit)
       succeeded = true
     } catch (error) {
       if (error instanceof ApiError) setActionError(error.message)
@@ -2191,31 +2224,47 @@ export function Pos() {
         setSelectedDrugId('')
       }
     }
-  }, [activeOrder, selectedDrug, selectedUnit, selectedQuantity, buildAutoFillItem, buildItemFromBatch, sellByLot, token?.access_token, setDrugSearch, setSelectedDrugId])
+  }, [activeOrder, selectedDrug, selectedUnit, selectedQuantity, addDrugBySuggestion, setDrugSearch, setSelectedDrugId])
 
   const applyTemplate = useCallback(
     async (template: PrescriptionTemplate) => {
-      if (!activeOrder || sellByLot) return
+      if (!activeOrder) return
       setApplyingTemplate(true)
       setTemplateDropdownOpen(false)
       setActionError(null)
-      let addedCount = 0
-      for (const item of template.items) {
-        const drug = drugsById.get(item.product_id)
-        if (!drug) continue
-        const unit = drug.units.find((u) => u.id === item.product_unit_id)
-        if (!unit || unit.conversion !== 1) continue
-        await buildAutoFillItem(activeOrder.id, drug, unit, item.quantity)
-        addedCount++
+      setActionMessage(null)
+      try {
+        let addedCount = 0
+        const failures: string[] = []
+        // Tuần tự: mỗi lần thêm cập nhật đơn hàng đang mở, chạy song song sẽ ghi đè nhau.
+        for (const item of template.items) {
+          const drug = drugsById.get(item.product_id)
+          const unit = drug?.units.find((u) => u.id === item.product_unit_id)
+          if (!drug || !unit) {
+            failures.push(drug ? `${drug.name}: đơn vị trong đơn mẫu không còn` : 'một thuốc đã bị xóa khỏi danh mục')
+            continue
+          }
+          try {
+            await addDrugBySuggestion(activeOrder.id, drug, unit, item.quantity)
+            addedCount++
+          } catch (error) {
+            const reason = error instanceof ApiError ? error.message : 'không thể thêm thuốc'
+            failures.push(`${drug.name}: ${reason}`)
+          }
+        }
+        if (addedCount > 0) {
+          setActionMessage(
+            `Đã áp dụng đơn mẫu "${template.name}": thêm ${addedCount}/${template.items.length} thuốc.`,
+          )
+        }
+        if (failures.length > 0) {
+          setActionError(`Không thêm được: ${failures.join('; ')}`)
+        }
+      } finally {
+        setApplyingTemplate(false)
       }
-      setActionMessage(
-        addedCount > 0
-          ? `Đã áp dụng đơn mẫu "${template.name}" (${addedCount} loại thuốc).`
-          : `Không có thuốc nào trong đơn mẫu "${template.name}" khả dụng để thêm.`,
-      )
-      setApplyingTemplate(false)
     },
-    [activeOrder, sellByLot, drugsById, buildAutoFillItem],
+    [activeOrder, drugsById, addDrugBySuggestion],
   )
 
   const updateActiveOrder = useCallback(
@@ -2565,6 +2614,10 @@ export function Pos() {
     if (activeOrder?.paymentMode !== 'cash') return 0
     return paymentSummary.changeAmount
   }, [activeOrder?.paymentMode, paymentSummary.changeAmount])
+  const quickCashAmounts = useMemo(() => {
+    if (activeOrder?.paymentMode !== 'cash') return []
+    return buildQuickCashAmounts(grandTotal)
+  }, [activeOrder?.paymentMode, grandTotal])
 
   useEffect(() => {
     if (!activeOrder) return
@@ -3547,31 +3600,93 @@ export function Pos() {
             </button>
           </div>
 
-          {!sellByLot && templates.length > 0 && (
+          {templates.length > 0 && (
             <div className="relative mt-2" ref={templateDropdownRef}>
               <button
                 type="button"
-                onClick={() => setTemplateDropdownOpen((prev) => !prev)}
+                onClick={() => {
+                  if (!templateDropdownOpen) {
+                    setTemplateQuery('')
+                    setTemplateHighlight(0)
+                  }
+                  setTemplateDropdownOpen((prev) => !prev)
+                }}
                 disabled={applyingTemplate || !activeOrder}
-                className="rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink-900 disabled:opacity-60 sm:rounded-2xl sm:px-4 sm:py-2 sm:text-sm"
+                aria-haspopup="listbox"
+                aria-expanded={templateDropdownOpen}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 text-xs font-semibold text-ink-900 disabled:opacity-60 sm:rounded-2xl sm:px-4 sm:py-2 sm:text-sm"
               >
-                {applyingTemplate ? 'Đang áp dụng...' : 'Đơn thuốc mẫu ▾'}
+                {applyingTemplate ? 'Đang áp dụng...' : 'Đơn thuốc mẫu'}
+                <svg
+                  viewBox="0 0 20 20"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-3.5 w-3.5"
+                  aria-hidden="true"
+                >
+                  <path d="M5 8l5 5 5-5" />
+                </svg>
               </button>
               {templateDropdownOpen && (
-                <ul className="absolute left-0 top-full z-30 mt-1 min-w-[220px] rounded-2xl border border-ink-900/10 bg-white shadow-lift overflow-hidden">
-                  {templates.map((t) => (
-                    <li key={t.id}>
-                      <button
-                        type="button"
-                        className="w-full px-4 py-2.5 text-left hover:bg-fog-50"
-                        onClick={() => void applyTemplate(t)}
-                      >
-                        <span className="block text-sm font-semibold text-ink-900">{t.name}</span>
-                        <span className="block text-xs text-ink-600">{t.items.length} loại thuốc</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
+                <div className="absolute left-0 top-full z-30 mt-1 w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-ink-900/10 bg-white p-2 shadow-lift">
+                  <input
+                    type="text"
+                    autoFocus
+                    value={templateQuery}
+                    onChange={(e) => {
+                      setTemplateQuery(e.target.value)
+                      setTemplateHighlight(0)
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'ArrowDown') {
+                        e.preventDefault()
+                        setTemplateHighlight((prev) => Math.min(prev + 1, Math.max(filteredTemplates.length - 1, 0)))
+                      } else if (e.key === 'ArrowUp') {
+                        e.preventDefault()
+                        setTemplateHighlight((prev) => Math.max(prev - 1, 0))
+                      } else if (e.key === 'Enter') {
+                        e.preventDefault()
+                        const target = filteredTemplates[templateHighlight]
+                        if (target) void applyTemplate(target)
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault()
+                        setTemplateDropdownOpen(false)
+                      }
+                    }}
+                    placeholder="Tìm tên hoặc mã đơn mẫu"
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-2 text-sm text-ink-900 outline-none focus:border-brand-500"
+                  />
+                  <ul role="listbox" className="mt-2 max-h-72 overflow-y-auto">
+                    {filteredTemplates.length === 0 ? (
+                      <li className="px-3 py-2.5 text-sm text-ink-600">Không tìm thấy đơn mẫu</li>
+                    ) : (
+                      filteredTemplates.map((t, index) => (
+                        <li
+                          key={t.id}
+                          role="option"
+                          aria-selected={index === templateHighlight}
+                        >
+                          <button
+                            type="button"
+                            tabIndex={-1}
+                            className={`w-full rounded-xl px-3 py-2.5 text-left hover:bg-ink-900/5 ${
+                              index === templateHighlight ? 'bg-brand-500/10' : ''
+                            }`}
+                            onClick={() => void applyTemplate(t)}
+                          >
+                            <span className="block text-sm font-semibold text-ink-900">{t.name}</span>
+                            <span className="block text-xs text-ink-600">
+                              {t.code} · {t.items.length} thuốc
+                            </span>
+                          </button>
+                        </li>
+                      ))
+                    )}
+                  </ul>
+                </div>
               )}
             </div>
           )}
@@ -3730,25 +3845,43 @@ export function Pos() {
         </article>
 
         <aside className="glass-card rounded-2xl p-3 sm:rounded-3xl sm:p-5">
-          <p className="text-xs uppercase tracking-[0.25em] text-ink-600">Thanh toán</p>
-          <h3 className="mt-1 text-xl font-semibold text-ink-900 sm:mt-2 sm:text-2xl">Đơn đang chọn</h3>
+          <h3 className="text-lg font-semibold text-ink-900">Thanh toán</h3>
 
           {activeOrder ? (
-            <div className="mt-3 space-y-2 sm:mt-4 sm:space-y-3">
-              <label className="space-y-2 text-sm text-ink-700">
-                <span>Phí dịch vụ</span>
-                <input
-                  value={activeOrder.serviceFee}
-                  onChange={(event) =>
-                    updateActiveOrder((order) => ({ ...order, serviceFee: event.target.value }))
-                  }
-                  className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
-                  placeholder="0"
-                />
-              </label>
+            <div className="mt-3 space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block space-y-2 text-sm text-ink-700">
+                  <span>Phí dịch vụ</span>
+                  <input
+                    value={activeOrder.serviceFee}
+                    onChange={(event) =>
+                      updateActiveOrder((order) => ({ ...order, serviceFee: event.target.value }))
+                    }
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
+                    placeholder="0"
+                  />
+                </label>
+
+                <label className="block space-y-2 text-sm text-ink-700">
+                  <span>Cách tính phí</span>
+                  <select
+                    value={activeOrder.serviceFeeMode}
+                    onChange={(event) =>
+                      updateActiveOrder((order) => ({
+                        ...order,
+                        serviceFeeMode: event.target.value as ServiceFeeMode,
+                      }))
+                    }
+                    className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
+                  >
+                    <option value="split">Chia đều</option>
+                    <option value="separate">Dòng riêng</option>
+                  </select>
+                </label>
+              </div>
 
               {activeOrder.customerMode === 'member' && activeOrder.customerPoints !== null && activeOrder.customerPoints > 0 ? (
-                <label className="space-y-2 text-sm text-ink-700">
+                <label className="block space-y-2 text-sm text-ink-700">
                   <span>Sử dụng điểm (Tối đa: {activeOrder.customerPoints.toLocaleString('vi-VN')})</span>
                   <input
                     type="number"
@@ -3770,36 +3903,18 @@ export function Pos() {
                     placeholder="0"
                   />
                   <p className="text-xs text-ink-500">
-                    1 diem = {customerPointValue.toLocaleString('vi-VN')}d. Co the ap toi da {maxRedeemablePoints.toLocaleString('vi-VN')} diem cho don nay.
+                    1 điểm = {customerPointValue.toLocaleString('vi-VN')}đ · tối đa {maxRedeemablePoints.toLocaleString('vi-VN')} điểm cho đơn này
                   </p>
-                  <p className="text-xs text-ink-500">1 điểm = {customerPointValue.toLocaleString('vi-VN')}đ</p>
                 </label>
               ) : null}
 
-              <label className="space-y-2 text-sm text-ink-700">
-                <span>Cách tính phí dịch vụ</span>
-                <select
-                  value={activeOrder.serviceFeeMode}
-                  onChange={(event) =>
-                    updateActiveOrder((order) => ({
-                      ...order,
-                      serviceFeeMode: event.target.value as ServiceFeeMode,
-                    }))
-                  }
-                  className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
-                >
-                  <option value="split">Chia đều vào các dòng thuốc</option>
-                  <option value="separate">Mục riêng trong hóa đơn</option>
-                </select>
-              </label>
-
               <div className="rounded-xl border border-ink-900/10 bg-white p-3 text-sm text-ink-700 sm:rounded-2xl sm:p-4">
                 <div className="flex items-center justify-between py-1">
-                  <span>Tam tinh thuoc</span>
+                  <span>Tạm tính thuốc</span>
                   <span className="font-semibold text-ink-900">{formatCurrency(subtotal)}</span>
                 </div>
                 <div className="flex items-center justify-between py-1">
-                  <span>Phi dich vu</span>
+                  <span>Phí dịch vụ</span>
                   <span className="font-semibold text-ink-900">{formatCurrency(serviceFee)}</span>
                 </div>
                 {tierDiscountAmount > 0 ? (
@@ -3823,31 +3938,43 @@ export function Pos() {
                   </div>
                 ) : null}
                 <div className="mt-2 flex items-center justify-between border-t border-ink-900/10 pt-2">
-                  <span className="font-semibold">Thanh tien</span>
+                  <span className="font-semibold">Thành tiền</span>
                   <span className="text-lg font-semibold text-ink-900">{formatCurrency(displayGrandTotal)}</span>
                 </div>
               </div>
 
-              <label className="space-y-2 text-sm text-ink-700">
-                <span>Hình thức thanh toán</span>
-                <select
-                  value={activeOrder.paymentMode}
-                  onChange={(event) =>
-                    updateActiveOrder((order) => ({
-                      ...order,
-                      paymentMode: event.target.value as PaymentMode,
-                    }))
-                  }
-                  className="w-full rounded-xl border border-ink-900/10 bg-white px-3 py-1.5 sm:rounded-2xl sm:px-4 sm:py-2"
-                >
-                  <option value="cash">Tiền mặt</option>
-                  <option value="debt">Mua nợ</option>
-                </select>
-              </label>
+              <div role="group" aria-label="Hình thức thanh toán" className="grid grid-cols-2 gap-1 rounded-xl bg-ink-900/5 p-1">
+                {(
+                  [
+                    { value: 'cash', label: 'Tiền mặt' },
+                    { value: 'debt', label: 'Mua nợ' },
+                  ] as const
+                ).map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-pressed={activeOrder.paymentMode === option.value}
+                    onClick={() =>
+                      updateActiveOrder((order) => ({
+                        ...order,
+                        paymentMode: option.value as PaymentMode,
+                      }))
+                    }
+                    className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${
+                      activeOrder.paymentMode === option.value
+                        ? 'bg-white text-ink-900 shadow-sm'
+                        : 'text-ink-600'
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
 
-              <label className="space-y-2 text-sm text-ink-700">
+              <label className="block space-y-2 text-sm text-ink-700">
                 <span>{activeOrder.paymentMode === 'debt' ? 'Đã thanh toán trước' : 'Khách đưa'}</span>
                 <input
+                  inputMode="numeric"
                   value={activeOrder.cashReceived}
                   onChange={(event) =>
                     updateActiveOrder((order) => ({ ...order, cashReceived: event.target.value }))
@@ -3857,19 +3984,40 @@ export function Pos() {
                 />
               </label>
 
+              {activeOrder.paymentMode === 'cash' && activeOrder.items.length > 0 ? (
+                <div className="grid grid-cols-4 gap-2">
+                  {quickCashAmounts.map((amount) => (
+                    <button
+                      key={amount}
+                      type="button"
+                      onClick={() => updateActiveOrder((order) => ({ ...order, cashReceived: String(amount) }))}
+                      className={`rounded-xl border px-2 py-1.5 text-sm font-semibold tabular-nums ${
+                        cashReceived === amount
+                          ? 'border-brand-500 bg-brand-500/10 text-brand-700'
+                          : 'border-ink-900/10 bg-white text-ink-900 hover:border-ink-900/25'
+                      }`}
+                    >
+                      {amount.toLocaleString('vi-VN')}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+
               <div className="rounded-xl border border-ink-900/10 bg-white p-3 sm:rounded-2xl sm:p-4">
-                <p className="text-sm text-ink-600">
-                  {activeOrder.paymentMode === 'debt' ? 'Con no' : 'Tien tra lai'}
-                </p>
-                <p
-                  className={`mt-1 text-2xl font-semibold ${
-                    activeOrder.paymentMode === 'cash' && changeAmount < 0 ? 'text-coral-500' : 'text-ink-900'
-                  }`}
-                >
-                  {formatCurrency(activeOrder.paymentMode === 'debt' ? outstandingAmount : roundedCashChangeAmount)}
-                </p>
+                <div className="flex items-baseline justify-between gap-3">
+                  <p className="text-sm text-ink-600">
+                    {activeOrder.paymentMode === 'debt' ? 'Còn nợ' : 'Tiền trả lại'}
+                  </p>
+                  <p
+                    className={`text-xl font-semibold ${
+                      activeOrder.paymentMode === 'cash' && changeAmount < 0 ? 'text-coral-500' : 'text-ink-900'
+                    }`}
+                  >
+                    {formatCurrency(activeOrder.paymentMode === 'debt' ? outstandingAmount : roundedCashChangeAmount)}
+                  </p>
+                </div>
                 {activeOrder.paymentMode === 'cash' && changeAmount < 0 ? (
-                  <p className="mt-1 text-xs text-coral-500">Khách đưa chua du tien.</p>
+                  <p className="mt-1 text-xs text-coral-500">Khách đưa chưa đủ tiền.</p>
                 ) : null}
               </div>
 

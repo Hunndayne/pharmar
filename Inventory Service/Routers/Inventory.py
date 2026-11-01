@@ -2801,6 +2801,7 @@ async def list_import_receipts_paged(
     status_filter: ReceiptStatus | None = Query(default=None, alias="status"),
     payment_status: PaymentStatus | None = Query(default=None),
     search: str | None = Query(default=None),
+    include_lines: bool = Query(default=False),
 ) -> dict[str, Any]:
     receipts = filter_import_receipts(
         list(runtime_state.receipts.values()),
@@ -2818,8 +2819,9 @@ async def list_import_receipts_paged(
     start = (current_page - 1) * size
     end = start + size
     items = receipts[start:end]
+    to_view = receipt_to_view if include_lines else receipt_list_item_to_view
     return {
-        "items": [receipt_list_item_to_view(receipt) for receipt in items],
+        "items": [to_view(receipt) for receipt in items],
         "total": total,
         "page": current_page,
         "size": size,

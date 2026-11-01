@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { LotLabelPrintPage, type LabelPrintLot } from '../components/labels/LotLabelPrintPage'
 import {
   inventoryApi,
@@ -49,6 +49,10 @@ const normalizeRatio = (conversion: number, retailConversion: number) => Math.ma
 const isVisibleBatchInDrugDetail = (batch: InventoryBatch) => batch.status !== 'cancelled' && batch.qty_remaining > 0
 const highestUnitPrice = (batch: InventoryBatch) => !batch.unit_prices.length ? batch.import_price : batch.unit_prices.slice().sort((a, b) => b.conversion - a.conversion)[0]?.price ?? batch.import_price
 const formatStockStatusLabel = (status: InventoryStockStatus) => status === 'out_of_stock' ? 'Hết hàng' : status === 'expired' ? 'Hết hạn' : status === 'expiring_soon' ? 'Sắp hết hạn' : status === 'near_date' ? 'Cận date' : status === 'low_stock' ? 'Tồn thấp' : 'Bình thường'
+const stockStatusBadgeClass = (status: InventoryStockStatus) => status === 'out_of_stock' || status === 'expired' ? 'bg-coral-500/10 text-coral-500' : status === 'expiring_soon' || status === 'low_stock' ? 'bg-amber-500/10 text-amber-700' : status === 'near_date' ? 'bg-sun-500/10 text-sun-500' : 'bg-brand-500/10 text-brand-700'
+const expiryToneClass = (days: number | null, warningDays: number, nearDays: number) => days === null ? 'text-ink-500' : days < warningDays ? 'text-coral-500' : days <= nearDays ? 'text-sun-500' : 'text-ink-500'
+const formatDaysLeft = (days: number) => days < 0 ? `Quá hạn ${Math.abs(days)} ngày` : `Còn ${days.toLocaleString('vi-VN')} ngày`
+const formatBreakdown = (quantityRetail: number, units: UnitConfig) => quantityBreakdown(quantityRetail, units).map((item) => `${item.value} ${item.label}`).join(' · ')
 
 const toUnitConfigFromUnits = (rawUnits: Array<Pick<InventoryMetaUnit, 'name' | 'conversion'>>): UnitConfig => {
   const deduped = new Map<number, { name: string; conversion: number }>()
@@ -266,13 +270,63 @@ export function Inventory() {
     downloadCsv(`ton-kho-theo-thuoc-${new Date().toISOString().slice(0, 10)}.csv`, ['Mã thuốc', 'Tên thuốc', 'Số lô đang có', 'HSD gần nhất', 'Số ngày đến hạn', 'Tồn', 'Quy đổi tồn', 'Trạng thái'], stockRows.map((row) => [row.item.drug_code, row.item.drug_name, row.item.active_batch_count, row.item.nearest_expiry ? formatDate(row.item.nearest_expiry) : '-', row.nearDays ?? '-', `${row.item.total_qty} ${row.units.retailUnit.name}`, quantityBreakdown(row.item.total_qty, row.units).map((item) => `${item.value} ${item.label}`).join(' · '), formatStockStatusLabel(row.item.status)]))
   }
 
-  const renderDrugDetailContent = (row: StockDrugRow) => {
+  const openAdjust = (batchId: string) => { setAdjustError(null); setAdjusting({ batchId, operation: 'subtract', importQty: '', middleQty: '', retailQty: '' }) }
+  const openPrint = (row: StockDrugRow, batch: InventoryBatch) => setPrintingLot({ id: batch.id, code: batch.batch_code, qrValue: batch.batch_code, productName: row.item.drug_name, price: highestUnitPrice(batch), defaultCount: 1 })
+
+  const renderDrugDetailContent = (row: StockDrugRow, layout: 'cards' | 'table') => {
     const detail = stockDetailsByDrugId[row.item.drug_id]
     if (loadingDetailDrugId === row.item.drug_id && !detail) return <div className="rounded-2xl border border-ink-900/10 bg-white px-4 py-4 text-sm text-ink-600">Đang tải chi tiết các lô...</div>
     if (!detail) return <div className="rounded-2xl border border-ink-900/10 bg-white px-4 py-4 text-sm text-ink-600">Chưa tải chi tiết lô.</div>
     const detailUnits = toUnitConfigFromUnits(detail.drug.units)
     const visibleBatches = detail.batches.filter(isVisibleBatchInDrugDetail)
     if (!visibleBatches.length) return <div className="rounded-2xl border border-dashed border-ink-900/15 bg-white px-4 py-4 text-sm text-ink-600">Thuốc hiện không còn lô còn tồn.</div>
+    if (layout === 'table') {
+      return (
+        <div className="overflow-hidden rounded-2xl border border-ink-900/10 bg-white">
+          <table className="min-w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-ink-900/10 bg-fog-50 text-xs text-ink-500">
+                <th className="px-4 py-2 font-medium">Số lô</th>
+                <th className="px-4 py-2 font-medium">Lô NCC</th>
+                <th className="px-4 py-2 font-medium">Hạn dùng</th>
+                <th className="px-4 py-2 text-right font-medium">Tồn</th>
+                <th className="px-4 py-2 font-medium">Nhà phân phối</th>
+                <th className="px-4 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {visibleBatches.map((batch) => {
+                const batchNearDays = daysUntil(batch.exp_date)
+                return (
+                  <tr key={batch.id} className="border-b border-ink-900/5 last:border-0">
+                    <td className="px-4 py-3 font-semibold text-ink-900">{batch.batch_code}</td>
+                    <td className="px-4 py-3 text-ink-700">{batch.lot_number || '-'}</td>
+                    <td className="px-4 py-3">
+                      <p className="text-ink-900">{formatDate(batch.exp_date)}</p>
+                      <p className={`text-xs ${expiryToneClass(batchNearDays, expiryWarningDays, nearExpiryDays)}`}>{formatDaysLeft(batchNearDays)}</p>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <p className="font-semibold tabular-nums text-ink-900">{batch.qty_remaining.toLocaleString('vi-VN')} {detailUnits.retailUnit.name}</p>
+                      {detailUnits.importUnit ? <p className="text-xs text-ink-500">{formatBreakdown(batch.qty_remaining, detailUnits)}</p> : null}
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-ink-900">{batch.supplier_name || '-'}</p>
+                      {batch.supplier_contact ? <p className="text-xs text-ink-500">{batch.supplier_contact}</p> : null}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end gap-2">
+                        <button type="button" onClick={() => openAdjust(batch.id)} disabled={!canAdjust} className="whitespace-nowrap rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900 transition hover:border-ink-900/25 disabled:opacity-50">Điều chỉnh</button>
+                        <button type="button" onClick={() => openPrint(row, batch)} className="whitespace-nowrap rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900 transition hover:border-ink-900/25">In QR</button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )
+    }
     return (
       <div className="grid gap-3 lg:grid-cols-2">
         {visibleBatches.map((batch) => {
@@ -296,8 +350,8 @@ export function Inventory() {
                 <p className="mt-1 text-ink-600">{breakdown.map((item) => `${item.value} ${item.label}`).join(' · ')}</p>
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
-                <button type="button" onClick={() => { setAdjustError(null); setAdjusting({ batchId: batch.id, operation: 'subtract', importQty: '', middleQty: '', retailQty: '' }) }} disabled={!canAdjust} className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-50">Điều chỉnh tồn kho</button>
-                <button type="button" onClick={() => setPrintingLot({ id: batch.id, code: batch.batch_code, qrValue: batch.batch_code, productName: row.item.drug_name, price: highestUnitPrice(batch), defaultCount: 1 })} className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900">In QR</button>
+                <button type="button" onClick={() => openAdjust(batch.id)} disabled={!canAdjust} className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900 disabled:opacity-50">Điều chỉnh tồn kho</button>
+                <button type="button" onClick={() => openPrint(row, batch)} className="rounded-full border border-ink-900/10 bg-white px-3 py-1 text-xs font-semibold text-ink-900">In QR</button>
               </div>
             </article>
           )
@@ -329,23 +383,34 @@ export function Inventory() {
           ['near', 'Cận date', stockSummary.near_date, 'text-sun-500'],
           ['expired', 'Hết hạn', stockSummary.expired, 'text-coral-500'],
         ] as const).map(([value, label, count, tone]) => (
-          <button key={value} type="button" onClick={() => { setQuickFilter(value); setPage(1) }} className={`glass-card min-w-0 rounded-2xl p-4 text-left sm:rounded-3xl sm:p-5 ${quickFilter === value ? 'ring-2 ring-ink-900/20' : ''}`}>
+          <button key={value} type="button" onClick={() => { setQuickFilter(value); setPage(1) }} className={`glass-card min-w-0 rounded-2xl p-4 text-left transition sm:rounded-3xl sm:p-5 ${quickFilter === value ? 'ring-2 ring-brand-500/50' : 'hover:ring-1 hover:ring-ink-900/10'}`}>
             <p className="text-[10px] uppercase tracking-[0.2em] text-ink-600 sm:text-xs sm:tracking-[0.24em]">{label}</p>
-            <p className={`mt-2 text-2xl font-semibold sm:text-3xl ${tone}`}>{count}</p>
+            <p className={`mt-2 text-2xl font-semibold sm:text-3xl ${tone}`}>{count.toLocaleString('vi-VN')}</p>
           </button>
         ))}
       </section>
 
-      <section className="glass-card rounded-3xl space-y-4 p-4 sm:p-6">
-        <input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Tìm theo mã thuốc, tên thuốc, số lô, nhà phân phối" className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm" />
+      <section className="glass-card space-y-4 rounded-3xl p-4 sm:p-5">
+        <div className="flex flex-col gap-3 md:flex-row md:items-end">
+          <label className="block min-w-0 md:flex-1">
+            <span className="mb-1 hidden text-xs font-medium text-ink-500 md:block">Tìm kiếm</span>
+            <input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Mã thuốc, tên thuốc, số lô, nhà phân phối" className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm" />
+          </label>
+          <label className="hidden md:block md:w-44">
+            <span className="mb-1 block text-xs font-medium text-ink-500">HSD từ ngày</span>
+            <input type="date" value={expFrom} onChange={(event) => { setExpFrom(event.target.value); setPage(1) }} className="w-full rounded-2xl border border-ink-900/10 bg-white px-3 py-2 text-sm" />
+          </label>
+          <label className="hidden md:block md:w-44">
+            <span className="mb-1 block text-xs font-medium text-ink-500">đến ngày</span>
+            <input type="date" value={expTo} onChange={(event) => { setExpTo(event.target.value); setPage(1) }} className="w-full rounded-2xl border border-ink-900/10 bg-white px-3 py-2 text-sm" />
+          </label>
+          <div className="hidden gap-2 md:flex">
+            <button type="button" onClick={() => { setSearch(''); setQuickFilter('all'); setExpFrom(''); setExpTo(''); setPage(1) }} className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-700 transition hover:border-ink-900/25">Xóa lọc</button>
+            <button type="button" onClick={() => void loadInventory()} disabled={loading} className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900 transition hover:border-ink-900/25 disabled:opacity-60">{loading ? 'Đang tải' : 'Tải lại'}</button>
+          </div>
+        </div>
         <div className="flex flex-wrap gap-3 md:hidden">
           <button type="button" onClick={() => setMobileFiltersOpen((prev) => !prev)} className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900">{mobileFiltersOpen ? 'Ẩn bộ lọc' : 'Bộ lọc nâng cao'}</button>
-          <button type="button" onClick={() => void loadInventory()} className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900">Tải lại</button>
-        </div>
-        <div className="hidden gap-3 md:grid md:grid-cols-[1fr,1fr,auto,auto]">
-          <input type="date" value={expFrom} onChange={(event) => { setExpFrom(event.target.value); setPage(1) }} className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm" />
-          <input type="date" value={expTo} onChange={(event) => { setExpTo(event.target.value); setPage(1) }} className="w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm" />
-          <button type="button" onClick={() => { setSearch(''); setQuickFilter('all'); setExpFrom(''); setExpTo(''); setPage(1) }} className="rounded-2xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white">Reset</button>
           <button type="button" onClick={() => void loadInventory()} className="rounded-2xl border border-ink-900/10 bg-white px-4 py-2 text-sm font-semibold text-ink-900">Tải lại</button>
         </div>
         {mobileFiltersOpen ? (
@@ -360,9 +425,71 @@ export function Inventory() {
       </section>
 
       <section className="space-y-3">
-        {loading ? <div className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-4 text-sm text-ink-600">Đang tải dữ liệu tồn kho...</div> : null}
+        {loading && stockRows.length === 0 ? <div className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-4 text-sm text-ink-600">Đang tải dữ liệu tồn kho...</div> : null}
         {!loading && stockRows.length === 0 ? <div className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-4 text-sm text-ink-600">Không có dữ liệu phù hợp bộ lọc.</div> : null}
-        {!loading ? stockRows.map((row) => {
+
+        {stockRows.length > 0 ? (
+          <div className={`glass-card hidden overflow-hidden rounded-3xl transition-opacity sm:block ${loading ? 'opacity-60' : ''}`}>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-ink-900/10 text-xs text-ink-500">
+                    <th className="px-5 py-3 font-medium">Thuốc</th>
+                    <th className="px-5 py-3 text-right font-medium">Tồn kho</th>
+                    <th className="px-5 py-3 text-center font-medium">Số lô</th>
+                    <th className="px-5 py-3 font-medium">HSD gần nhất</th>
+                    <th className="px-5 py-3 font-medium">Trạng thái</th>
+                    <th className="w-12 px-3 py-3" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {stockRows.map((row) => {
+                    const isExpanded = expandedDrugId === row.item.drug_id
+                    return (
+                      <Fragment key={row.item.drug_id}>
+                        <tr onClick={() => toggleDrugDetail(row.item.drug_id)} className={`cursor-pointer border-b border-ink-900/5 transition-colors ${isExpanded ? 'bg-white/90' : 'hover:bg-white/60'}`}>
+                          <td className="px-5 py-3">
+                            <p className="font-semibold text-ink-900">{row.item.drug_name}</p>
+                            <p className="text-xs text-ink-500">{row.item.drug_code}{row.item.drug_group ? ` · ${row.item.drug_group}` : ''}</p>
+                          </td>
+                          <td className="px-5 py-3 text-right">
+                            <p className="font-semibold tabular-nums text-ink-900">{row.item.total_qty.toLocaleString('vi-VN')} {row.units.retailUnit.name}</p>
+                            {row.units.importUnit && row.item.total_qty > 0 ? <p className="text-xs text-ink-500">{formatBreakdown(row.item.total_qty, row.units)}</p> : null}
+                          </td>
+                          <td className="px-5 py-3 text-center tabular-nums text-ink-700">{row.item.active_batch_count}</td>
+                          <td className="px-5 py-3">
+                            {row.item.nearest_expiry ? (
+                              <>
+                                <p className="text-ink-900">{formatDate(row.item.nearest_expiry)}</p>
+                                {row.nearDays !== null ? <p className={`text-xs ${expiryToneClass(row.nearDays, expiryWarningDays, nearExpiryDays)}`}>{formatDaysLeft(row.nearDays)}</p> : null}
+                              </>
+                            ) : <span className="text-ink-400">-</span>}
+                          </td>
+                          <td className="px-5 py-3">
+                            <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${stockStatusBadgeClass(row.item.status)}`}>{formatStockStatusLabel(row.item.status)}</span>
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            <button type="button" onClick={(event) => { event.stopPropagation(); toggleDrugDetail(row.item.drug_id) }} aria-expanded={isExpanded} aria-label={isExpanded ? 'Ẩn chi tiết lô' : 'Xem chi tiết lô'} className="inline-flex h-8 w-8 items-center justify-center rounded-full text-ink-500 transition hover:bg-ink-900/5 hover:text-ink-900">
+                              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" className={`h-4 w-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} aria-hidden="true"><path d="M5 7.5l5 5 5-5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                            </button>
+                          </td>
+                        </tr>
+                        {isExpanded ? (
+                          <tr className="border-b border-ink-900/5 bg-white/90">
+                            <td colSpan={6} className="px-5 pb-4 pt-1">{renderDrugDetailContent(row, 'table')}</td>
+                          </tr>
+                        ) : null}
+                      </Fragment>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : null}
+
+        <div className={`space-y-3 sm:hidden ${loading ? 'opacity-60' : ''}`}>
+        {stockRows.map((row) => {
           const breakdown = quantityBreakdown(row.item.total_qty, row.units)
           const isExpanded = expandedDrugId === row.item.drug_id
           return (
@@ -386,10 +513,11 @@ export function Inventory() {
                 <p className="mt-1 text-ink-600">{breakdown.map((item) => `${item.value} ${item.label}`).join(' · ')}</p>
               </div>
 
-              {isExpanded ? <div className="mt-3 rounded-xl border border-ink-900/10 bg-white p-3 text-xs text-ink-700">{renderDrugDetailContent(row)}</div> : null}
+              {isExpanded ? <div className="mt-3 rounded-xl border border-ink-900/10 bg-white p-3 text-xs text-ink-700">{renderDrugDetailContent(row, 'cards')}</div> : null}
             </article>
           )
-        }) : null}
+        })}
+        </div>
       </section>
 
       <section className="flex flex-col gap-3 text-sm text-ink-600 sm:flex-row sm:items-center sm:justify-between">
