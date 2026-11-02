@@ -75,7 +75,7 @@ async def list_returns(
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=200),
 ) -> PageResponse[ReturnResponse]:
-    stmt = select(Return).order_by(Return.created_at.desc())
+    stmt = select(Return).options(selectinload(Return.items)).order_by(Return.created_at.desc())
     if approved_from is not None or approved_to is not None:
         # Local store dates (same convention as the invoice list), applied to the approval time.
         start_at, end_at = build_utc_range_for_local_dates(approved_from, approved_to, await get_store_timezone())
