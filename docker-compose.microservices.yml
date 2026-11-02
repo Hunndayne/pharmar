@@ -1,7 +1,14 @@
-﻿services:
+﻿x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
   postgres:
     image: postgres:16-alpine
     container_name: pharmar-postgres
+    logging: *default-logging
     environment:
       POSTGRES_DB: pharmar_auth
       POSTGRES_USER: postgres
@@ -17,10 +24,12 @@
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   db-bootstrap:
     image: postgres:16-alpine
     container_name: pharmar-db-bootstrap
+    logging: *default-logging
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing - set in .env}
     command: >
@@ -35,13 +44,24 @@
   redis:
     image: redis:7-alpine
     container_name: pharmar-redis
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     container_name: pharmar-rabbitmq
+    logging: *default-logging
+    hostname: rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?RABBITMQ_USER missing - set in .env}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD missing - set in .env}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
     restart: unless-stopped
 
   users-service:
@@ -49,6 +69,7 @@
       context: ./Users
       dockerfile: dockerfile
     container_name: pharmar-users-service
+    logging: *default-logging
     environment:
       APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing - set in .env}@postgres:5432/pharmar_auth
@@ -80,6 +101,7 @@
       context: ./Inventory Service
       dockerfile: dockerfile
     container_name: pharmar-inventory-service
+    logging: *default-logging
     environment:
       APP_ENV: ${APP_ENV:-development}
       REDIS_URL: redis://redis:6379/0
@@ -114,6 +136,7 @@
       context: ./Sale
       dockerfile: dockerfile
     container_name: pharmar-sale-service
+    logging: *default-logging
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8003
@@ -163,6 +186,7 @@
       context: ./Report
       dockerfile: dockerfile
     container_name: pharmar-report-service
+    logging: *default-logging
     environment:
       REDIS_URL: redis://redis:6379/0
       SALE_SERVICE_URL: http://sale-service:8003
@@ -199,6 +223,7 @@
       context: ./Store
       dockerfile: dockerfile
     container_name: pharmar-store-service
+    logging: *default-logging
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8005
@@ -217,6 +242,7 @@
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
     volumes:
       - store_backups:/app/backups
+      - store_uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -237,6 +263,7 @@
       context: ./Catalog Service
       dockerfile: dockerfile
     container_name: pharmar-catalog-service
+    logging: *default-logging
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8006
@@ -266,6 +293,7 @@
       context: ./Customer Service
       dockerfile: dockerfile
     container_name: pharmar-customer-service
+    logging: *default-logging
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8007
@@ -297,6 +325,7 @@
       context: ./File Service
       dockerfile: dockerfile
     container_name: pharmar-file-service
+    logging: *default-logging
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8009
@@ -328,6 +357,7 @@
       context: ./AI Service
       dockerfile: dockerfile
     container_name: pharmar-ai-service
+    logging: *default-logging
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8011
@@ -375,6 +405,7 @@
       context: ./Notification Service
       dockerfile: dockerfile
     container_name: pharmar-notification-service
+    logging: *default-logging
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8010
@@ -413,6 +444,7 @@
       context: ./Payment QR Service
       dockerfile: dockerfile
     container_name: pharmar-payment-qr-service
+    logging: *default-logging
     env_file:
       - ./Payment QR Service/.env
     environment:
@@ -436,6 +468,7 @@
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/}
     container_name: pharmar-frontend
+    logging: *default-logging
     ports:
       - "3000:80"
     depends_on:
@@ -448,6 +481,7 @@
       context: ./API Gateway
       dockerfile: dockerfile
     container_name: pharmar-api-gateway
+    logging: *default-logging
     environment:
       AUTH_SERVICE_URL: http://users-service:8001
       SALE_SERVICE_URL: http://sale-service:8003
@@ -464,6 +498,8 @@
       AI_SERVICE_URL: http://ai-service:8011
       REDIS_URL: redis://redis:6379/0
       TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-[]}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY missing - copy .env.example to .env and set a strong secret}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       PUBLIC_RATE_LIMIT_RPM: ${PUBLIC_RATE_LIMIT_RPM:-30}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-["http://localhost:3000","http://localhost:5173"]}
     ports:
@@ -497,3 +533,5 @@ volumes:
   postgres_data:
   inventory_state_data:
   store_backups:
+  store_uploads:
+  rabbitmq_data:

@@ -156,30 +156,69 @@ const buildApiError = (
   })
 }
 
+type AuthHooks = {
+  refresh: (failedToken: string) => Promise<string | null>
+  logout: () => void
+}
+
+let authHooks: AuthHooks | null = null
+let refreshPromise: Promise<string | null> | null = null
+
+export const setAuthHooks = (hooks: AuthHooks | null) => {
+  authHooks = hooks
+}
+
+const AUTH_ENDPOINT_PATTERN = /\/auth\/(login|refresh|logout)\/?$/
+
+const refreshAccessTokenOnce = (failedToken: string) => {
+  if (!authHooks) return Promise.resolve<string | null>(null)
+  if (!refreshPromise) {
+    refreshPromise = authHooks
+      .refresh(failedToken)
+      .catch(() => null)
+      .finally(() => {
+        refreshPromise = null
+      })
+  }
+  return refreshPromise
+}
+
 const executeRequest = async (
   buildUrl: ApiUrlBuilder,
   path: string,
   options: ApiRequestOptions = {},
 ) => {
   const init = options.init ?? {}
-  const headers = new Headers(init.headers)
   const body = init.body ?? null
-
-  if (!headers.has('Content-Type') && body && !isFormDataBody(body)) {
-    headers.set('Content-Type', 'application/json')
-  }
-  if (options.token) headers.set('Authorization', `Bearer ${options.token}`)
-
-  const requestInit: RequestInit = {
-    ...init,
-    headers,
-  }
-
   const url = buildUrl(path, options.params)
-  const response =
-    options.fetchMode === 'controlled'
-      ? await controlledFetch(url, requestInit, options.fetchOptions ?? {})
-      : await fetch(url, requestInit)
+
+  const send = async (token: string | undefined) => {
+    const headers = new Headers(init.headers)
+    if (!headers.has('Content-Type') && body && !isFormDataBody(body)) {
+      headers.set('Content-Type', 'application/json')
+    }
+    if (token) headers.set('Authorization', `Bearer ${token}`)
+    const requestInit: RequestInit = { ...init, headers }
+    return options.fetchMode === 'controlled'
+      ? controlledFetch(url, requestInit, options.fetchOptions ?? {})
+      : fetch(url, requestInit)
+  }
+
+  let response = await send(options.token)
+
+  if (
+    response.status === 401 &&
+    options.token &&
+    authHooks &&
+    !AUTH_ENDPOINT_PATTERN.test(path.split('?')[0])
+  ) {
+    const nextToken = await refreshAccessTokenOnce(options.token)
+    if (nextToken) {
+      response = await send(nextToken)
+    } else {
+      authHooks.logout()
+    }
+  }
 
   if (!response.ok) {
     const payload = await readJsonPayload(response)

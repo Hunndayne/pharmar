@@ -41,6 +41,9 @@ type Service struct {
 	redis        *redis.Client
 	defaults     map[string]domain.DefaultSetting
 	backupCancel context.CancelFunc
+
+	// pendingR2Sync is the last auto-backup whose R2 upload failed; only the backup job goroutine touches it.
+	pendingR2Sync *domain.BackupRecord
 }
 
 func New(ctx context.Context, cfg config.Config) (*Service, error) {

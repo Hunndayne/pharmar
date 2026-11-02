@@ -3,8 +3,8 @@ import base64
 import hashlib
 import ipaddress
 import json
-import posixpath
 import logging
+import re
 import secrets
 import time
 from datetime import datetime, timezone
@@ -16,7 +16,14 @@ import redis.asyncio as redis
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from jose import JWTError, jwt
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from request_rules import (
+    is_login_endpoint,
+    max_body_size_for,
+    normalize_resource_path,
+)
 
 logger = logging.getLogger("api_gateway")
 
@@ -44,7 +51,16 @@ class Settings(BaseSettings):
         "http://localhost:5173",
     ]
 
-    MAX_REQUEST_BODY_SIZE: int = 100 * 1024 * 1024  # 100MB (supports backup uploads)
+    # Ceiling for routes that legitimately carry big bodies (file upload, AI
+    # invoice, Store backup). Every other route is capped much lower, see
+    # request_rules.max_body_size_for().
+    MAX_REQUEST_BODY_SIZE: int = 100 * 1024 * 1024
+
+    # Shared with the Users service; needed to verify access tokens on the few
+    # gateway-local endpoints (customer display, detailed health). Empty means
+    # those endpoints fail closed (503).
+    JWT_SECRET_KEY: str = ""
+    JWT_ALGORITHM: str = "HS256"
 
     # Rate limiting: requests per minute per IP for API endpoints
     RATE_LIMIT_RPM: int = 1200
@@ -189,6 +205,61 @@ async def _is_token_blacklisted(token: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Local JWT verification for gateway-owned endpoints (everything else is
+# authenticated by the upstream services).
+# ---------------------------------------------------------------------------
+async def _verify_access_token(request: Request) -> dict[str, Any]:
+    """Return verified JWT claims or raise 401/503."""
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    token = auth_header[7:].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if not settings.JWT_SECRET_KEY:
+        logger.error("JWT_SECRET_KEY is not configured on the gateway; refusing token-protected endpoint")
+        raise HTTPException(status_code=503, detail="Authentication is not configured")
+    try:
+        claims = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+    except JWTError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    if claims.get("type") not in (None, "access"):
+        raise HTTPException(status_code=401, detail="Invalid token type")
+    if await _is_token_blacklisted(token):
+        raise HTTPException(status_code=401, detail="Token has been revoked. Please log in again.")
+    return claims
+
+
+async def _read_body_capped(request: Request, limit: int) -> bytes:
+    """Read the request body, aborting with 413 as soon as `limit` is exceeded.
+
+    Checks Content-Length up front (nothing is read if it already exceeds the
+    cap) and also enforces the cap while streaming, so chunked uploads without
+    a Content-Length cannot buffer unbounded data.
+    """
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            declared = int(content_length)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length header")
+        if declared > limit:
+            raise HTTPException(status_code=413, detail="Request body too large")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(status_code=413, detail="Request body too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+# ---------------------------------------------------------------------------
 # Per-IP rate limiter — Redis fixed-window counter (one window per minute).
 # ---------------------------------------------------------------------------
 async def _check_rate_limit(key: str, rpm: int) -> bool:
@@ -238,6 +309,13 @@ def _get_client_ip(request: Request) -> str:
             return forwarded.split(",")[0].strip()
 
     return direct_host or "unknown"
+
+
+def _valid_ip_or_none(value: str) -> str | None:
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +409,17 @@ async def _check_service_health(name: str, base_url: str) -> dict[str, Any]:
 
 
 @app.get("/api/v1/system/health")
-async def services_health() -> dict[str, Any]:
+async def services_health(request: Request) -> dict[str, Any]:
+    # Anonymous callers only learn the coarse status: the detailed payload
+    # exposes internal service URLs and upstream exception text.
+    detailed = False
+    if request.headers.get("authorization", "").lower().startswith("bearer "):
+        try:
+            claims = await _verify_access_token(request)
+            detailed = str(claims.get("role", "")).lower() in {"owner", "manager"}
+        except HTTPException:
+            detailed = False
+
     checks = await asyncio.gather(
         *[_check_service_health(name, service_url) for name, service_url in HEALTH_TARGETS.items()]
     )
@@ -343,6 +431,9 @@ async def services_health() -> dict[str, Any]:
         overall = "down"
     elif degraded_count:
         overall = "degraded"
+
+    if not detailed:
+        return {"status": "ok" if overall == "up" else "degraded"}
 
     return {
         "status": overall,
@@ -369,20 +460,34 @@ def _display_state_key(screen_id: str) -> str:
     return f"gw:display:{screen_id}"
 
 
+_SCREEN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
+_DISPLAY_MAX_BODY_BYTES = 1024 * 1024
+
+
+def _validated_screen_id(raw: Any) -> str:
+    """The screen id is the display's only read credential, so it must be unguessable."""
+    screen_id = str(raw or "").strip()
+    if screen_id == "default" or not _SCREEN_ID_RE.fullmatch(screen_id):
+        raise HTTPException(
+            status_code=400,
+            detail="screen_id must be 16-64 characters of A-Z a-z 0-9 _ - and not 'default'",
+        )
+    return screen_id
+
+
 @app.post("/api/v1/system/customer-display/state")
 async def set_customer_display_state(request: Request) -> dict[str, Any]:
-    # Require a Bearer token so anonymous callers cannot update the display.
-    auth_header = request.headers.get("authorization", "")
-    if not auth_header.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Authentication required")
+    await _verify_access_token(request)
 
-    payload = await request.json()
+    raw_body = await _read_body_capped(request, _DISPLAY_MAX_BODY_BYTES)
+    try:
+        payload = json.loads(raw_body)
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Invalid payload")
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid payload")
 
-    screen_id = str(payload.get("screen_id", "default")).strip() or "default"
-    if len(screen_id) > 64:
-        raise HTTPException(status_code=400, detail="screen_id is too long")
+    screen_id = _validated_screen_id(payload.get("screen_id"))
 
     state = payload.get("state")
     if not isinstance(state, dict):
@@ -416,8 +521,10 @@ async def set_customer_display_state(request: Request) -> dict[str, Any]:
 
 
 @app.get("/api/v1/system/customer-display/state")
-async def get_customer_display_state(screen_id: str = "default") -> dict[str, Any]:
-    normalized = screen_id.strip() or "default"
+async def get_customer_display_state(screen_id: str = "") -> dict[str, Any]:
+    # No JWT here: the display runs on a second screen without a login, so the
+    # unguessable screen_id is the credential.
+    normalized = _validated_screen_id(screen_id)
     empty_state = {
         "screen_id": normalized,
         "updated_at": None,
@@ -471,7 +578,7 @@ async def proxy(service: str, request: Request, resource_path: str = "") -> Resp
     # Dot-segments must be collapsed BEFORE the check ("x/../internal/y" would
     # otherwise pass it, then httpx collapses them the same way when building
     # the upstream URL and the request lands on the internal endpoint anyway).
-    normalized_resource = posixpath.normpath("/" + resource_path).lstrip("/")
+    normalized_resource = normalize_resource_path(resource_path)
     first_segment = normalized_resource.split("/", 1)[0]
     if first_segment.lower() == "internal":
         raise HTTPException(status_code=404, detail="Not found")
@@ -479,7 +586,7 @@ async def proxy(service: str, request: Request, resource_path: str = "") -> Resp
     # ------------------------------------------------------------------
     # Rate limiting — stricter for auth endpoints and public lookup endpoints
     # ------------------------------------------------------------------
-    is_auth_endpoint = service in {"auth", "users"} and resource_path.startswith("login")
+    is_auth_endpoint = is_login_endpoint(service, normalized_resource)
     is_public_endpoint = normalized_resource.startswith("public/")
     if is_auth_endpoint:
         rpm_limit = settings.AUTH_RATE_LIMIT_RPM
@@ -508,12 +615,14 @@ async def proxy(service: str, request: Request, resource_path: str = "") -> Resp
             )
 
     # ------------------------------------------------------------------
-    # Content-Length guard
+    # Body-size guard — checked before anything is buffered. Only upload-style
+    # routes get the large ceiling; see request_rules.max_body_size_for().
     # ------------------------------------------------------------------
+    body_limit = max_body_size_for(service, normalized_resource, settings.MAX_REQUEST_BODY_SIZE)
     content_length = request.headers.get("content-length")
     if content_length:
         try:
-            if int(content_length) > settings.MAX_REQUEST_BODY_SIZE:
+            if int(content_length) > body_limit:
                 raise HTTPException(status_code=413, detail="Request body too large")
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid Content-Length header")
@@ -529,15 +638,21 @@ async def proxy(service: str, request: Request, resource_path: str = "") -> Resp
     filtered_headers: dict[str, Any] = {
         key: value
         for key, value in request.headers.items()
-        if key.lower() not in {"host", "content-length", "x-internal-api-key"}
+        if key.lower() not in {"host", "content-length", "x-internal-api-key", "x-client-ip"}
     }
+
+    # Clients cannot choose their own X-Client-IP (stripped above); the Users
+    # service keys its login rate limit / lockout on this trusted value.
+    trusted_client_ip = _valid_ip_or_none(client_ip)
+    if trusted_client_ip:
+        filtered_headers["x-client-ip"] = trusted_client_ip
 
     # Forward correlation ID to upstream services.
     req_id = getattr(request.state, "request_id", None)
     if req_id:
         filtered_headers["x-request-id"] = req_id
 
-    request_body = await request.body()
+    request_body = await _read_body_capped(request, body_limit)
 
     try:
         upstream_response = await app.state.http_client.request(

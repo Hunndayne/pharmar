@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 from math import ceil
 from typing import Any
 from uuid import UUID
@@ -467,14 +467,49 @@ def invoice_search_filter(stmt: Select[Any], search: str | None) -> Select[Any]:
     )
 
 
-def clamp_return_quantity(requested: int, purchased: int, already_returned: int) -> int:
-    available = max(0, purchased - already_returned)
+def clamp_return_quantity(requested: int, purchased: int, already_returned: int, pending: int = 0) -> int:
+    """`pending` = quantity already requested by still-pending returns of the same invoice line."""
+    available = max(0, purchased - already_returned - pending)
     if requested > available:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Return quantity ({requested}) exceeds purchased quantity ({available})",
         )
     return requested
+
+
+def net_return_amount(invoice: Any, invoice_item: Any, qty: int, prior_qty: int = 0) -> Decimal:
+    """Refund for `qty` units of a line, net of line discount and invoice-level discounts.
+
+    goods_total = invoice.total_amount - separate service fee (the fee is not goods)
+    factor      = clamp(goods_total / sum(line_total), 0, 1)   # tier/promotion/points/rounding, pro-rata by line net
+    line_net    = invoice_item.line_total * factor
+    amount      = floor(line_net * (prior_qty + qty) / quantity) - floor(line_net * prior_qty / quantity)
+
+    `prior_qty` = units of this line already returned or pending, so the amounts of successive returns of one
+    line telescope to floor(line_net) and the sum over all lines never exceeds invoice.total_amount.
+    """
+    line_quantity = int(invoice_item.quantity or 0)
+    if qty <= 0 or line_quantity <= 0:
+        return DECIMAL_ZERO
+    items = getattr(invoice, "items", None) or [invoice_item]
+    lines_sum = sum((Decimal(str(row.line_total or 0)) for row in items), DECIMAL_ZERO)
+    line_total = Decimal(str(invoice_item.line_total or 0))
+    if lines_sum <= DECIMAL_ZERO or line_total <= DECIMAL_ZERO:
+        return DECIMAL_ZERO
+
+    goods_total = Decimal(str(invoice.total_amount or 0))
+    if str(getattr(invoice, "service_fee_mode", "") or "").lower() == "separate":
+        goods_total -= Decimal(str(getattr(invoice, "service_fee_amount", 0) or 0))
+    factor = min(Decimal("1"), max(DECIMAL_ZERO, goods_total / lines_sum))
+    line_net = line_total * factor
+
+    prior = max(0, min(int(prior_qty), line_quantity))
+    upto = min(prior + qty, line_quantity)
+    count = Decimal(line_quantity)
+    return (line_net * upto / count).quantize(Decimal("1"), rounding=ROUND_DOWN) - (
+        line_net * prior / count
+    ).quantize(Decimal("1"), rounding=ROUND_DOWN)
 
 
 def proportion_points(points: int, amount_part: Decimal, amount_total: Decimal) -> int:
@@ -485,6 +520,31 @@ def proportion_points(points: int, amount_part: Decimal, amount_total: Decimal) 
     ratio = (amount_part / amount_total) if amount_total > DECIMAL_ZERO else Decimal("0")
     value = Decimal(points) * ratio
     return int(value.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def restock_quantity(quantity: int, returned_quantity: int | None, conversion_rate: int | None) -> int:
+    """Base units to put back when cancelling an invoice: lines already returned were restocked by the return."""
+    remaining = max(int(quantity or 0) - int(returned_quantity or 0), 0)
+    return remaining * max(int(conversion_rate or 1), 1)
+
+
+def should_compensate_stock(context: dict) -> bool:
+    """Checkout failure must only return stock that inventory_reserve actually deducted."""
+    return bool(context.get("stock_reserved"))
+
+
+def remaining_points_after_returns(
+    points_used: int,
+    points_earned: int,
+    invoice_total: Decimal,
+    returned_amount: Decimal,
+    points_redeem_returned: int,
+) -> tuple[int, int]:
+    """(redeem points to refund, earn points to revoke) on cancel, net of what completed returns already reversed."""
+    redeem_left = max(int(points_used or 0) - int(points_redeem_returned or 0), 0)
+    earn_reversed = proportion_points(int(points_earned or 0), returned_amount, invoice_total)
+    earn_left = max(int(points_earned or 0) - earn_reversed, 0)
+    return redeem_left, earn_left
 
 
 def build_print_datetime(value: datetime) -> str:

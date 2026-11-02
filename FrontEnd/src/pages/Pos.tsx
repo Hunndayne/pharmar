@@ -11,9 +11,12 @@ import { customerApi, type CustomerRecord } from '../api/customerService'
 import { paymentQrApi } from '../api/paymentQrService'
 import { saleApi } from '../api/saleService'
 import { storeApi, type StoreInfo } from '../api/storeService'
+import { getCustomerDisplayScreenId } from '../api/systemService'
 import { findBankOption } from '../constants/bankList'
 import { ApiError, buildUsersApiUrl } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
+import { readAuthStorage } from '../auth/authStorage'
+import { readLocalDraft, removeLocalDraft, writeLocalDraft } from '../utils/localDraft'
 import { formatDateTimeInAppTimeZone } from '../utils/timezone'
 
 type UnitRole = 'single' | 'import' | 'intermediate' | 'retail'
@@ -96,6 +99,8 @@ type PosOrder = {
   paymentMode: PaymentMode
   cashReceived: string
   items: PosOrderItem[]
+  // Stable per order until it is paid, so retries of the same checkout can be deduplicated server-side.
+  clientRequestId: string
 }
 
 type CheckoutLine = {
@@ -353,8 +358,15 @@ const getRetailUnit = (drug: PosDrug): PosDrugUnit => {
 const createOrderId = () => `order-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
 const createItemId = () => `item-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
 
+const createClientRequestId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  // crypto.randomUUID is unavailable on insecure (plain http) origins.
+  return `req-${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 12)}-${Math.random().toString(16).slice(2, 12)}`
+}
+
 const createEmptyOrder = (): PosOrder => ({
   id: createOrderId(),
+  clientRequestId: createClientRequestId(),
   customerMode: 'walk_in',
   customerId: null,
   customerCode: null,
@@ -376,11 +388,85 @@ const createEmptyOrder = (): PosOrder => ({
   items: [],
 })
 
+const buildPosOrdersStorageKey = (userId: number | string) => `pharmar:pos:orders:${userId}`
+
+type StoredPosOrders = {
+  activeIndex: number
+  orders: PosOrder[]
+}
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const STORED_ORDER_STRING_FIELDS = [
+  'pointsToRedeem',
+  'note',
+  'prescriptionCode',
+  'doctorName',
+  'diagnosis',
+  'serviceFee',
+  'cashReceived',
+  'customerName',
+  'customerPhone',
+  'clientRequestId',
+] as const
+
+const sanitizeStoredOrder = (raw: unknown): PosOrder | null => {
+  if (!isPlainRecord(raw) || typeof raw.id !== 'string' || !raw.id || !Array.isArray(raw.items)) return null
+  if (STORED_ORDER_STRING_FIELDS.some((field) => raw[field] !== undefined && typeof raw[field] !== 'string')) {
+    return null
+  }
+  const items = raw.items.filter(
+    (item): item is PosOrderItem =>
+      isPlainRecord(item) &&
+      typeof item.id === 'string' &&
+      typeof item.drugId === 'string' &&
+      typeof item.quantity === 'string' &&
+      typeof item.conversion === 'number' &&
+      Array.isArray(item.plannedAllocations),
+  )
+  if (items.length !== raw.items.length) return null
+  return { ...createEmptyOrder(), ...(raw as Partial<PosOrder>), id: raw.id, items }
+}
+
+const readStoredPosOrders = (userId: number | string | null | undefined): StoredPosOrders | null => {
+  if (userId === null || userId === undefined) return null
+  const key = buildPosOrdersStorageKey(userId)
+  const raw = readLocalDraft<unknown>(key)
+  if (raw === null) return null
+  if (!isPlainRecord(raw) || !Array.isArray(raw.orders) || !raw.orders.length) {
+    removeLocalDraft(key)
+    return null
+  }
+  const orders = raw.orders.map(sanitizeStoredOrder)
+  if (orders.some((order) => order === null)) {
+    removeLocalDraft(key)
+    return null
+  }
+  const activeIndex = typeof raw.activeIndex === 'number' ? raw.activeIndex : 0
+  return {
+    orders: orders as PosOrder[],
+    activeIndex: Math.min(Math.max(0, Math.floor(activeIndex)), orders.length - 1),
+  }
+}
+
+const isPristinePosOrder = (order: PosOrder) =>
+  order.items.length === 0 &&
+  !order.customerId &&
+  !order.customerName.trim() &&
+  !order.customerPhone.trim() &&
+  !order.note.trim() &&
+  !order.cashReceived.trim() &&
+  !order.prescriptionCode.trim() &&
+  !order.doctorName.trim() &&
+  !order.diagnosis.trim()
+
 const normalizePhone = (value: string) => value.replace(/[^\d+]/g, '').trim()
 const normalizeSearchText = (value: string) =>
   value
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[đĐ]/g, 'd')
     .replace(/[^0-9a-zA-Z]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -421,7 +507,7 @@ const HTML5_QR_SCRIPT_CANDIDATES = [
 
 const CUSTOMER_DISPLAY_STORAGE_KEY = 'pharmar:customer-display:state'
 const CUSTOMER_DISPLAY_CHANNEL = 'pharmar-customer-display'
-const CUSTOMER_DISPLAY_SCREEN_ID = 'default'
+const CUSTOMER_DISPLAY_SCREEN_ID = getCustomerDisplayScreenId()
 
 let html5QrcodeLoader: Promise<void> | null = null
 
@@ -789,11 +875,15 @@ export function Pos() {
     )
   }, [templates, templateQuery])
 
-  const [orders, setOrders] = useState<PosOrder[]>([createEmptyOrder()])
-  const [activeOrderId, setActiveOrderId] = useState<string>('')
+  const [restoredOrders] = useState(() => readStoredPosOrders(user?.id))
+  const [orders, setOrders] = useState<PosOrder[]>(() => restoredOrders?.orders ?? [createEmptyOrder()])
+  const [activeOrderId, setActiveOrderId] = useState<string>(
+    () => restoredOrders?.orders[restoredOrders.activeIndex]?.id ?? '',
+  )
 
   const [drugSearch, setDrugSearch] = useState('')
   const [lotScanInput, setLotScanInput] = useState('')
+  const lotScanInputRef = useRef<HTMLInputElement>(null)
   const [selectedDrugId, setSelectedDrugId] = useState('')
   const [selectedUnitId, setSelectedUnitId] = useState('')
   const [selectedQuantity, setSelectedQuantity] = useState('1')
@@ -804,6 +894,7 @@ export function Pos() {
   const [addingByQr, setAddingByQr] = useState(false)
   const [addingByDrug, setAddingByDrug] = useState(false)
   const [checkingOut, setCheckingOut] = useState(false)
+  const checkoutInFlightRef = useRef(false)
   const [searchingCustomer, setSearchingCustomer] = useState(false)
   const [creatingCustomer, setCreatingCustomer] = useState(false)
   const [scanOpen, setScanOpen] = useState(false)
@@ -828,6 +919,7 @@ export function Pos() {
   const customerDisplayChannelRef = useRef<BroadcastChannel | null>(null)
   const customerDisplaySyncTimerRef = useRef<number | null>(null)
   const ordersRef = useRef<PosOrder[]>(orders)
+  const recalcSeqByOrderRef = useRef<Map<string, number>>(new Map())
 
   const activeOrder = useMemo(
     () => orders.find((order) => order.id === activeOrderId) ?? orders[0] ?? null,
@@ -837,6 +929,46 @@ export function Pos() {
   useEffect(() => {
     ordersRef.current = orders
   }, [orders])
+
+  const posOrdersStorageKey = user?.id !== undefined && user?.id !== null ? buildPosOrdersStorageKey(user.id) : null
+  const activeOrderIdRef = useRef(activeOrderId)
+  activeOrderIdRef.current = activeOrderId
+
+  const persistPosOrders = useCallback(
+    (nextOrders: PosOrder[]) => {
+      if (!posOrdersStorageKey) return
+      if (nextOrders.every(isPristinePosOrder)) {
+        removeLocalDraft(posOrdersStorageKey)
+        return
+      }
+      const activeIndex = Math.max(
+        0,
+        nextOrders.findIndex((order) => order.id === activeOrderIdRef.current),
+      )
+      const payload: StoredPosOrders = { activeIndex, orders: nextOrders }
+      writeLocalDraft(posOrdersStorageKey, payload)
+    },
+    [posOrdersStorageKey],
+  )
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => persistPosOrders(orders), 300)
+    return () => window.clearTimeout(timer)
+  }, [orders, activeOrderId, persistPosOrders])
+
+  // The debounced write above is dropped on unmount/tab close, so flush the latest state then.
+  useEffect(() => {
+    const flush = () => {
+      // After an explicit logout the drafts were wiped; do not write them back.
+      if (!readAuthStorage()?.user) return
+      persistPosOrders(ordersRef.current)
+    }
+    window.addEventListener('pagehide', flush)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      flush()
+    }
+  }, [persistPosOrders])
 
   const drugsById = useMemo(() => new Map(drugs.map((drug) => [drug.id, drug])), [drugs])
   const availableDrugs = useMemo(
@@ -1216,6 +1348,9 @@ export function Pos() {
 
   const recalculateAutoFillOrder = useCallback(
     async (orderSnapshot: PosOrder, forceRefresh = false) => {
+      const recalcSeq = (recalcSeqByOrderRef.current.get(orderSnapshot.id) ?? 0) + 1
+      recalcSeqByOrderRef.current.set(orderSnapshot.id, recalcSeq)
+
       const autoFillItems = orderSnapshot.items.filter((item) =>
         isAutoFillAllocationMode(item.allocationMode),
       )
@@ -1327,11 +1462,41 @@ export function Pos() {
         }
       })
 
-      const nextOrder = {
-        ...orderSnapshot,
-        items: recalculatedItems,
-      }
+      const currentOrder = ordersRef.current.find((order) => order.id === orderSnapshot.id)
+      if (!currentOrder) return orderSnapshot
+      // A newer recalculation started while we awaited stock details; its result supersedes ours.
+      if (recalcSeqByOrderRef.current.get(orderSnapshot.id) !== recalcSeq) return currentOrder
 
+      // Merge only the recalculated allocation fields into the CURRENT order so edits made
+      // while the request was in flight (customer, payment, other items) are not overwritten.
+      const snapshotItemsById = new Map(orderSnapshot.items.map((item) => [item.id, item]))
+      const recalculatedById = new Map(recalculatedItems.map((item) => [item.id, item]))
+      const mergedItems = currentOrder.items.map((item) => {
+        const snapshotItem = snapshotItemsById.get(item.id)
+        const recalculated = recalculatedById.get(item.id)
+        if (!snapshotItem || !recalculated) return item
+        if (
+          snapshotItem.quantity !== item.quantity ||
+          snapshotItem.unitId !== item.unitId ||
+          snapshotItem.conversion !== item.conversion ||
+          snapshotItem.allocationMode !== item.allocationMode
+        ) {
+          return item
+        }
+        return {
+          ...item,
+          batchId: recalculated.batchId,
+          batchCode: recalculated.batchCode,
+          lotNumber: recalculated.lotNumber,
+          expDate: recalculated.expDate,
+          batchQtyRemaining: recalculated.batchQtyRemaining,
+          availableBaseQty: recalculated.availableBaseQty,
+          plannedAllocations: recalculated.plannedAllocations,
+          allocationWarning: recalculated.allocationWarning,
+        }
+      })
+
+      const nextOrder = { ...currentOrder, items: mergedItems }
       return replaceOrderSnapshot(nextOrder) ?? nextOrder
     },
     [drugsById, fefoEnabled, fefoThresholdDays, getStockDrugDetailCached, replaceOrderSnapshot],
@@ -1880,6 +2045,8 @@ export function Pos() {
       const qrValue = normalizeQrText(rawQrValue)
       if (!qrValue) return
 
+      // Clear right away so the next scan starts from an empty field instead of waiting for the network.
+      setLotScanInput('')
       setAddingByQr(true)
       setActionError(null)
       setActionMessage(null)
@@ -1971,6 +2138,9 @@ export function Pos() {
       } catch (error) {
         if (error instanceof ApiError) setActionError(error.message)
         else setActionError('Không thể quét QR lô.')
+        // Restore the rejected value and select it so the next scan overwrites it.
+        setLotScanInput(qrValue)
+        window.setTimeout(() => lotScanInputRef.current?.select(), 0)
       } finally {
         setAddingByQr(false)
       }
@@ -2850,6 +3020,8 @@ export function Pos() {
 
   const handleCheckout = useCallback(async (skipPolicyCheck = false, options?: CheckoutOptions) => {
     if (!activeOrder || !token?.access_token) return false
+    if (checkoutInFlightRef.current) return false
+    checkoutInFlightRef.current = true
 
     setCheckingOut(true)
     setActionError(null)
@@ -2958,6 +3130,7 @@ export function Pos() {
       }
 
       const invoice = await saleApi.createInvoice(token.access_token, {
+        client_request_id: checkoutOrder.clientRequestId,
         customer_id:
           checkoutOrder.customerMode === 'member' && checkoutOrder.customerId
             ? checkoutOrder.customerId
@@ -3081,6 +3254,7 @@ export function Pos() {
         paymentMode: 'cash',
         cashReceived: '',
         items: [],
+        clientRequestId: createClientRequestId(),
       }))
 
       setActionMessage(
@@ -3092,6 +3266,7 @@ export function Pos() {
       else setActionError('Khong the thanh toan hoa don.')
       return false
     } finally {
+      checkoutInFlightRef.current = false
       setCheckingOut(false)
     }
   }, [
@@ -3440,6 +3615,7 @@ export function Pos() {
           <div className="flex flex-wrap items-center gap-2 min-w-0">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:flex-nowrap">
               <input
+                ref={lotScanInputRef}
                 value={lotScanInput}
                 onChange={(event) => setLotScanInput(event.target.value)}
                 onKeyDown={(event) => {

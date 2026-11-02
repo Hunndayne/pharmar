@@ -89,8 +89,7 @@ func OwnerOnly(cfg config.Config) func(http.Handler) http.Handler {
 				writeError(w, http.StatusUnauthorized, "Invalid token")
 				return
 			}
-			role := strings.ToLower(strings.TrimSpace(claims.Role))
-			if role != "owner" && role != "admin" {
+			if !IsOwnerRole(claims.Role) {
 				writeError(w, http.StatusForbidden, "Only owner/admin is allowed")
 				return
 			}
@@ -99,6 +98,18 @@ func OwnerOnly(cfg config.Config) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// IsOwnerRole reports whether a token role is allowed owner-level access.
+func IsOwnerRole(role string) bool {
+	role = strings.ToLower(strings.TrimSpace(role))
+	return role == "owner" || role == "admin"
+}
+
+// IsOwner reports whether the authenticated caller in ctx has owner-level access.
+func IsOwner(ctx context.Context) bool {
+	claims, ok := ClaimsFromContext(ctx)
+	return ok && claims != nil && IsOwnerRole(claims.Role)
 }
 
 func ClaimsFromContext(ctx context.Context) (*Claims, bool) {

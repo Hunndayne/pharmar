@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -47,13 +48,17 @@ type fileUploadResponse struct {
 	ID string `json:"id"`
 }
 
+type remoteBackupFile struct {
+	ID           string    `json:"id"`
+	OriginalName string    `json:"original_name"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
 type fileListResponse struct {
-	Files []struct {
-		ID string `json:"id"`
-	} `json:"files"`
-	Page       int `json:"page"`
-	PerPage    int `json:"per_page"`
-	TotalPages int `json:"total_pages"`
+	Files      []remoteBackupFile `json:"files"`
+	Page       int                `json:"page"`
+	PerPage    int                `json:"per_page"`
+	TotalPages int                `json:"total_pages"`
 }
 
 func parsePgConnInfo(databaseURL string) (pgConnInfo, error) {
@@ -294,6 +299,16 @@ func (s *Service) RestoreBackup(ctx context.Context, reader io.Reader, filename 
 		return fmt.Errorf("%w: invalid backup file format (missing database sections)", ErrBadRequest)
 	}
 
+	// psql runs as a superuser: refuse the whole restore up front (before any database is
+	// touched) if any section carries psql meta-commands or COPY ... PROGRAM.
+	for _, db := range backupDatabases {
+		if sql, ok := sections[db]; ok {
+			if err := scanRestoreSQL(sql); err != nil {
+				return fmt.Errorf("%w: database %s: %v", ErrBadRequest, db, err)
+			}
+		}
+	}
+
 	// Restore in deterministic order to avoid partial/implicit behavior by map iteration.
 	for _, db := range backupDatabases {
 		sql, ok := sections[db]
@@ -311,6 +326,7 @@ func (s *Service) RestoreBackup(ctx context.Context, reader io.Reader, filename 
 			"-p", connInfo.Port,
 			"-U", connInfo.User,
 			"-d", db,
+			"--no-psqlrc",
 			"-v", "ON_ERROR_STOP=1",
 			"--single-transaction",
 		)
@@ -556,14 +572,7 @@ func (s *Service) syncBackupToR2WithRetention(ctx context.Context, record domain
 		return err
 	}
 
-	for idx, f := range listed {
-		if idx < maxFiles {
-			continue
-		}
-		fileID := strings.TrimSpace(f.ID)
-		if fileID == "" || fileID == uploaded.ID {
-			continue
-		}
+	for _, fileID := range selectBackupsToDelete(listed, time.Now(), maxFiles, uploaded.ID) {
 
 		deleteURL := fmt.Sprintf("%s/api/v1/file/%s", strings.TrimRight(fileServiceURL, "/"), fileID)
 		deleteReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, deleteURL, nil)
@@ -592,17 +601,13 @@ func (s *Service) listRemoteBackupFiles(
 	client *http.Client,
 	token string,
 	fileServiceURL string,
-) ([]struct {
-	ID string `json:"id"`
-}, error) {
+) ([]remoteBackupFile, error) {
 	const perPage = 100
 
 	baseURL := strings.TrimRight(fileServiceURL, "/")
 	page := 1
 	totalPages := 1
-	var files []struct {
-		ID string `json:"id"`
-	}
+	var files []remoteBackupFile
 
 	for page <= totalPages {
 		listURL := fmt.Sprintf(
@@ -839,31 +844,102 @@ func (s *Service) getSyncAPIKey(ctx context.Context) string {
 // Chi phí: ~1,7 MB/bản ⇒ tối đa ~285 MB ở đĩa local và ~285 MB trên R2.
 const defaultBackupMaxFiles = 168
 
+// minBackupMaxFiles là sàn cứng của backup.max_files: đặt thấp hơn (kể cả nhầm 1 hay 2) sẽ
+// xóa gần hết backup ngay lần dọn kế tiếp, đúng kịch bản mất dữ liệu mà retention sinh ra để tránh.
+const minBackupMaxFiles = 48
+
 func (s *Service) getBackupMaxFiles(ctx context.Context) int {
 	maxFiles := defaultBackupMaxFiles
 	settings, err := s.GetSettingsByGroup(ctx, "backup")
 	if err == nil {
 		if v, ok := settings["backup.max_files"]; ok {
-			switch typed := v.(type) {
-			case float64:
-				if typed > 0 {
-					maxFiles = int(typed)
-				}
-			case int:
-				if typed > 0 {
-					maxFiles = typed
-				}
-			case string:
-				if n, convErr := strconv.Atoi(strings.TrimSpace(typed)); convErr == nil && n > 0 {
-					maxFiles = n
-				}
+			maxFiles = parseBackupMaxFiles(v, maxFiles)
+		}
+	}
+	return clampBackupMaxFiles(maxFiles)
+}
+
+func parseBackupMaxFiles(v any, fallback int) int {
+	switch typed := v.(type) {
+	case float64:
+		if typed > 0 {
+			return int(typed)
+		}
+	case int:
+		if typed > 0 {
+			return typed
+		}
+	case string:
+		if n, convErr := strconv.Atoi(strings.TrimSpace(typed)); convErr == nil && n > 0 {
+			return n
+		}
+	}
+	return fallback
+}
+
+func clampBackupMaxFiles(n int) int {
+	if n < minBackupMaxFiles {
+		log.Printf("backup: backup.max_files=%d is below the safety floor, using %d", n, minBackupMaxFiles)
+		return minBackupMaxFiles
+	}
+	return n
+}
+
+// selectBackupsToDelete trả về id các file backup trên R2 cần xóa theo retention phân tầng:
+//   - mọi file trong 48 giờ gần nhất (tối đa maxHourly file mới nhất),
+//   - file cuối cùng của mỗi ngày trong 30 ngày,
+//   - file đầu tiên của mỗi tháng trong 12 tháng.
+//
+// keepID (file vừa upload) và file không đọc được created_at không bao giờ bị xóa.
+func selectBackupsToDelete(files []remoteBackupFile, now time.Time, maxHourly int, keepID string) []string {
+	files = append([]remoteBackupFile(nil), files...)
+	sort.SliceStable(files, func(i, j int) bool { return files[i].CreatedAt.After(files[j].CreatedAt) })
+
+	keep := make(map[string]bool)
+	newestOfDay := make(map[string]remoteBackupFile)
+	oldestOfMonth := make(map[string]remoteBackupFile)
+	hourly := 0
+
+	for _, f := range files {
+		if f.CreatedAt.IsZero() {
+			keep[f.ID] = true
+			continue
+		}
+		t := f.CreatedAt.In(now.Location())
+		age := now.Sub(t)
+		if age <= 48*time.Hour && hourly < maxHourly {
+			keep[f.ID] = true
+			hourly++
+		}
+		if age <= 30*24*time.Hour {
+			day := t.Format("2006-01-02")
+			if cur, ok := newestOfDay[day]; !ok || t.After(cur.CreatedAt) {
+				newestOfDay[day] = f
+			}
+		}
+		if t.After(now.AddDate(0, -12, 0)) {
+			month := t.Format("2006-01")
+			if cur, ok := oldestOfMonth[month]; !ok || t.Before(cur.CreatedAt) {
+				oldestOfMonth[month] = f
 			}
 		}
 	}
-	if maxFiles < 1 {
-		return 1
+	for _, f := range newestOfDay {
+		keep[f.ID] = true
 	}
-	return maxFiles
+	for _, f := range oldestOfMonth {
+		keep[f.ID] = true
+	}
+
+	var del []string
+	for _, f := range files {
+		id := strings.TrimSpace(f.ID)
+		if id == "" || id == keepID || keep[f.ID] {
+			continue
+		}
+		del = append(del, id)
+	}
+	return del
 }
 
 func (s *Service) cleanupOldBackups(ctx context.Context) {
@@ -936,20 +1012,44 @@ func (s *Service) checkAndRunAutoBackup(ctx context.Context, lastBackup *time.Ti
 		intervalHours = v
 	}
 
-	if time.Since(*lastBackup) < time.Duration(intervalHours*float64(time.Hour)) {
+	interval := time.Duration(intervalHours * float64(time.Hour))
+
+	// A previous run dumped locally but failed to reach R2: retry only the upload on each tick
+	// instead of dumping every database again, until the next scheduled backup is due anyway.
+	if pending := s.pendingR2Sync; pending != nil {
+		_, statErr := os.Stat(filepath.Join(s.cfg.BackupDir, filepath.Base(pending.Filename)))
+		if statErr == nil && time.Since(pending.CreatedAt) < interval {
+			if err := s.syncBackupToR2WithRetention(ctx, *pending); err != nil {
+				log.Printf("BACKUP_FAILED: retry sync of %s to R2 failed: %v", pending.Filename, err)
+				return
+			}
+			log.Printf("auto-backup: retried sync of %s to R2 succeeded", pending.Filename)
+			s.pendingR2Sync = nil
+			*lastBackup = time.Now()
+			return
+		}
+		s.pendingR2Sync = nil
+	}
+
+	if time.Since(*lastBackup) < interval {
 		return
 	}
 
 	log.Printf("auto-backup: creating scheduled backup")
 	record, err := s.CreateBackup(ctx, "Sao luu tu dong", "system")
 	if err != nil {
-		log.Printf("auto-backup failed: %v", err)
+		log.Printf("BACKUP_FAILED: create scheduled backup: %v", err)
 		return
 	}
 
-	if err := s.syncBackupToR2WithRetention(ctx, record); err != nil {
-		log.Printf("auto-backup: sync to R2 failed: %v", err)
-	} else {
+	// Without a file-service there is nothing to sync, so the local dump alone completes the run.
+	if strings.TrimSpace(s.cfg.FileServiceURL) != "" {
+		if err := s.syncBackupToR2WithRetention(ctx, record); err != nil {
+			// Keep lastBackup unchanged so the next tick retries instead of waiting a full interval.
+			s.pendingR2Sync = &record
+			log.Printf("BACKUP_FAILED: sync of %s to R2 failed, will retry on next tick: %v", record.Filename, err)
+			return
+		}
 		log.Printf("auto-backup: synced backup to R2 with retention")
 	}
 	*lastBackup = time.Now()

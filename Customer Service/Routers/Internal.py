@@ -173,13 +173,30 @@ async def rollback_points(payload: PointsRollbackRequest, db: DbSession) -> Poin
         reference_id=payload.reference_id,
         reference_code=payload.reference_code,
         note=payload.note,
+        mode=payload.mode,
     )
 
+    note = payload.note
     if mode == "reverse_earn":
-        points_delta = -requested_points
-        total_earned_delta = -requested_points
+        # The customer may have spent part of these points already: take back only what is left
+        # rather than rejecting the return/cancel.
+        deducted = min(requested_points, max(0, customer.current_points))
+        if deducted < requested_points:
+            clamp_note = f"Clamped reverse_earn: deducted {deducted}/{requested_points} points (balance insufficient)"
+            note = f"{note} | {clamp_note}" if note else clamp_note
+        if deducted == 0:
+            return PointsRollbackResponse(
+                success=True,
+                rollback_mode=mode,
+                points_rolled_back=0,
+                new_balance=customer.current_points,
+            )
+        applied_points = deducted
+        points_delta = -deducted
+        total_earned_delta = -deducted
         total_used_delta = 0
     else:
+        applied_points = requested_points
         points_delta = requested_points
         total_earned_delta = 0
         total_used_delta = -requested_points
@@ -192,7 +209,7 @@ async def rollback_points(payload: PointsRollbackRequest, db: DbSession) -> Poin
         reference_type=payload.reference_type,
         reference_id=payload.reference_id,
         reference_code=payload.reference_code,
-        note=payload.note,
+        note=note,
         created_by="internal",
         total_earned_delta=total_earned_delta,
         total_used_delta=total_used_delta,
@@ -202,7 +219,7 @@ async def rollback_points(payload: PointsRollbackRequest, db: DbSession) -> Poin
     return PointsRollbackResponse(
         success=True,
         rollback_mode=mode,
-        points_rolled_back=requested_points,
+        points_rolled_back=applied_points,
         new_balance=new_balance,
     )
 

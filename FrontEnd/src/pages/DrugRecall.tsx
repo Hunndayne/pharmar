@@ -3,6 +3,11 @@ import { inventoryApi, type DrugRecall, type DrugRecallCreatePayload } from '../
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { exportToExcel } from '../utils/exportFile'
+import {
+  getCurrentDateKeyInTimeZone,
+  getMonthStartDateKeyInTimeZone,
+  readStoredAppTimeZone,
+} from '../utils/timezone'
 
 type DateMode = 'all' | 'range' | 'today'
 
@@ -31,7 +36,7 @@ type FormState = {
 const emptyForm = (): FormState => ({
   drug_name: '',
   official_doc_number: '',
-  issued_date: new Date().toISOString().slice(0, 10),
+  issued_date: getCurrentDateKeyInTimeZone(readStoredAppTimeZone()),
   concentration: '',
   content: '',
   unit: '',
@@ -51,7 +56,7 @@ const emptyForm = (): FormState => ({
 })
 
 function todayIso() {
-  return new Date().toISOString().slice(0, 10)
+  return getCurrentDateKeyInTimeZone(readStoredAppTimeZone())
 }
 
 function formatDate(iso: string) {
@@ -71,11 +76,7 @@ export function DrugRecall() {
   const accessToken = token?.access_token ?? ''
 
   const [dateMode, setDateMode] = useState<DateMode>('range')
-  const [dateFrom, setDateFrom] = useState(() => {
-    const d = new Date()
-    d.setDate(1)
-    return d.toISOString().slice(0, 10)
-  })
+  const [dateFrom, setDateFrom] = useState(() => getMonthStartDateKeyInTimeZone(readStoredAppTimeZone()))
   const [dateTo, setDateTo] = useState(todayIso)
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
   const [pageSize, setPageSize] = useState(10)

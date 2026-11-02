@@ -8,7 +8,7 @@ from sqlalchemy import and_, func, select
 
 from Source.db.models import Invoice, Return, Shift
 from Source.dependencies import ROLE_MANAGER, ROLE_OWNER, DbSession, TokenUser, get_current_user, require_roles
-from Source.sale import build_utc_range_for_local_dates, get_shift_or_404, get_store_timezone, quantize_money
+from Source.sale import build_utc_range_for_local_dates, get_shift_or_404, get_store_timezone, quantize_money, safe_decimal
 from Source.schemas.sale import CashierStatsItemResponse, CashierStatsResponse, StatsTodayResponse
 
 
@@ -18,7 +18,7 @@ AnyUser = Annotated[TokenUser, Depends(get_current_user)]
 ManagerOrOwner = Annotated[TokenUser, Depends(require_roles(ROLE_OWNER, ROLE_MANAGER))]
 
 
-def _collect_cashier_stats(invoices: list[Invoice]) -> list[dict]:
+def _collect_cashier_stats(invoices: list[Invoice], returns_by_cashier: dict[str, Decimal] | None = None) -> list[dict]:
     grouped: dict[str, dict] = {}
     for invoice in invoices:
         key = invoice.created_by
@@ -40,16 +40,34 @@ def _collect_cashier_stats(invoices: list[Invoice]) -> list[dict]:
             item["total_invoices"] += 1
             item["total_sales"] = quantize_money(item["total_sales"] + invoice.total_amount)
             item["commission_amount"] = quantize_money(item["commission_amount"] + invoice.commission_amount)
-        elif invoice.status == "cancelled":
-            item["total_returns"] = quantize_money(item["total_returns"] + invoice.total_amount)
 
-    for item in grouped.values():
+    for key, item in grouped.items():
+        item["total_returns"] = quantize_money((returns_by_cashier or {}).get(key, Decimal("0.00")))
         item["net_sales"] = quantize_money(item["total_sales"] - item["total_returns"])
         item["avg_invoice_value"] = quantize_money(
             item["total_sales"] / item["total_invoices"] if item["total_invoices"] > 0 else Decimal("0.00")
         )
 
     return sorted(grouped.values(), key=lambda x: x["net_sales"], reverse=True)
+
+
+async def _returns_by_cashier(
+    db: DbSession, range_start_at: datetime, range_end_at: datetime, user_id: str | None = None
+) -> dict[str, Decimal]:
+    stmt = (
+        select(Invoice.created_by, func.coalesce(func.sum(Return.total_return_amount), 0))
+        .join(Invoice, Invoice.id == Return.invoice_id)
+        .where(
+            Return.created_at >= range_start_at,
+            Return.created_at < range_end_at,
+            Return.status == "completed",
+        )
+        .group_by(Invoice.created_by)
+    )
+    if user_id is not None:
+        stmt = stmt.where(Invoice.created_by == user_id)
+    rows = await db.execute(stmt)
+    return {created_by: safe_decimal(total) for created_by, total in rows.all()}
 
 
 @router.get("/stats/today", response_model=StatsTodayResponse)
@@ -78,7 +96,7 @@ async def stats_today(_: AnyUser, db: DbSession) -> StatsTodayResponse:
         )
     )
     total_returns = quantize_money(total_returns_raw or Decimal("0.00"))
-    net_sales = quantize_money(total_sales - total_returns - total_cancelled)
+    net_sales = quantize_money(total_sales - total_returns)
 
     return StatsTodayResponse(
         date=today,
@@ -125,7 +143,7 @@ async def stats_by_cashier(
     )
     invoices = list(rows.all())
 
-    aggregated = _collect_cashier_stats(invoices)
+    aggregated = _collect_cashier_stats(invoices, await _returns_by_cashier(db, range_start_at, range_end_at))
     cashier_items = [CashierStatsItemResponse(**item) for item in aggregated]
 
     totals = {
@@ -162,7 +180,7 @@ async def stats_by_single_cashier(
         )
     )
     invoices = list(rows.all())
-    aggregated = _collect_cashier_stats(invoices)
+    aggregated = _collect_cashier_stats(invoices, await _returns_by_cashier(db, range_start_at, range_end_at, user_id))
     item = aggregated[0] if aggregated else {
         "user_id": user_id,
         "user_code": None,

@@ -340,6 +340,7 @@ class PointsRollbackRequest(BaseModel):
     reference_id: UUID | None = None
     reference_code: str | None = Field(default=None, max_length=30)
     note: str | None = None
+    mode: Literal["reverse_earn", "reverse_redeem"] | None = None
 
 
 class PointsRollbackResponse(BaseModel):

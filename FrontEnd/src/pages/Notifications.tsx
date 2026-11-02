@@ -68,30 +68,33 @@ export function Notifications() {
   }, [loadRows])
 
   const handleMarkAllRead = async () => {
+    setError(null)
     try {
       await notificationApi.markAllRead(accessToken)
       void loadRows()
-    } catch {
-      // ignore
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Không thể đánh dấu tất cả đã đọc')
     }
   }
 
   const handleMarkRead = async (id: string) => {
+    setError(null)
     try {
       await notificationApi.markRead(accessToken, [id])
       setRows((prev) => prev.map((r) => (r.id === id ? { ...r, is_read: true } : r)))
-    } catch {
-      // ignore
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Không thể đánh dấu đã đọc')
     }
   }
 
   const handleDeleteAllRead = async () => {
     if (!confirm('Xóa tất cả thông báo đã đọc?')) return
+    setError(null)
     try {
       await notificationApi.deleteAllRead(accessToken)
       void loadRows()
-    } catch {
-      // ignore
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Không thể xóa thông báo đã đọc')
     }
   }
 

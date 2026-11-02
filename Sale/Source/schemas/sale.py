@@ -294,6 +294,7 @@ class InvoiceListItemResponse(MoneyOutputModel):
     total_amount: Decimal
     rounding_adjustment_amount: Decimal
     amount_paid: Decimal
+    change_amount: Decimal = Decimal("0.00")
     payment_method: str
     service_fee_amount: Decimal
     service_fee_mode: str
@@ -303,6 +304,7 @@ class InvoiceListItemResponse(MoneyOutputModel):
     prescription_code: str | None
     doctor_name: str | None
     created_at: datetime
+    payments: list[InvoicePaymentResponse] = []
 
 
 class PublicInvoiceListItemResponse(MoneyOutputModel):

@@ -280,17 +280,22 @@
       const STORAGE_KEY = 'pharmar:customer-display:state';
       const ADS_KEY = 'pharmar:customer-display:ads';
       const CHANNEL_NAME = 'pharmar-customer-display';
-      const API_STATE_PATH = '';
+      // Always same-origin: the fetch target must never be controllable from the URL.
+      const API_STATE_PATH = '/api/v1/system/customer-display/state';
+      const SCREEN_ID_KEY = 'pharmar:customer-display:screen_id';
       const query = new URLSearchParams(window.location.search);
-      const screenId = query.get('screen_id') || query.get('screen') || 'default';
-      const queryApiBase = (query.get('api_base') || query.get('api') || '').trim();
-      const isLikelyDevFrontendPort = ['3000', '4173', '5173', '5174'].includes(window.location.port);
-      const API_BASE = queryApiBase
-        ? queryApiBase.replace(/\/+$/, '')
-        : isLikelyDevFrontendPort
-          ? `${window.location.protocol}//${window.location.hostname}:8000`
-          : '';
-      const buildApiUrl = (path) => `${API_BASE}${path}`;
+      const readStoredScreenId = () => {
+        try {
+          return window.localStorage.getItem(SCREEN_ID_KEY) || '';
+        } catch (_) {
+          return '';
+        }
+      };
+      // The screen id is the read credential for the remote state: it must be
+      // unguessable, so there is no default. Without one only same-browser
+      // (localStorage / BroadcastChannel) sync is used.
+      const screenId = (query.get('screen_id') || query.get('screen') || readStoredScreenId()).trim();
+      const hasValidScreenId = /^[A-Za-z0-9_-]{16,64}$/.test(screenId) && screenId !== 'default';
       let lastRemoteUpdatedAt = '';
       let hasRemoteState = false;
       const DEFAULT_ADS = [
@@ -527,12 +532,18 @@
           els.cartEmpty.style.display = 'none';
           lines.forEach((line) => {
             const tr = document.createElement('tr');
-            tr.innerHTML =
-              `<td>${line.name || ''}</td>` +
-              `<td>${line.unit || ''}</td>` +
-              `<td class="right">${Number(line.quantity || 0).toLocaleString('vi-VN')}</td>` +
-              `<td class="right" style="${showPrice ? '' : 'display:none'}">${formatMoney(line.unitPrice || 0)}</td>` +
-              `<td class="right" style="${showPrice ? '' : 'display:none'}">${formatMoney(line.lineTotal || 0)}</td>`;
+            const addCell = (text, alignRight, hidden) => {
+              const td = document.createElement('td');
+              if (alignRight) td.className = 'right';
+              if (hidden) td.style.display = 'none';
+              td.textContent = text;
+              tr.appendChild(td);
+            };
+            addCell(String(line.name || ''), false, false);
+            addCell(String(line.unit || ''), false, false);
+            addCell(Number(line.quantity || 0).toLocaleString('vi-VN'), true, false);
+            addCell(formatMoney(line.unitPrice || 0), true, !showPrice);
+            addCell(formatMoney(line.lineTotal || 0), true, !showPrice);
             els.cartRows.appendChild(tr);
           });
         }
@@ -546,9 +557,17 @@
         if (hasQr) {
           els.qrImage.src = paymentQr.qrDataURL;
           els.qrAmount.textContent = formatMoney(paymentQr.amount || order.total || 0);
-          els.qrMeta.innerHTML =
-            `<div><strong>Mã tham chiếu:</strong> ${paymentQr.referenceCode || '-'}</div>` +
-            `<div><strong>Nội dung:</strong> ${paymentQr.transferContent || '-'}</div>`;
+          els.qrMeta.textContent = '';
+          const addMetaRow = (label, value) => {
+            const row = document.createElement('div');
+            const strong = document.createElement('strong');
+            strong.textContent = label;
+            row.appendChild(strong);
+            row.appendChild(document.createTextNode(` ${value}`));
+            els.qrMeta.appendChild(row);
+          };
+          addMetaRow('Mã tham chiếu:', String(paymentQr.referenceCode || '-'));
+          addMetaRow('Nội dung:', String(paymentQr.transferContent || '-'));
         } else {
           els.qrImage.removeAttribute('src');
           els.qrAmount.textContent = '0đ';
@@ -562,8 +581,9 @@
       };
 
       const pullRemoteState = async () => {
+        if (!hasValidScreenId) return;
         try {
-          const url = `${buildApiUrl(API_STATE_PATH)}?screen_id=${encodeURIComponent(screenId)}`;
+          const url = `${API_STATE_PATH}?screen_id=${encodeURIComponent(screenId)}`;
           const response = await fetch(url, {
             cache: 'no-store',
             headers: { Accept: 'application/json' },

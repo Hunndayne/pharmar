@@ -314,7 +314,7 @@ def build_point_transaction(
         transaction_type=transaction_type,
         points=points,
         balance_after=balance_after,
-        reference_type=normalize_optional_string(reference_type),
+        reference_type=(normalize_optional_string(reference_type) or "")[:20] or None,
         reference_id=reference_id,
         reference_code=normalize_optional_string(reference_code),
         note=normalize_optional_string(note),
@@ -408,12 +408,28 @@ def _build_point_reference_filters(
 
 
 def _rollback_mode_hint(reference_type: str | None, note: str | None) -> str:
+    # Explicit "redeem"/"earn" keywords win over the generic "return"/"cancel" ones, because e.g.
+    # "invoice_return_earn" is a return that must take back earned points, not give back redeemed ones.
+    # reference_type is checked before note so a free-text note cannot override the structured field.
+    for text in ((reference_type or "").lower(), (note or "").lower()):
+        if "redeem" in text:
+            return "reverse_redeem"
+        if "earn" in text:
+            return "reverse_earn"
     text = f"{reference_type or ''} {note or ''}".lower()
-    if any(keyword in text for keyword in ("return", "refund", "redeem")):
+    if any(keyword in text for keyword in ("return", "refund")):
         return "reverse_redeem"
-    if any(keyword in text for keyword in ("cancel", "void", "earn")):
-        return "reverse_earn"
     return "reverse_earn"
+
+
+def resolve_rollback_mode(
+    explicit_mode: str | None,
+    reference_type: str | None,
+    note: str | None,
+) -> str:
+    if explicit_mode in ("reverse_earn", "reverse_redeem"):
+        return explicit_mode
+    return _rollback_mode_hint(reference_type, note)
 
 
 async def resolve_points_rollback(
@@ -424,6 +440,7 @@ async def resolve_points_rollback(
     reference_id: UUID | None,
     reference_code: str | None,
     note: str | None,
+    mode: str | None = None,
 ) -> tuple[str, int, int, int]:
     if points <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="points must be > 0")
@@ -457,6 +474,17 @@ async def resolve_points_rollback(
     available_reverse_redeem = max(0, redeemed_total - rollback_reverse_redeem_total)
     requested = int(points)
 
+    if mode in ("reverse_earn", "reverse_redeem"):
+        # Sale told us the direction explicitly: never guess, never silently switch to the other one.
+        # A cancel after a partial return asks for more than what is left, so clamp instead of rejecting.
+        available_for_mode = available_reverse_earn if mode == "reverse_earn" else available_reverse_redeem
+        if available_for_mode <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Nothing left to roll back for this reference",
+            )
+        return mode, min(requested, available_for_mode), available_reverse_earn, available_reverse_redeem
+
     candidates: list[str] = []
     if available_reverse_earn >= requested:
         candidates.append("reverse_earn")
@@ -472,7 +500,7 @@ async def resolve_points_rollback(
     if len(candidates) == 1:
         mode = candidates[0]
     else:
-        mode = _rollback_mode_hint(reference_type, note)
+        mode = resolve_rollback_mode(None, reference_type, note)
         if mode not in candidates:
             mode = candidates[0]
 
