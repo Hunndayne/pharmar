@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   saleApi,
   type SaleInvoiceListItem,
@@ -254,6 +254,9 @@ export function SalesHistory() {
   const [returnModal, setReturnModal] = useState<ReturnModalState | null>(null)
   const [returnModalError, setReturnModalError] = useState<string | null>(null)
   const [submittingReturn, setSubmittingReturn] = useState(false)
+  const submittingReturnRef = useRef(false)
+  // Set once the return was created but approval failed, so a retry only approves instead of creating a duplicate.
+  const [createdReturn, setCreatedReturn] = useState<{ id: string; code: string; invoice_id: string } | null>(null)
   const [paymentMethods, setPaymentMethods] = useState<SalePaymentMethod[]>([])
   const [debtCollectModal, setDebtCollectModal] = useState<DebtCollectModalState | null>(null)
   const [debtCollectModalError, setDebtCollectModalError] = useState<string | null>(null)
@@ -535,6 +538,7 @@ export function SalesHistory() {
         throw new ApiError(`Hóa đơn ${item.code} không còn số lượng để trả hàng.`, 400)
       }
 
+      setCreatedReturn(null)
       setReturnModal({
         invoice_id: item.id,
         invoice_code: item.code,
@@ -660,18 +664,25 @@ export function SalesHistory() {
       return
     }
 
+    if (submittingReturnRef.current) return
+    submittingReturnRef.current = true
     setSubmittingReturn(true)
     setReturnModalError(null)
     setError(null)
     setNotice(null)
 
+    let created = createdReturn
     try {
-      const created = await saleApi.createReturn(accessToken, {
-        invoice_id: returnModal.invoice_id,
-        refund_method: returnModal.refund_method,
-        reason: returnModal.reason.trim() || null,
-        items: chosenLines,
-      })
+      if (!created) {
+        const response = await saleApi.createReturn(accessToken, {
+          invoice_id: returnModal.invoice_id,
+          refund_method: returnModal.refund_method,
+          reason: returnModal.reason.trim() || null,
+          items: chosenLines,
+        })
+        created = { id: response.id, code: response.code, invoice_id: response.invoice_id }
+        setCreatedReturn(created)
+      }
 
       let message = `Đã tạo phiếu trả ${created.code}.`
       if (canApproveReturn) {
@@ -682,12 +693,19 @@ export function SalesHistory() {
       }
 
       setNotice(message)
+      setCreatedReturn(null)
       setReturnModal(null)
       await Promise.all([loadRows(), refreshInvoiceDetail(created.invoice_id)])
     } catch (returnError) {
-      if (returnError instanceof ApiError) setReturnModalError(returnError.message)
-      else setReturnModalError('Không thể xử lý trả hàng.')
+      const reason = returnError instanceof ApiError ? returnError.message : 'Không thể xử lý trả hàng.'
+      setReturnModalError(
+        created
+          ? `Đã tạo phiếu trả ${created.code} nhưng chưa duyệt được: ${reason} Bấm "Duyệt lại" để thử lại.`
+          : reason,
+      )
+      if (created) void loadRows()
     } finally {
+      submittingReturnRef.current = false
       setSubmittingReturn(false)
     }
   }
@@ -1455,6 +1473,7 @@ export function SalesHistory() {
                 onClick={() => {
                   setReturnModal(null)
                   setReturnModalError(null)
+                  setCreatedReturn(null)
                 }}
                 className="rounded-full border border-ink-900/10 bg-white/80 px-4 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
               >
@@ -1587,6 +1606,7 @@ export function SalesHistory() {
                   onClick={() => {
                     setReturnModal(null)
                     setReturnModalError(null)
+                    setCreatedReturn(null)
                   }}
                   className="rounded-full border border-ink-900/10 bg-white/80 px-5 py-2 text-sm font-semibold text-ink-900 disabled:opacity-60"
                 >
@@ -1598,7 +1618,7 @@ export function SalesHistory() {
                   onClick={() => void submitReturn()}
                   className="rounded-full bg-sun-500 px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
                 >
-                  {submittingReturn ? 'Đang xử lý...' : 'Trả hàng'}
+                  {submittingReturn ? 'Đang xử lý...' : createdReturn ? 'Duyệt lại' : 'Trả hàng'}
                 </button>
               </div>
             </div>

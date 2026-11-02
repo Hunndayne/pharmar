@@ -1,9 +1,10 @@
+from datetime import date
 from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from Source.core.config import get_settings
@@ -19,11 +20,14 @@ from Source.dependencies import (
 )
 from Source.events import publish_sale_event
 from Source.sale import (
+    build_utc_range_for_local_dates,
     clamp_return_quantity,
     customer_internal_post,
     generate_next_daily_code,
     get_return_or_404,
+    get_store_timezone,
     inventory_return_stock,
+    net_return_amount,
     now_utc,
     paginate_scalars,
     proportion_points,
@@ -46,12 +50,14 @@ ManagerOrOwner = Annotated[TokenUser, Depends(require_roles(ROLE_OWNER, ROLE_MAN
 AccessToken = Annotated[str, Depends(oauth2_scheme)]
 
 
-async def _get_return_with_details(return_id: UUID, db: DbSession) -> Return:
+async def _get_return_with_details(return_id: UUID, db: DbSession, lock: bool = False) -> Return:
     stmt = (
         select(Return)
         .options(selectinload(Return.items))
         .where(Return.id == return_id)
     )
+    if lock:
+        stmt = stmt.with_for_update(of=Return)
     result = await db.scalar(stmt)
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Return not found")
@@ -64,10 +70,19 @@ async def list_returns(
     db: DbSession,
     status_value: str | None = Query(default=None, alias="status"),
     invoice_id: UUID | None = Query(default=None),
+    approved_from: date | None = Query(default=None),
+    approved_to: date | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=200),
 ) -> PageResponse[ReturnResponse]:
     stmt = select(Return).order_by(Return.created_at.desc())
+    if approved_from is not None or approved_to is not None:
+        # Local store dates (same convention as the invoice list), applied to the approval time.
+        start_at, end_at = build_utc_range_for_local_dates(approved_from, approved_to, await get_store_timezone())
+        if start_at is not None:
+            stmt = stmt.where(Return.approved_at >= start_at)
+        if end_at is not None:
+            stmt = stmt.where(Return.approved_at < end_at)
     if status_value and status_value.strip():
         stmt = stmt.where(Return.status == status_value.strip().lower())
     if invoice_id is not None:
@@ -91,15 +106,29 @@ async def get_return(return_id: UUID, _: AnyUser, db: DbSession) -> ReturnRespon
 
 @router.post("/returns", response_model=ReturnResponse, status_code=status.HTTP_201_CREATED)
 async def create_return(payload: ReturnCreateRequest, current_user: AnyUser, db: DbSession) -> ReturnResponse:
+    # Lock the invoice row so concurrent return requests for the same invoice are serialized
+    # (selectinload runs as a separate SELECT, so FOR UPDATE only applies to the invoice row).
     invoice = await db.scalar(
         select(Invoice)
         .options(selectinload(Invoice.items))
         .where(Invoice.id == payload.invoice_id)
+        .with_for_update(of=Invoice)
     )
     if invoice is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
     if invoice.status not in {"completed", "returned"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invoice is not eligible for return")
+
+    if len({req_item.invoice_item_id for req_item in payload.items}) != len(payload.items):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Duplicate invoice_item_id in return request")
+
+    pending_rows = await db.execute(
+        select(ReturnItem.invoice_item_id, func.coalesce(func.sum(ReturnItem.quantity), 0))
+        .join(Return, Return.id == ReturnItem.return_id)
+        .where(Return.invoice_id == invoice.id, Return.status == "pending")
+        .group_by(ReturnItem.invoice_item_id)
+    )
+    pending_by_item = {row[0]: int(row[1] or 0) for row in pending_rows.all()}
 
     code = await generate_next_daily_code(
         db=db,
@@ -117,8 +146,11 @@ async def create_return(payload: ReturnCreateRequest, current_user: AnyUser, db:
         if invoice_item is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invoice_item_id does not belong to invoice")
 
-        qty = clamp_return_quantity(req_item.quantity, invoice_item.quantity, invoice_item.returned_quantity)
-        amount = quantize_money(invoice_item.unit_price * qty)
+        pending_qty = pending_by_item.get(invoice_item.id, 0)
+        qty = clamp_return_quantity(
+            req_item.quantity, invoice_item.quantity, invoice_item.returned_quantity, pending_qty
+        )
+        amount = net_return_amount(invoice, invoice_item, qty, invoice_item.returned_quantity + pending_qty)
         total_return_amount += amount
 
         return_items.append(
@@ -171,7 +203,8 @@ async def approve_return(
     token: AccessToken,
     db: DbSession,
 ):
-    return_doc = await _get_return_with_details(return_id, db)
+    # Lock order: return row, then invoice row (create_return/cancel_invoice only lock the invoice).
+    return_doc = await _get_return_with_details(return_id, db, lock=True)
     if return_doc.status != "pending":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only pending return can be approved")
 
@@ -179,9 +212,20 @@ async def approve_return(
         select(Invoice)
         .options(selectinload(Invoice.items))
         .where(Invoice.id == return_doc.invoice_id)
+        .with_for_update(of=Invoice)
     )
     if invoice is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original invoice not found")
+    if invoice.status not in {"completed", "returned"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invoice is not eligible for return")
+
+    for item in return_doc.items:
+        invoice_item = next((row for row in invoice.items if row.id == item.invoice_item_id), None)
+        if invoice_item is not None and item.quantity > invoice_item.quantity - invoice_item.returned_quantity:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Return quantity exceeds remaining returnable quantity of the invoice",
+            )
 
     stock_returned = True
     for item in return_doc.items:

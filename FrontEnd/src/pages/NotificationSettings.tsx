@@ -93,15 +93,17 @@ export function NotificationSettings() {
   // ── Alert Rules ────────────────────────────────────────────────────────
   const [alertRules, setAlertRules] = useState<AlertRuleRecord[]>([])
   const [alertLoading, setAlertLoading] = useState(false)
+  const [alertError, setAlertError] = useState<string | null>(null)
 
   const loadAlertRules = useCallback(async () => {
     if (!accessToken) return
     setAlertLoading(true)
+    setAlertError(null)
     try {
       const rules = await notificationApi.listAlertRules(accessToken)
       setAlertRules(rules)
-    } catch {
-      // ignore
+    } catch (err) {
+      setAlertError(err instanceof Error ? err.message : 'Không thể tải quy tắc cảnh báo')
     } finally {
       setAlertLoading(false)
     }
@@ -112,13 +114,14 @@ export function NotificationSettings() {
   }, [loadAlertRules])
 
   const handleToggleRule = async (rule: AlertRuleRecord, field: 'is_active' | 'send_email' | 'send_web') => {
+    setAlertError(null)
     try {
       const updated = await notificationApi.updateAlertRule(accessToken, rule.id, {
         [field]: !rule[field],
       })
       setAlertRules((prev) => prev.map((r) => (r.id === updated.id ? updated : r)))
-    } catch {
-      // ignore
+    } catch (err) {
+      setAlertError(err instanceof Error ? err.message : 'Không thể cập nhật quy tắc cảnh báo')
     }
   }
 
@@ -132,6 +135,7 @@ export function NotificationSettings() {
         <p className="mt-1 text-sm text-ink-500">Bật/tắt từng loại thông báo và kênh gửi</p>
 
         {alertLoading && <p className="mt-4 text-sm text-ink-400">Đang tải...</p>}
+        {alertError && <p className="mt-4 text-sm text-coral-500">{alertError}</p>}
 
         {/* Mobile cards */}
         <div className="mt-4 space-y-3 sm:hidden">

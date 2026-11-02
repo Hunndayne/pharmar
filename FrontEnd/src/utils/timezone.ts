@@ -1,5 +1,5 @@
 export const DEFAULT_APP_TIME_ZONE = 'Asia/Ho_Chi_Minh'
-const APP_TIME_ZONE_STORAGE_KEY = 'pharmar.system.timezone'
+export const APP_TIME_ZONE_STORAGE_KEY = 'pharmar.system.timezone'
 
 type TimeZoneCatalogItem = {
   value: string

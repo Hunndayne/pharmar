@@ -4,21 +4,46 @@
 
 ## V2.0 — 2026-11-03
 
-Đợt 1 sau rà soát toàn diện: sửa các lỗi làm sai tiền và tồn kho. Không đổi schema, không cần migrate dữ liệu; tương thích ngược hoàn toàn. Deploy cần build lại `sale-service`, `customer-service`, `inventory-service` và `frontend`.
+Đợt sửa lớn sau rà soát toàn diện (bảo mật, tiền/tồn kho, frontend, vận hành). **Không đổi schema DB, không migrate dữ liệu**; mọi thay đổi API đều tương thích ngược. Deploy cần build lại: `api-gateway`, `users-service`, `sale-service`, `customer-service`, `inventory-service`, `report-service`, `store-service`, `file-service`, `frontend`. **Compose mới cần `JWT_SECRET_KEY` cho `api-gateway`** (đã có trong `.env`).
 
-### Sửa lỗi
-- **Thanh toán thất bại không còn tạo tồn ảo.** Sale chỉ gọi hoàn kho khi Inventory đã thực sự trừ kho (reserve thành công). Trước đây mọi lần checkout bị từ chối (thiếu hàng, lô hết hạn, lỗi mạng) đều cộng thêm hàng vào kho.
-- **Điểm đã dùng được hoàn lại khi hủy hóa đơn, trả hàng hoặc checkout lỗi.** Mã tham chiếu gửi sang Customer dài 21 ký tự vượt giới hạn 20 nên bị từ chối âm thầm; đã rút ngắn (`inv_create_failed`, `inv_cancel_redeem`, `inv_return_redeem`). Checkout lỗi chỉ hoàn số điểm thực sự đã trừ, không hoàn điểm chưa dùng.
-- **Trả hàng không còn cộng nhầm điểm.** Sale gửi chiều rollback tường minh (`mode: reverse_earn | reverse_redeem`) thay vì để Customer đoán theo từ khóa; Customer vẫn chấp nhận thiếu `mode` để tương thích. Với `mode` tường minh, số điểm vượt mức còn hoàn được sẽ bị kẹp lại thay vì từ chối.
-- **Hủy hóa đơn đã trả một phần** chỉ nhập kho phần chưa trả (`quantity − returned_quantity`) và chỉ hoàn/thu hồi phần điểm còn lại.
-- **Reserve nhiều dòng cùng một lô** không còn làm tồn lô âm: kiểm tra cộng dồn trong cùng yêu cầu, áp dụng cho cả chọn lô tay và FEFO.
-- **Hoàn tất kiểm kê** áp chênh lệch (thực tế − hệ thống lúc tạo phiếu) lên tồn hiện tại thay vì ghi đè, nên hàng bán trong lúc kiểm kê không bị hoàn lại. Movement ghi đúng số đã áp.
-- **Sổ thu hồi và danh sách kiểm kê** không còn lỗi 500 sau khi restart do sort trộn kiểu ngày; bộ lọc ngày của sổ thu hồi cũng được sửa.
-- **Phiếu kiểm kê** hiện đúng mã thuốc (trước đây luôn trống).
-- **Dashboard hôm nay** không trừ hóa đơn hủy hai lần; thống kê theo thu ngân dùng phiếu trả thật thay vì tính hóa đơn hủy là trả hàng.
+### Sửa lỗi tiền và tồn kho
+- **Thanh toán thất bại không còn tạo tồn ảo.** Sale chỉ hoàn kho khi Inventory đã thực sự trừ kho (reserve thành công). Trước đây mọi checkout bị từ chối (thiếu hàng, lô hết hạn, lỗi mạng) đều cộng thêm hàng vào kho.
+- **Điểm đã dùng được hoàn khi hủy hóa đơn, trả hàng hoặc checkout lỗi.** Mã tham chiếu gửi sang Customer dài 21 ký tự vượt giới hạn 20 nên bị từ chối âm thầm; đã rút ngắn (`inv_create_failed`, `inv_cancel_redeem`, `inv_return_redeem`). Checkout lỗi chỉ hoàn số điểm thực sự đã trừ.
+- **Trả hàng không còn cộng nhầm điểm.** Sale gửi chiều rollback tường minh (`mode: reverse_earn | reverse_redeem`); Customer vẫn nhận thiếu `mode` để tương thích; với `mode` tường minh, số điểm vượt mức còn hoàn được sẽ bị kẹp thay vì từ chối.
+- **Hoàn tiền trả hàng theo giá thực trả** (sau giảm giá dòng, hạng thành viên, khuyến mãi, điểm; phân bổ theo tỷ lệ), không còn theo giá gốc. Tổng hoàn của một hóa đơn không bao giờ vượt tổng tiền đã thu. Phí dịch vụ tách riêng không hoàn.
+- **Không trả hàng được hai lần cho cùng một món:** phiếu trả đang chờ được trừ khi kiểm tra số lượng, chặn trùng `invoice_item_id` trong một phiếu, duyệt trả kiểm tra lại và khóa dòng (`SELECT … FOR UPDATE`); hủy hóa đơn cũng khóa dòng nên không hủy trùng.
+- **Tiếp tục đơn tạm (held order) không tạo hai hóa đơn** khi bấm hai lần: đơn được "claim" nguyên tử; claim quá 5 phút chưa xong tự mở lại.
+- **Hủy hóa đơn đã trả một phần** chỉ nhập kho phần chưa trả và chỉ hoàn/thu hồi phần điểm còn lại.
+- **Reserve nhiều dòng cùng một lô** không còn làm tồn lô âm (cả chọn lô tay lẫn FEFO).
+- **Hoàn tất kiểm kê** áp chênh lệch lên tồn hiện tại thay vì ghi đè, nên hàng bán trong lúc kiểm kê không bị hoàn lại.
+- **Tồn có thể bán không tính lô hết hạn** (POS, trang tồn kho, cảnh báo sắp hết hàng); lô bị đánh dấu hết hạn thủ công hiện đúng trong cảnh báo "đã hết hạn".
+- **Sổ thu hồi và danh sách kiểm kê** không còn lỗi 500 sau khi restart; phiếu kiểm kê hiện đúng mã thuốc.
+- **Dashboard hôm nay** không trừ hóa đơn hủy hai lần; thống kê thu ngân dùng phiếu trả thật.
+- **Báo cáo doanh thu:** tiền đã thu không còn gồm tiền thối; trừ phiếu trả đã duyệt (theo ngày duyệt, có `return_count`, `returns_amount`); số hóa đơn hủy đếm đúng trong khoảng ngày; phân bổ theo phương thức thanh toán dùng từng khoản thanh toán thật (tiền mặt/chuyển khoản/nợ) thay vì gán cả hóa đơn vào một phương thức.
 
-### Cải thiện
-- Thêm test: Sale 10, Customer 19 (bộ test mới), Inventory 12. Chạy bằng `docker run python:3.11-slim` mount thư mục service (xem CHANGELOG V1.17 về môi trường Python).
+### Bảo mật
+- **Màn hình khách:** gateway xác thực JWT thật khi POS cập nhật; `screen_id` là mã ngẫu nhiên theo trình duyệt (không còn `default`), bắt buộc 16–64 ký tự; trang hiển thị bỏ tham số `api_base` và không còn chèn HTML từ dữ liệu (hết XSS).
+- **Đăng nhập:** rate-limit và khóa tài khoản tính theo IP thật của client (gateway gửi `X-Client-IP`, bỏ giá trị client tự gửi) và theo cặp (tài khoản, IP) nên người lạ không khóa được tài khoản chủ tiệm; tài khoản bị tấn công phân tán chỉ bị làm chậm dần, không khóa. Lịch sử đăng nhập ghi IP thật.
+- **Gateway:** chặn bypass rate-limit login qua `auth/./login`; body thường tối đa 2 MB (100 MB chỉ cho upload file, AI, backup, import Excel, logo), kiểm tra trước khi đọc và cả với chunked; `/system/health` chỉ trả chi tiết cho owner/manager.
+- **File Service:** backup DB (`category=backup`) chỉ owner được liệt kê/tải/upload; giới hạn dung lượng upload thật; Content-Type lấy từ nội dung file, không tin client.
+- **Store:** sàn `backup.max_files` ≥ 48; backup thất bại không đánh dấu "đã backup" (sẽ thử lại) và log `BACKUP_FAILED`; restore chạy `psql --no-psqlrc`, từ chối file có meta-command (`\!`) hoặc `COPY … PROGRAM`.
+
+### Cải thiện giao diện
+- **Phiên đăng nhập tự làm mới:** gặp 401 thì tự refresh token một lần rồi gửi lại, không còn chết sau 30 phút phải F5.
+- **Giỏ hàng POS giữ lại** khi chuyển trang/tải lại (lưu theo tài khoản); mỗi đơn có `client_request_id` gửi kèm khi thanh toán (chuẩn bị chống tạo trùng).
+- Tính lại tự động phân bổ lô không còn ghi đè thao tác vừa nhập; ô quét mã xóa ngay khi Enter và chọn lại khi lỗi.
+- Tìm thuốc nhận đúng chữ đ/Đ ở POS và danh mục.
+- Nhập hàng: giá kiểu "12.000" hiểu đúng; số lượng phải là số nguyên; chặn HSD trước ngày nhập và NSX sau hôm nay, cảnh báo HSD dưới 90 ngày; dòng hàng tặng từ AI (giá 0) lưu được.
+- Ngày mặc định ở nhập hàng và sổ thu hồi theo múi giờ cửa hàng, không còn lệch trước 7h sáng.
+- Duyệt trả hàng lỗi giữa chừng không tạo phiếu trả thứ hai (nút "Duyệt lại"); chặn bấm đúp tạo phiếu kiểm kê; trang thông báo và cài đặt cảnh báo hiện lỗi thay vì im lặng.
+- Đăng xuất xóa nháp cục bộ (giữ múi giờ, mã màn hình khách và cờ "đã xem tính năng mới").
+- **Popup "Tính năng mới" hiện trở lại:** version popup từng kẹt ở V1.7 nên không hiện từ tháng 4; nay Sidebar và popup dùng chung `CURRENT_VERSION` trong `FrontEnd/src/constants/changelog.ts`.
+
+### Vận hành
+- Compose: `restart: unless-stopped` + healthcheck cho postgres/redis; giới hạn log json-file 10 MB × 5 cho mọi service; RabbitMQ có `hostname` và volume cố định; volume `store_uploads` cho logo; `api-gateway` nhận `JWT_SECRET_KEY`.
+- `.dockerignore` cho 10 service (không còn copy `.env` vào image).
+- `deploy.sh`: giữ `FrontEnd/nginx.conf` của server, pg_dumpall trước khi đổi, build + up các service chỉ định, chờ healthy, so số thuốc/lô/tồn trước–sau, prune image.
+- Test mới: Sale 21, Customer 19, Inventory 14, Gateway 4, Go (File/Store).
 
 ## V1.18 — 2026-11-01
 

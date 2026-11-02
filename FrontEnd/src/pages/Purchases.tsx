@@ -24,7 +24,12 @@ import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
 import { downloadCsv } from '../utils/csv'
 import { readLocalDraft, removeLocalDraft, writeLocalDraft } from '../utils/localDraft'
-import { formatDateInAppTimeZone as formatDate } from '../utils/timezone'
+import {
+  formatDateInAppTimeZone as formatDate,
+  getCurrentDateKeyInTimeZone,
+  readStoredAppTimeZone,
+  shiftDateKey,
+} from '../utils/timezone'
 
 type Unit = {
   id: string
@@ -81,6 +86,8 @@ type LineItemForm = {
   promoDiscountPercent: string
   barcode: string
   unitRetailPrices: LineRetailPrice[]
+  // Set for free-goods lines (e.g. from AI invoice import) so a 0 import price is accepted.
+  isFree?: boolean
 }
 
 type OrderFormState = {
@@ -244,12 +251,32 @@ const paymentStatusStyles: Record<PaymentStatus, string> = {
   'Còn nợ': 'bg-sun-500/15 text-sun-500 border border-sun-500/30',
 }
 
-const todayISO = () => new Date().toISOString().slice(0, 10)
+const todayISO = () => getCurrentDateKeyInTimeZone(readStoredAppTimeZone())
 const toDateKey = (value: string) => (value ? value.replace(/-/g, '') : todayISO().replace(/-/g, ''))
 
 const parseNumber = (value: string) => {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : 0
+}
+
+// VND amounts: "12.000" / "12,000" are thousand separators; a 1-2 digit tail after the last
+// separator ("1234,5", "1234.56") or a non-grouped string is a decimal fraction.
+const parseMoney = (value: string) => {
+  const cleaned = value.replace(/[^\d.,]/g, '')
+  if (!cleaned) return 0
+  if (/^[1-9]\d{0,2}([.,]\d{3})+$/.test(cleaned)) return Number(cleaned.replace(/[.,]/g, '')) || 0
+  const lastSep = Math.max(cleaned.lastIndexOf('.'), cleaned.lastIndexOf(','))
+  if (lastSep < 0) return Number(cleaned) || 0
+  const head = cleaned.slice(0, lastSep).replace(/[.,]/g, '')
+  const tail = cleaned.slice(lastSep + 1)
+  const parsed = Number(`${head || '0'}.${tail}`)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+const QUANTITY_PATTERN = /^\d+$/
+const parseQuantity = (value: string) => {
+  const trimmed = value.trim()
+  return QUANTITY_PATTERN.test(trimmed) ? Number(trimmed) : 0
 }
 
 const formatCurrency = (value: number) => `${Math.round(Number(value) || 0).toLocaleString('vi-VN')}đ`
@@ -387,8 +414,8 @@ const createEmptyOrder = (
 })
 
 const calcLinePricing = (line: LineItemForm) => {
-  const baseQty = Math.max(0, parseNumber(line.quantity))
-  const basePrice = Math.max(0, parseNumber(line.price))
+  const baseQty = Math.max(0, parseQuantity(line.quantity))
+  const basePrice = Math.max(0, parseMoney(line.price))
 
   if (line.promoType === 'buy_x_get_y') {
     const buyQty = Math.max(0, Math.floor(parseNumber(line.promoBuyQty)))
@@ -440,7 +467,7 @@ const describePromo = (line: LineItemForm) => {
 
 const formatRetailPrices = (line: LineItemForm) =>
   line.unitRetailPrices
-    .map((item) => `${item.unitName}: ${formatCurrency(parseNumber(item.price))}`)
+    .map((item) => `${item.unitName}: ${formatCurrency(parseMoney(item.price))}`)
     .join(' · ')
 
 const ReceiptMetaItem = ({
@@ -528,7 +555,7 @@ const getLotLabelPrice = (line: LineItemForm) => {
   const highestUnit = line.unitRetailPrices
     .slice()
     .sort((a, b) => b.conversion - a.conversion)[0]
-  const unitPrice = parseNumber(highestUnit?.price ?? '')
+  const unitPrice = parseMoney(highestUnit?.price ?? '')
   if (unitPrice > 0) return unitPrice
   return calcLinePricing(line).unitPriceAfterPromo
 }
@@ -731,6 +758,7 @@ const mapInventoryReceiptLineToFormLine = (
     mfgDate: line.mfg_date,
     expDate: line.exp_date,
     price: String(line.import_price),
+    isFree: Number(line.import_price) === 0 ? true : undefined,
     promoType: storedExtra ? mergedExtra.promoType : promoFromApi.promoType,
     promoBuyQty: storedExtra ? mergedExtra.promoBuyQty : promoFromApi.promoBuyQty,
     promoGetQty: storedExtra ? mergedExtra.promoGetQty : promoFromApi.promoGetQty,
@@ -836,10 +864,10 @@ const buildInventoryPayloadFromForm = (
       drug_code: selectedDrug?.code || undefined,
       batch_code: resolvedBatchCode,
       lot_number: line.lotNumber.trim(),
-      quantity: Math.max(1, Math.floor(parseNumber(line.quantity))),
+      quantity: Math.max(1, parseQuantity(line.quantity)),
       mfg_date: line.mfgDate,
       exp_date: line.expDate,
-      import_price: Math.max(0, parseNumber(line.price)),
+      import_price: Math.max(0, parseMoney(line.price)),
       barcode: line.barcode.trim() || null,
       promo_type: line.promoType,
       promo_buy_qty:
@@ -858,7 +886,7 @@ const buildInventoryPayloadFromForm = (
         unit_id: unitPrice.unitId,
         unit_name: unitPrice.unitName,
         conversion: unitPrice.conversion,
-        price: Math.max(0, parseNumber(unitPrice.price)),
+        price: Math.max(0, parseMoney(unitPrice.price)),
       })),
       promo_note: toPromoNote(line),
     }
@@ -969,6 +997,7 @@ export function Purchases() {
   const [orders, setOrders] = useState<PurchaseOrder[]>(initialOrders)
   const [loadingOrders, setLoadingOrders] = useState(false)
   const [savingOrder, setSavingOrder] = useState(false)
+  const savingOrderRef = useRef(false)
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [supplierFilter, setSupplierFilter] = useState('Tất cả')
@@ -1522,7 +1551,7 @@ export function Purchases() {
           line.batchCode,
           line.lotNumber,
           line.quantity,
-          parseNumber(line.price),
+          parseMoney(line.price),
           describePromo(line),
           pricing.quantityAfterPromo,
           pricing.unitPriceAfterPromo,
@@ -1531,7 +1560,7 @@ export function Purchases() {
       })
     })
 
-    const dateKey = new Date().toISOString().slice(0, 10)
+    const dateKey = todayISO()
     downloadCsv(`nhap-hang-${dateKey}.csv`, headers, rows)
   }
 
@@ -1649,6 +1678,7 @@ export function Purchases() {
         unitRetailPrices: drug ? buildRetailPrices(drug.id) : [],
         quantity: quantity > 0 ? String(quantity) : '',
         price: String(importPrice),
+        isFree: aiLine.is_free ? true : undefined,
       }
     })
     const noteParts = [
@@ -1935,19 +1965,29 @@ export function Purchases() {
       if (!line.drugId) next[`line-drug-${index}`] = 'Bắt buộc'
       if (!line.lotNumber.trim()) next[`line-lot-${index}`] = 'Bắt buộc'
       if (!line.quantity.trim()) next[`line-qty-${index}`] = 'Bắt buộc'
-      if (line.quantity.trim() && parseNumber(line.quantity) <= 0) next[`line-qty-${index}`] = 'Phải lớn hơn 0'
+      if (line.quantity.trim() && parseQuantity(line.quantity) < 1) next[`line-qty-${index}`] = 'Phải là số nguyên từ 1 trở lên'
       if (!line.mfgDate) next[`line-mfg-${index}`] = 'Bắt buộc'
       if (!line.expDate) next[`line-exp-${index}`] = 'Bắt buộc'
       if (isLineDateOrderInvalid(line.mfgDate, line.expDate)) {
         applyLineDateOrderErrors(next, index)
+      } else {
+        if (line.expDate && form.date && line.expDate <= form.date) {
+          next[`line-exp-${index}`] = 'HSD phải sau ngày nhập'
+        }
+        if (line.mfgDate && line.mfgDate > todayISO()) {
+          next[`line-mfg-${index}`] = 'NSX không được ở tương lai'
+        }
       }
       if (!line.price.trim()) next[`line-price-${index}`] = 'Bắt buộc'
-      if (line.price.trim() && parseNumber(line.price) <= 0) next[`line-price-${index}`] = 'Phải lớn hơn 0'
+      if (line.price.trim()) {
+        const linePrice = parseMoney(line.price)
+        if (linePrice < 0 || (linePrice === 0 && !line.isFree)) next[`line-price-${index}`] = 'Phải lớn hơn 0'
+      }
       if (!line.unitRetailPrices.length) {
         next[`line-retail-prices-${index}`] = 'Cần nhập giá bán lẻ theo đơn vị'
       } else {
         line.unitRetailPrices.forEach((unitPrice) => {
-          const parsed = parseNumber(unitPrice.price)
+          const parsed = parseMoney(unitPrice.price)
           if (!unitPrice.price.trim() || parsed <= 0) {
             next[`line-retail-price-${index}-${unitPrice.unitId}`] = 'Giá phải lớn hơn 0'
           }
@@ -2034,6 +2074,7 @@ export function Purchases() {
   )
 
   const saveOrder = async () => {
+    if (savingOrderRef.current) return
     const validation = validate()
     if (!validation.ok) {
       focusFirstInvalidField(validation.nextErrors)
@@ -2046,6 +2087,7 @@ export function Purchases() {
     }
 
     const isCreating = !editingId
+    savingOrderRef.current = true
     setSavingOrder(true)
     try {
       const effectiveForm = editingId ? await hydrateBatchCodesForLockedReceipt(form) : form
@@ -2105,6 +2147,7 @@ export function Purchases() {
             ),
       )
     } finally {
+      savingOrderRef.current = false
       setSavingOrder(false)
     }
   }
@@ -2132,7 +2175,7 @@ export function Purchases() {
   const openLabelConfirm = (order: PurchaseOrder) => {
     const nextCounts: Record<string, string> = {}
     order.lines.forEach((line) => {
-      const qty = Math.max(1, Math.floor(parseNumber(line.quantity)))
+      const qty = Math.max(1, parseQuantity(line.quantity))
       nextCounts[line.id] = String(qty)
     })
     setLabelCounts(nextCounts)
@@ -2149,7 +2192,7 @@ export function Purchases() {
   const getPrintCount = (line: LineItemForm) => {
     const raw = labelCounts[line.id] ?? ''
     const parsed = Number(raw)
-    if (!Number.isFinite(parsed)) return Math.max(1, Math.floor(parseNumber(line.quantity)))
+    if (!Number.isFinite(parsed)) return Math.max(1, parseQuantity(line.quantity))
     return Math.max(0, Math.floor(parsed))
   }
 
@@ -2747,7 +2790,7 @@ export function Purchases() {
           <div className="space-y-3">
             {labelConfirmOrder.lines.map((line) => {
               const drugName = drugMap.get(line.drugId)?.name ?? 'Thuốc'
-              const qty = Math.max(1, Math.floor(parseNumber(line.quantity)))
+              const qty = Math.max(1, parseQuantity(line.quantity))
               const printCount = labelCounts[line.id] ?? String(qty)
               return (
                 <div key={line.id} className="rounded-2xl bg-white p-4">
@@ -3728,6 +3771,8 @@ export function Purchases() {
                             />
                             {errors[`line-exp-${index}`] ? (
                               <span className="text-xs text-coral-500">{errors[`line-exp-${index}`]}</span>
+                            ) : line.expDate && form.date && line.expDate > form.date && line.expDate <= shiftDateKey(form.date, 90) ? (
+                              <span className="text-xs text-sun-500">HSD còn dưới 90 ngày kể từ ngày nhập</span>
                             ) : null}
                           </label>
 

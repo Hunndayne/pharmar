@@ -211,3 +211,33 @@ def test_create_stock_audit_fills_drug_code(env):
     payload = SimpleNamespace(note="", inspector_name="", audit_type="periodic")
     result = asyncio.run(inv.create_stock_audit(payload, token="owner"))
     assert result["audit"]["items"][0]["drug_code"] == "T0001"
+
+
+# ---------- tồn bán được không gồm lô hết hạn ----------
+
+def test_stock_total_excludes_expired_and_force_expired(env):
+    expired = _batch("bt-exp", 7, 1)
+    expired["exp_date"] = date.today() - timedelta(days=1)
+    forced = _batch("bt-force", 4, 2)
+    forced["force_expired"] = True
+    env.batches.update({"bt-exp": expired, "bt-force": forced})
+    assert inv.stock_total_for_drug(DRUG) == 15
+
+
+def test_alerts_include_force_expired_batch_with_future_exp_date(env):
+    env.drugs[DRUG]["reorder_level"] = 0
+    forced = _batch("bt-force", 4, 2)
+    forced["force_expired"] = True
+    forced.update(
+        receipt_id="r1", supplier_id="sup-1", mfg_date=date.today() - timedelta(days=30), qty_in=4,
+        import_price=1000, promo_note=""
+    )
+    env.batches["bt-force"] = forced
+    env.batches["bt-1"].update(
+        receipt_id="r1", supplier_id="sup-1", mfg_date=date.today() - timedelta(days=30), qty_in=15,
+        import_price=1000, promo_note=""
+    )
+    result = asyncio.run(inv.inventory_alerts(low_stock_threshold=None, as_of=None))
+    assert [e["batch"]["id"] for e in result["expired"]] == ["bt-force"]
+    assert result["totals"]["expired"] == 1
+    assert all(e["batch"]["id"] != "bt-force" for e in result["expiring_soon"] + result["warning"] + result["near_date"])

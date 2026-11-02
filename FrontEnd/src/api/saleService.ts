@@ -18,6 +18,7 @@ export type SaleInvoiceCreateItem = {
 }
 
 export type SaleInvoiceCreatePayload = {
+  client_request_id?: string
   customer_id?: string | null
   items: SaleInvoiceCreateItem[]
   promotion_code?: string | null

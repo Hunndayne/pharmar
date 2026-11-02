@@ -4,7 +4,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 from sqlalchemy import text
 
 from Routers.Auth import router as auth_router
@@ -12,6 +11,7 @@ from Routers.Users import router as users_router
 
 from .Auth import ensure_default_owner
 from .core.config import get_settings
+from .core.client_ip import client_ip_key
 from .core.login_guard import close_redis_client
 from .db import models  # noqa: F401
 from .db.base import Base
@@ -19,7 +19,7 @@ from .db.session import SessionLocal, engine
 
 
 settings = get_settings()
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=client_ip_key)
 
 
 @asynccontextmanager

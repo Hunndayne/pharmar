@@ -73,8 +73,9 @@ func (h *Handler) health(w http.ResponseWriter, _ *http.Request) {
 // ---- Upload Handlers ----
 
 func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) {
+	h.limitUploadBody(w, r)
 	if err := r.ParseMultipartForm(h.cfg.MaxUploadSize); err != nil {
-		writeError(w, http.StatusBadRequest, "File too large or invalid multipart form")
+		writeMultipartError(w, err, "File too large")
 		return
 	}
 
@@ -89,9 +90,14 @@ func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 	refType := strings.TrimSpace(r.FormValue("ref_type"))
 	refID := strings.TrimSpace(r.FormValue("ref_id"))
 
-	contentType := header.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/octet-stream"
+	if isBackupRequest(category, refType) && denyBackupAccess(w, r) {
+		return
+	}
+
+	contentType, err := sniffContentType(file, header.Header.Get("Content-Type"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Cannot read uploaded file")
+		return
 	}
 
 	actor := actorFromRequest(r)
@@ -110,8 +116,9 @@ func (h *Handler) uploadFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) uploadMultiple(w http.ResponseWriter, r *http.Request) {
+	h.limitUploadBody(w, r)
 	if err := r.ParseMultipartForm(h.cfg.MaxUploadSize); err != nil {
-		writeError(w, http.StatusBadRequest, "Files too large or invalid multipart form")
+		writeMultipartError(w, err, "Files too large")
 		return
 	}
 
@@ -124,6 +131,9 @@ func (h *Handler) uploadMultiple(w http.ResponseWriter, r *http.Request) {
 	category := strings.TrimSpace(r.FormValue("category"))
 	refType := strings.TrimSpace(r.FormValue("ref_type"))
 	refID := strings.TrimSpace(r.FormValue("ref_id"))
+	if isBackupRequest(category, refType) && denyBackupAccess(w, r) {
+		return
+	}
 	actor := actorFromRequest(r)
 
 	var results []any
@@ -136,9 +146,11 @@ func (h *Handler) uploadMultiple(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		contentType := fh.Header.Get("Content-Type")
-		if contentType == "" {
-			contentType = "application/octet-stream"
+		contentType, err := sniffContentType(file, fh.Header.Get("Content-Type"))
+		if err != nil {
+			file.Close()
+			uploadErrors = append(uploadErrors, fmt.Sprintf("%s: %v", fh.Filename, err))
+			continue
 		}
 
 		rec, err := h.svc.Upload(r.Context(), file, fh.Filename, contentType, category, refType, refID, actor)
@@ -186,9 +198,10 @@ func (h *Handler) presignUpload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "filename is required")
 		return
 	}
-	if strings.TrimSpace(req.ContentType) == "" {
-		req.ContentType = "application/octet-stream"
+	if isBackupRequest(req.Category, "") && denyBackupAccess(w, r) {
+		return
 	}
+	req.ContentType = safeContentType(req.ContentType)
 
 	presigned, r2Key, err := h.svc.GetPresignedUploadURL(r.Context(), req.Filename, req.ContentType, req.Category)
 	if err != nil {
@@ -197,9 +210,10 @@ func (h *Handler) presignUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"upload_url": presigned.URL,
-		"r2_key":     r2Key,
-		"expires_in": presigned.ExpiresIn,
+		"upload_url":   presigned.URL,
+		"r2_key":       r2Key,
+		"content_type": req.ContentType,
+		"expires_in":   presigned.ExpiresIn,
 	})
 }
 
@@ -224,9 +238,10 @@ func (h *Handler) confirmPresignedUpload(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "filename and r2_key are required")
 		return
 	}
-	if strings.TrimSpace(req.ContentType) == "" {
-		req.ContentType = "application/octet-stream"
+	if (isBackupRequest(req.Category, req.RefType) || isBackupKey(req.R2Key)) && denyBackupAccess(w, r) {
+		return
 	}
+	req.ContentType = safeContentType(req.ContentType)
 
 	actor := actorFromRequest(r)
 
@@ -243,6 +258,15 @@ func (h *Handler) presignDownload(w http.ResponseWriter, r *http.Request) {
 	fileID := chi.URLParam(r, "fileID")
 	if fileID == "" {
 		writeError(w, http.StatusBadRequest, "fileID is required")
+		return
+	}
+
+	rec, err := h.svc.GetFile(r.Context(), fileID)
+	if err != nil {
+		h.handleServiceError(w, err)
+		return
+	}
+	if app.IsBackupRecord(rec) && denyBackupAccess(w, r) {
 		return
 	}
 
@@ -265,7 +289,13 @@ func (h *Handler) listFiles(w http.ResponseWriter, r *http.Request) {
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
 
-	result, err := h.svc.ListFiles(r.Context(), category, refType, refID, search, page, perPage)
+	owner := auth.IsOwner(r.Context())
+	if !owner && isBackupRequest(category, refType) {
+		writeError(w, http.StatusForbidden, "Only owner/admin can access backups")
+		return
+	}
+
+	result, err := h.svc.ListFiles(r.Context(), category, refType, refID, search, page, perPage, owner)
 	if err != nil {
 		h.handleServiceError(w, err)
 		return
@@ -284,6 +314,9 @@ func (h *Handler) getFile(w http.ResponseWriter, r *http.Request) {
 	rec, err := h.svc.GetFile(r.Context(), fileID)
 	if err != nil {
 		h.handleServiceError(w, err)
+		return
+	}
+	if app.IsBackupRecord(rec) && denyBackupAccess(w, r) {
 		return
 	}
 

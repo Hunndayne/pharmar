@@ -46,6 +46,7 @@ export function StockAudit() {
   const [selectedAudit, setSelectedAudit] = useState<StockAuditType | null>(null)
   const [editItems, setEditItems] = useState<Record<string, { actual_qty: string; note: string }>>({})
   const [saving, setSaving] = useState(false)
+  const [creating, setCreating] = useState(false)
   const [completing, setCompleting] = useState(false)
 
   const loadAudits = useCallback(async () => {
@@ -72,7 +73,8 @@ export function StockAudit() {
   }, [loadAudits])
 
   const handleCreate = async () => {
-    if (!accessToken) return
+    if (!accessToken || creating) return
+    setCreating(true)
     setError(null)
     setNotice(null)
     try {
@@ -87,6 +89,8 @@ export function StockAudit() {
     } catch (err) {
       if (err instanceof ApiError) setError(err.message)
       else setError('Không thể tạo phiếu kiểm kê.')
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -365,8 +369,8 @@ export function StockAudit() {
               <option value="periodic">Định kỳ</option>
               <option value="unscheduled">Đột xuất</option>
             </select>
-            <button type="button" onClick={() => void handleCreate()} className="rounded-full bg-ink-900 px-5 py-2.5 text-sm font-semibold text-white">
-              Tạo phiếu kiểm kê
+            <button type="button" disabled={creating} onClick={() => void handleCreate()} className="rounded-full bg-ink-900 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-60">
+              {creating ? 'Đang tạo...' : 'Tạo phiếu kiểm kê'}
             </button>
           </div>
         ) : null}

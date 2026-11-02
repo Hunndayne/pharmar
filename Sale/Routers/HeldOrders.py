@@ -1,9 +1,10 @@
+from datetime import timedelta
 from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select, update
 
 from Source.core.config import get_settings
 from Source.db.models import HeldOrder
@@ -33,6 +34,10 @@ from .Invoices import process_checkout
 settings = get_settings()
 
 router = APIRouter(prefix="/sale", tags=["sale-held-orders"])
+
+# A resume claims the order by setting status="resuming" and resumed_at=now. A claim older than this
+# means the request died mid-checkout, so the order is treated as active again.
+RESUME_CLAIM_TIMEOUT = timedelta(minutes=5)
 
 AnyUser = Annotated[TokenUser, Depends(get_current_user)]
 AccessToken = Annotated[str, Depends(oauth2_scheme)]
@@ -92,6 +97,27 @@ def _held_item_to_checkout_item(raw: dict) -> InvoiceCheckoutItemRequest:
     )
 
 
+def _claimable_clause():
+    """active, or a stale `resuming` claim (resumed_at doubles as the claim timestamp)."""
+    return or_(
+        HeldOrder.status == "active",
+        and_(HeldOrder.status == "resuming", HeldOrder.resumed_at < now_utc() - RESUME_CLAIM_TIMEOUT),
+    )
+
+
+async def _release_stale_claims(db: DbSession) -> None:
+    result = await db.execute(
+        update(HeldOrder)
+        .where(HeldOrder.status == "resuming", HeldOrder.resumed_at < now_utc() - RESUME_CLAIM_TIMEOUT)
+        .values(status="active", resumed_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount:
+        await db.commit()
+    else:
+        await db.rollback()
+
+
 @router.get("/held-orders", response_model=PageResponse[HeldOrderResponse])
 async def list_held_orders(
     _: AnyUser,
@@ -100,6 +126,7 @@ async def list_held_orders(
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=200),
 ) -> PageResponse[HeldOrderResponse]:
+    await _release_stale_claims(db)
     await cleanup_expired_held_orders(db)
 
     stmt = select(HeldOrder).order_by(HeldOrder.priority.desc(), HeldOrder.created_at.desc())
@@ -123,6 +150,7 @@ async def list_my_held_orders(
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=200),
 ) -> PageResponse[HeldOrderResponse]:
+    await _release_stale_claims(db)
     await cleanup_expired_held_orders(db)
 
     stmt = (
@@ -142,6 +170,7 @@ async def list_my_held_orders(
 
 @router.get("/held-orders/count")
 async def count_active_held_orders(_: AnyUser, db: DbSession):
+    await _release_stale_claims(db)
     await cleanup_expired_held_orders(db)
 
     total = await db.scalar(select(func.count()).select_from(HeldOrder).where(HeldOrder.status == "active"))
@@ -276,6 +305,7 @@ async def resume_held_order(
     token: AccessToken,
     db: DbSession,
 ):
+    await _release_stale_claims(db)
     held_order = await get_held_order_or_404(order_id, db)
     if held_order.status != "active":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only active held order can be resumed")
@@ -285,7 +315,21 @@ async def resume_held_order(
         await db.commit()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Held order already expired")
 
+    # process_checkout commits (releasing any row lock) before the held order is marked resumed, so a plain
+    # FOR UPDATE would not stop a second resume from creating a second invoice. Claim the order atomically
+    # with a conditional UPDATE and commit the claim first; only one concurrent request can win it.
     base_items = [_held_item_to_checkout_item(item) for item in held_order.items]
+    claim = await db.execute(
+        update(HeldOrder)
+        .where(HeldOrder.id == held_order.id, _claimable_clause())
+        .values(status="resuming", resumed_at=now_utc())
+        .execution_options(synchronize_session=False)
+    )
+    if claim.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only active held order can be resumed")
+    await db.commit()
+
     all_items = list(base_items)
     all_items.extend(payload.additional_items)
 
@@ -300,7 +344,18 @@ async def resume_held_order(
         note=payload.note,
     )
 
-    invoice = await process_checkout(invoice_payload, current_user, token, db)
+    try:
+        invoice = await process_checkout(invoice_payload, current_user, token, db)
+    except BaseException:
+        await db.rollback()
+        await db.execute(
+            update(HeldOrder)
+            .where(HeldOrder.id == held_order.id, HeldOrder.status == "resuming")
+            .values(status="active", resumed_at=None)
+            .execution_options(synchronize_session=False)
+        )
+        await db.commit()
+        raise
 
     held_order.status = "resumed"
     held_order.resumed_at = now_utc()

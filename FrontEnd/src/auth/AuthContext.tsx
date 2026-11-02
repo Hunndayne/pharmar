@@ -1,5 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { setAuthHooks } from '../api/httpClient'
 import { usersApi, type AuthToken, type UserProfile } from '../api/usersService'
+import { WHATS_NEW_STORAGE_KEY } from '../constants/changelog'
+import { APP_TIME_ZONE_STORAGE_KEY } from '../utils/timezone'
 import { readAuthStorage, writeAuthStorage } from './authStorage'
 
 type LoginPayload = {
@@ -16,6 +19,26 @@ type AuthContextValue = {
   refreshMe: () => Promise<void>
 }
 
+// Device-level settings that must survive logout. The screen id key mirrors CUSTOMER_DISPLAY_SCREEN_ID_KEY in api/systemService.ts.
+const PERSISTENT_STORAGE_KEYS = new Set([
+  APP_TIME_ZONE_STORAGE_KEY,
+  'pharmar:customer-display:screen_id',
+  WHATS_NEW_STORAGE_KEY,
+])
+
+const clearLocalSessionData = () => {
+  try {
+    const keys: string[] = []
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (key && key.startsWith('pharmar') && !PERSISTENT_STORAGE_KEYS.has(key)) keys.push(key)
+    }
+    keys.forEach((key) => localStorage.removeItem(key))
+  } catch {
+    // ignore storage errors
+  }
+}
+
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -23,8 +46,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<AuthToken | null>(null)
   const [loading, setLoading] = useState(true)
   const refreshPromiseRef = useRef<Promise<AuthToken | null> | null>(null)
+  const userRef = useRef<UserProfile | null>(null)
+  const tokenRef = useRef<AuthToken | null>(null)
 
   const persistAuth = useCallback((nextUser: UserProfile | null, nextToken: AuthToken | null) => {
+    userRef.current = nextUser
+    tokenRef.current = nextToken
     setUser(nextUser)
     setToken(nextToken)
     writeAuthStorage({
@@ -69,6 +96,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setLoading(false)
           return
         }
+        tokenRef.current = saved.token
         setToken(saved.token)
         try {
           const me = await usersApi.me(saved.token.access_token)
@@ -91,6 +119,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     void bootstrap()
   }, [persistAuth, tryRefreshToken])
 
+  useEffect(() => {
+    setAuthHooks({
+      refresh: async (failedToken) => {
+        const current = tokenRef.current
+        if (!current) return null
+        // Another request already rotated the token; reuse it instead of refreshing again.
+        if (current.access_token !== failedToken) return current.access_token
+        const refreshed = await tryRefreshToken(current)
+        if (!refreshed) return null
+        persistAuth(userRef.current, refreshed)
+        return refreshed.access_token
+      },
+      logout: () => {
+        persistAuth(null, null)
+      },
+    })
+    return () => setAuthHooks(null)
+  }, [persistAuth, tryRefreshToken])
+
   const login = useCallback(
     async ({ username, password }: LoginPayload) => {
       const response = await usersApi.login(username, password)
@@ -108,6 +155,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Ignore remote logout error and clear local session.
     } finally {
       persistAuth(null, null)
+      clearLocalSessionData()
     }
   }, [persistAuth, token])
 

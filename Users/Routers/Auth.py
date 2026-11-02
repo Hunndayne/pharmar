@@ -2,7 +2,6 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from Source.Auth import (
@@ -11,6 +10,7 @@ from Source.Auth import (
     logout_user,
     refresh_user_tokens,
 )
+from Source.core.client_ip import client_ip_key, get_client_ip
 from Source.db.models import User
 from Source.db.session import get_db
 from Source.dependencies import AccessToken, get_current_active_user
@@ -24,7 +24,7 @@ from Source.schemas.auth import (
     UserResponse,
 )
 
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=client_ip_key)
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -33,24 +33,13 @@ DbSession = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(get_current_active_user)]
 
 
-def _extract_client_ip(request: Request) -> str | None:
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        first_ip = forwarded_for.split(",", maxsplit=1)[0].strip()
-        if first_ip:
-            return first_ip
-    if request.client:
-        return request.client.host
-    return None
-
-
 @router.post("/login", response_model=AuthResponse)
 @limiter.limit("10/minute")
 async def login(payload: LoginRequest, request: Request, db: DbSession) -> AuthResponse:
     user, access_token, refresh_token = await login_user_with_metadata(
         payload,
         db,
-        ip_address=_extract_client_ip(request),
+        ip_address=get_client_ip(request),
         user_agent=request.headers.get("user-agent"),
     )
     return AuthResponse(

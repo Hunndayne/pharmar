@@ -56,6 +56,7 @@ from Source.schemas.sale import (
     InvoiceCollectPaymentRequest,
     InvoiceCreateRequest,
     InvoiceListItemResponse,
+    InvoicePaymentResponse,
     InvoicePrintResponse,
     ProfitSourceInvoiceResponse,
     PublicInvoiceListItemResponse,
@@ -123,12 +124,15 @@ def _invoice_event_payload(invoice: Invoice) -> dict[str, Any]:
     }
 
 
-async def _get_invoice_with_details(invoice_id: UUID, db: AsyncSession) -> Invoice:
+async def _get_invoice_with_details(invoice_id: UUID, db: AsyncSession, lock: bool = False) -> Invoice:
     stmt = (
         select(Invoice)
         .options(selectinload(Invoice.items), selectinload(Invoice.payments))
         .where(Invoice.id == invoice_id)
     )
+    if lock:
+        # selectinload loads relations with separate SELECTs, so FOR UPDATE only locks the invoice row.
+        stmt = stmt.with_for_update(of=Invoice)
     item = await db.scalar(stmt)
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
@@ -586,10 +590,13 @@ async def list_invoices(
     search: str | None = Query(default=None),
     payment_mode: str | None = Query(default=None),
     is_prescription: bool | None = Query(default=None),
+    include_payments: bool = Query(default=False),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=200),
 ) -> PageResponse[InvoiceListItemResponse]:
     stmt = select(Invoice).order_by(Invoice.created_at.desc())
+    if include_payments:
+        stmt = stmt.options(selectinload(Invoice.payments))
     stmt = invoice_status_filter(stmt, status_value)
     stmt = invoice_search_filter(stmt, search)
 
@@ -621,6 +628,7 @@ async def list_invoices(
                 total_amount=item.total_amount,
                 rounding_adjustment_amount=item.rounding_adjustment_amount,
                 amount_paid=item.amount_paid,
+                change_amount=item.change_amount,
                 payment_method=item.payment_method,
                 service_fee_amount=item.service_fee_amount,
                 service_fee_mode=item.service_fee_mode,
@@ -630,6 +638,9 @@ async def list_invoices(
                 prescription_code=item.prescription_code,
                 doctor_name=item.doctor_name,
                 created_at=item.created_at,
+                payments=(
+                    [InvoicePaymentResponse.model_validate(p) for p in item.payments] if include_payments else []
+                ),
             )
             for item in rows
         ],
@@ -881,7 +892,7 @@ async def cancel_invoice(
     token: AccessToken,
     db: DbSession,
 ):
-    invoice = await _get_invoice_with_details(invoice_id, db)
+    invoice = await _get_invoice_with_details(invoice_id, db, lock=True)
     if invoice.status == "cancelled":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invoice already cancelled")
     if invoice.status != "completed":

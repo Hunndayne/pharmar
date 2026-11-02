@@ -2537,6 +2537,7 @@ async def _fetch_invoices_list(
     authorization: str,
     date_from: date | None,
     date_to: date | None,
+    include_payments: bool = False,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     page = 1
@@ -2549,7 +2550,47 @@ async def _fetch_invoices_list(
             "GET",
             f"{settings.SALE_SERVICE_URL}/api/v1/sale/invoices",
             authorization,
-            params={"page": page, "size": 200, "date_from": query_from, "date_to": query_to},
+            params={
+                "page": page,
+                "size": 200,
+                "date_from": query_from,
+                "date_to": query_to,
+                "include_payments": "true" if include_payments else None,
+            },
+        )
+        rows = payload.get("items") if isinstance(payload, dict) else []
+        if isinstance(rows, list):
+            items.extend(r for r in rows if isinstance(r, dict))
+        pages = max(1, int((payload or {}).get("pages", 1) or 1))
+        page += 1
+
+    return items
+
+
+async def _fetch_completed_returns(
+    authorization: str,
+    date_from: date | None,
+    date_to: date | None,
+) -> list[dict[str, Any]]:
+    """Approved (status=completed) returns by approval date (padded +-1 day, trimmed locally)."""
+    items: list[dict[str, Any]] = []
+    page = 1
+    pages = 1
+    query_from = (date_from - timedelta(days=1)).isoformat() if date_from else None
+    query_to = (date_to + timedelta(days=1)).isoformat() if date_to else None
+
+    while page <= pages:
+        payload = await _request_service_json(
+            "GET",
+            f"{settings.SALE_SERVICE_URL}/api/v1/sale/returns",
+            authorization,
+            params={
+                "status": "completed",
+                "page": page,
+                "size": 200,
+                "approved_from": query_from,
+                "approved_to": query_to,
+            },
         )
         rows = payload.get("items") if isinstance(payload, dict) else []
         if isinstance(rows, list):
@@ -2602,10 +2643,49 @@ async def _fetch_all_customers(authorization: str) -> list[dict[str, Any]]:
     return items
 
 
+def _invoice_method_amounts(
+    inv: dict[str, Any],
+    inv_total: Decimal,
+    inv_paid: Decimal,
+) -> dict[str, Decimal]:
+    """Split an invoice total across payment methods; the unpaid remainder is booked as debt.
+
+    Falls back to the whole total under invoice.payment_method when no payment rows are present.
+    """
+    raw_payments = inv.get("payments")
+    by_method: dict[str, Decimal] = {}
+    if isinstance(raw_payments, list):
+        for payment in raw_payments:
+            if not isinstance(payment, dict):
+                continue
+            amount = _to_decimal(payment.get("amount"))
+            key = str(payment.get("payment_method") or "").strip().lower()
+            if amount > 0 and key:
+                by_method[key] = by_method.get(key, Decimal("0")) + amount
+    if not by_method:
+        return {str(inv.get("payment_method") or "").strip().lower(): inv_total}
+
+    # Cash handed back as change is not revenue of the method it was tendered with.
+    excess = sum(by_method.values(), Decimal("0")) - inv_paid
+    if excess > 0:
+        for key in sorted(by_method, key=lambda k: (k != "cash", k)):
+            take = min(by_method[key], excess)
+            by_method[key] -= take
+            excess -= take
+            if excess <= 0:
+                break
+    result = {key: amount for key, amount in by_method.items() if amount > 0}
+    remainder = inv_total - sum(result.values(), Decimal("0"))
+    if remainder > 0:
+        result["debt"] = result.get("debt", Decimal("0")) + remainder
+    return result
+
+
 def _build_revenue_dataset(
     invoices: list[dict[str, Any]],
     date_from: date | None,
     date_to: date | None,
+    returns: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     daily: dict[str, dict[str, Any]] = {}
     payments: dict[str, dict[str, Any]] = {}
@@ -2613,6 +2693,8 @@ def _build_revenue_dataset(
 
     invoice_count = 0
     cancelled_count = 0
+    return_count = 0
+    returns_amount = Decimal("0")
     total_amount = Decimal("0")
     paid_amount = Decimal("0")
     debt_amount = Decimal("0")
@@ -2622,15 +2704,20 @@ def _build_revenue_dataset(
         is_cancelled = status in ("cancelled", "canceled")
         created_at = str(inv.get("created_at") or "")
 
+        # The list is fetched with a +-1 day margin, so range-filter before counting anything.
+        if not _in_local_date_range(created_at, date_from, date_to):
+            continue
+
         if is_cancelled:
             cancelled_count += 1
             continue
 
-        if not _in_local_date_range(created_at, date_from, date_to):
-            continue
-
         inv_total = _to_decimal(inv.get("total_amount"))
-        inv_paid = _to_decimal(inv.get("amount_paid"))
+        # amount_paid is cash tendered (includes change given back); same correction as the profit dataset.
+        inv_paid = min(
+            inv_total,
+            max(Decimal("0"), _to_decimal(inv.get("amount_paid")) - _to_decimal(inv.get("change_amount"))),
+        )
         inv_debt = max(Decimal("0"), inv_total - inv_paid)
 
         invoice_count += 1
@@ -2649,10 +2736,11 @@ def _build_revenue_dataset(
             row["paid_amount"] += inv_paid
             row["debt_amount"] += inv_debt
 
-        method = _payment_label(inv.get("payment_method"))
-        pm = payments.setdefault(method, {"method": method, "invoice_count": 0, "amount": Decimal("0")})
-        pm["invoice_count"] += 1
-        pm["amount"] += inv_total
+        for method_key, method_amount in _invoice_method_amounts(inv, inv_total, inv_paid).items():
+            method = _payment_label(method_key)
+            pm = payments.setdefault(method, {"method": method, "invoice_count": 0, "amount": Decimal("0")})
+            pm["invoice_count"] += 1
+            pm["amount"] += method_amount
 
         if inv_debt > 0:
             debt_invoices.append({
@@ -2661,6 +2749,34 @@ def _build_revenue_dataset(
                 "created_at": created_at,
                 "debt_amount": _to_money(inv_debt),
             })
+
+    # Refunds of approved returns are booked on the approval day: they reduce revenue and cash collected.
+    for ret in returns or []:
+        approved_at = str(ret.get("approved_at") or "")
+        if str(ret.get("status") or "").strip().lower() != "completed":
+            continue
+        if not approved_at or not _in_local_date_range(approved_at, date_from, date_to):
+            continue
+        refund = _to_decimal(ret.get("refund_amount"))
+        if refund <= 0:
+            continue
+        return_count += 1
+        returns_amount += refund
+        total_amount -= refund
+        paid_amount -= refund
+
+        day_key = _period_day_key(approved_at)
+        if day_key:
+            row = daily.setdefault(day_key, {
+                "date": day_key, "invoice_count": 0,
+                "total_amount": Decimal("0"), "paid_amount": Decimal("0"), "debt_amount": Decimal("0"),
+            })
+            row["total_amount"] -= refund
+            row["paid_amount"] -= refund
+
+        method = _payment_label(ret.get("refund_method") or "cash")
+        pm = payments.setdefault(method, {"method": method, "invoice_count": 0, "amount": Decimal("0")})
+        pm["amount"] -= refund
 
     average_amount = _to_money(total_amount / invoice_count) if invoice_count > 0 else 0
 
@@ -2695,6 +2811,8 @@ def _build_revenue_dataset(
     return {
         "invoice_count": invoice_count,
         "cancelled_count": cancelled_count,
+        "return_count": return_count,
+        "returns_amount": _to_money(returns_amount),
         "total_amount": _to_money(total_amount),
         "paid_amount": _to_money(paid_amount),
         "debt_amount": _to_money(debt_amount),
@@ -2804,13 +2922,16 @@ async def revenue_summary(
     start_date = _parse_optional_date(date_from, "date_from")
     end_date = _parse_optional_date(date_to, "date_to")
 
-    cache_key = _cache_key("report:revenue:summary:v1", {"df": date_from, "dt": date_to})
+    cache_key = _cache_key("report:revenue:summary:v2", {"df": date_from, "dt": date_to})
     cached = await _get_cached_json(cache_key)
     if cached is not None:
         return cached
 
-    invoices = await _fetch_invoices_list(token, start_date, end_date)
-    result = _build_revenue_dataset(invoices, start_date, end_date)
+    invoices, returns = await asyncio.gather(
+        _fetch_invoices_list(token, start_date, end_date, include_payments=True),
+        _fetch_completed_returns(token, start_date, end_date),
+    )
+    result = _build_revenue_dataset(invoices, start_date, end_date, returns)
     await _set_cached_json(cache_key, result, settings.REPORT_CACHE_TTL_SECONDS)
     return result
 

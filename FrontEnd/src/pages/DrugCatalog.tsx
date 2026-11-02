@@ -437,7 +437,7 @@ const normalizeMatchText = (value: string) =>
     .trim()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-    .replace(/đ/g, 'd')
+    .replace(/[đĐ]/g, 'd')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
@@ -1846,6 +1846,7 @@ export function DrugCatalog() {
       .trim()
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[đĐ]/g, 'd')
       .toLowerCase()
       .replace(/\s+/g, '')
 

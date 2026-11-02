@@ -173,7 +173,8 @@ func (s *Service) GetFile(ctx context.Context, fileID string) (domain.FileRecord
 }
 
 // ListFiles returns a paginated, filtered list of files.
-func (s *Service) ListFiles(ctx context.Context, category, refType, refID, search string, page, perPage int) (domain.FileListResponse, error) {
+// includeBackups must only be true for owner-level callers; otherwise backup rows are excluded.
+func (s *Service) ListFiles(ctx context.Context, category, refType, refID, search string, page, perPage int, includeBackups bool) (domain.FileListResponse, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -181,7 +182,7 @@ func (s *Service) ListFiles(ctx context.Context, category, refType, refID, searc
 		perPage = 20
 	}
 
-	where, args := s.buildFilters(category, refType, refID, search)
+	where, args := s.buildFilters(category, refType, refID, search, includeBackups)
 
 	var total int
 	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM file_storage.files %s`, where)
@@ -336,6 +337,14 @@ func (s *Service) GetPresignedUploadURL(ctx context.Context, filename, contentTy
 
 // ConfirmUpload records metadata for a file uploaded via presigned URL.
 func (s *Service) ConfirmUpload(ctx context.Context, filename, contentType, r2Key, category, refType, refID, actor string, size int64) (domain.FileRecord, error) {
+	category = strings.TrimSpace(strings.ToLower(category))
+	if category == "" {
+		category = domain.CategoryGeneral
+	}
+	if !domain.ValidCategories[category] {
+		return domain.FileRecord{}, fmt.Errorf("%w: invalid category %q", ErrBadRequest, category)
+	}
+
 	fileID := uuid.New().String()
 	ext := path.Ext(filename)
 	storedName := fileID + ext
@@ -363,7 +372,24 @@ func (s *Service) ConfirmUpload(ctx context.Context, filename, contentType, r2Ke
 
 // ---- helpers ----
 
+// backupExclusionSQL hides DB backups from callers that are not owner-level.
+const backupExclusionSQL = `(LOWER(category) <> 'backup' AND LOWER(COALESCE(ref_type, '')) <> 'store_backup' AND r2_key NOT LIKE 'backup/%')`
+
+// IsBackupRecord reports whether a stored file is a database backup.
+func IsBackupRecord(rec domain.FileRecord) bool {
+	return strings.EqualFold(rec.Category, domain.CategoryBackup) ||
+		strings.EqualFold(rec.RefType, BackupRefType) ||
+		strings.HasPrefix(rec.R2Key, domain.CategoryBackup+"/")
+}
+
+// BackupRefType is the ref_type the Store service tags database dumps with.
+const BackupRefType = "store_backup"
+
 func (s *Service) fileURL(r2Key string) string {
+	// Backups must only be fetched through the owner-checked presign endpoint.
+	if strings.HasPrefix(r2Key, domain.CategoryBackup+"/") {
+		return ""
+	}
 	pub := s.r2.PublicURL(r2Key)
 	if pub != "" {
 		return pub
@@ -374,10 +400,14 @@ func (s *Service) fileURL(r2Key string) string {
 	return ""
 }
 
-func (s *Service) buildFilters(category, refType, refID, search string) (string, []any) {
+func (s *Service) buildFilters(category, refType, refID, search string, includeBackups bool) (string, []any) {
 	var conditions []string
 	var args []any
 	idx := 1
+
+	if !includeBackups {
+		conditions = append(conditions, backupExclusionSQL)
+	}
 
 	if category != "" {
 		conditions = append(conditions, fmt.Sprintf("category = $%d", idx))

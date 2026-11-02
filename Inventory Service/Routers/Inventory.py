@@ -1729,11 +1729,13 @@ def add_movement(
     runtime_state.movements.append(movement)
     return movement
 
-def stock_total_for_drug(drug_id: str) -> int:
+def stock_total_for_drug(drug_id: str, as_of: date | None = None) -> int:
+    # Chỉ tính tồn có thể bán: lô hết hạn / đã đánh dấu hết hạn không được cộng vào.
+    day = as_of or date.today()
     return sum(
         batch["qty_remaining"]
         for batch in runtime_state.batches.values()
-        if batch["drug_id"] == drug_id and not batch["cancelled"]
+        if batch["drug_id"] == drug_id and batch_status(batch, day) == BatchStatus.ACTIVE
     )
 
 
@@ -2124,7 +2126,7 @@ def stock_drug_item_to_view(
         "drug_group": str(drug.get("group") or ""),
         "base_unit": str(drug.get("base_unit") or ""),
         "reorder_level": _to_positive_int(drug.get("reorder_level"), default=0),
-        "total_qty": stock_total_for_drug(drug_id),
+        "total_qty": stock_total_for_drug(drug_id, day),
         "nearest_expiry": nearest_expiry,
         "days_to_nearest_expiry": (nearest_expiry - day).days if nearest_expiry else None,
         "active_batch_count": len(active_batches),
@@ -2667,7 +2669,7 @@ async def get_stock_summary(token: str | None = Depends(optional_oauth2_scheme))
                 "drug_group": drug["group"],
                 "base_unit": drug["base_unit"],
                 "reorder_level": drug["reorder_level"],
-                "total_qty": stock_total_for_drug(drug["id"]),
+                "total_qty": stock_total_for_drug(drug["id"], day),
                 "nearest_expiry": nearest,
                 "days_to_nearest_expiry": (nearest - day).days if nearest else None,
                 "status": stock_status_for_drug(
@@ -2772,7 +2774,7 @@ async def get_stock_detail(drug_id: str, token: str | None = Depends(optional_oa
     return {
         "drug": drug,
         "summary": {
-            "total_qty": stock_total_for_drug(drug["id"]),
+            "total_qty": stock_total_for_drug(drug["id"], day),
             "status": stock_status_for_drug(
                 drug["id"],
                 day,
@@ -3763,7 +3765,7 @@ async def inventory_alerts(
     near_date: list[dict[str, Any]] = []
 
     for drug in runtime_state.drugs.values():
-        total = stock_total_for_drug(drug["id"])
+        total = stock_total_for_drug(drug["id"], day)
         threshold = (
             low_stock_threshold
             if low_stock_threshold is not None
@@ -3785,7 +3787,7 @@ async def inventory_alerts(
             continue
         days = (batch["exp_date"] - day).days
         entry = {"batch": batch_to_view(batch, day), "days_to_expiry": days}
-        if days < 0:
+        if batch_status(batch, day) == BatchStatus.EXPIRED:
             expired.append(entry)
         elif days < expiry_warning_days:
             expiring_soon.append(entry)

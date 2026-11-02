@@ -1,3 +1,4 @@
+import asyncio
 import math
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -7,7 +8,7 @@ from sqlalchemy import Select, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .core.config import get_settings
-from .core.login_guard import clear_failures, is_locked, record_failure
+from .core.login_guard import clear_failures, is_locked, record_failure, throttle_delay_seconds
 from .core.security import (
     create_access_token,
     create_refresh_token,
@@ -177,13 +178,17 @@ async def login_user_with_metadata(
     ip_address: str | None,
     user_agent: str | None,
 ) -> tuple[User, str, str]:
-    remaining_lock_seconds = await is_locked(payload.username)
+    remaining_lock_seconds = await is_locked(payload.username, ip_address)
     if remaining_lock_seconds is not None:
         raise build_account_locked_exception(remaining_lock_seconds)
 
+    delay = await throttle_delay_seconds(payload.username)
+    if delay > 0:
+        await asyncio.sleep(delay)
+
     user = await _get_user_by_username(payload.username, db)
     if user is None or not verify_password(payload.password, user.hashed_password):
-        await record_failure(payload.username)
+        await record_failure(payload.username, ip_address)
         await _record_login_history(
             db=db,
             user_id=None,
@@ -210,7 +215,7 @@ async def login_user_with_metadata(
             detail="User is locked",
         )
 
-    await clear_failures(user.username)
+    await clear_failures(user.username, ip_address)
 
     user.last_login_at = datetime.now(timezone.utc)
     access_token, refresh_token = _token_pair_for_user(user)
