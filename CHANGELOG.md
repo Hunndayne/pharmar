@@ -19,6 +19,7 @@
 - **Tồn có thể bán không tính lô hết hạn** (POS, trang tồn kho, cảnh báo sắp hết hàng); lô bị đánh dấu hết hạn thủ công hiện đúng trong cảnh báo "đã hết hạn".
 - **Sổ thu hồi và danh sách kiểm kê** không còn lỗi 500 sau khi restart; phiếu kiểm kê hiện đúng mã thuốc.
 - **Dashboard hôm nay** không trừ hóa đơn hủy hai lần; thống kê thu ngân dùng phiếu trả thật.
+- `GET /sale/returns` tải sẵn dòng hàng (trước đây lỗi 500 MissingGreenlet khi có dữ liệu; lộ ra vì Report mới gọi endpoint này).
 - **Báo cáo doanh thu:** tiền đã thu không còn gồm tiền thối; trừ phiếu trả đã duyệt (theo ngày duyệt, có `return_count`, `returns_amount`); số hóa đơn hủy đếm đúng trong khoảng ngày; phân bổ theo phương thức thanh toán dùng từng khoản thanh toán thật (tiền mặt/chuyển khoản/nợ) thay vì gán cả hóa đơn vào một phương thức.
 
 ### Bảo mật
