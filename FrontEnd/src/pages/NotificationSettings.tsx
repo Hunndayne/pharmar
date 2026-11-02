@@ -5,6 +5,7 @@ import {
   type SmtpConfigPayload,
 } from '../api/notificationService'
 import { useAuth } from '../auth/AuthContext'
+import { SkeletonTable, SkeletonText } from '../components/Skeleton'
 
 type SmtpForm = SmtpConfigPayload
 
@@ -134,7 +135,7 @@ export function NotificationSettings() {
         <h2 className="text-lg font-semibold text-ink-900">Quy tắc cảnh báo</h2>
         <p className="mt-1 text-sm text-ink-500">Bật/tắt từng loại thông báo và kênh gửi</p>
 
-        {alertLoading && <p className="mt-4 text-sm text-ink-400">Đang tải...</p>}
+        {alertLoading && alertRules.length === 0 && <SkeletonTable rows={4} cols={4} className="mt-4" />}
         {alertError && <p className="mt-4 text-sm text-coral-500">{alertError}</p>}
 
         {/* Mobile cards */}
@@ -237,7 +238,7 @@ export function NotificationSettings() {
             Cấu hình máy chủ SMTP để gửi email thông báo. Hỗ trợ Gmail, Outlook, v.v.
           </p>
 
-          {smtpLoading && <p className="mt-4 text-sm text-ink-400">Đang tải...</p>}
+          {smtpLoading && <SkeletonText lines={2} className="mt-4" />}
 
           {smtpError && <p className="mt-3 text-sm text-coral-500">{smtpError}</p>}
           {smtpSuccess && <p className="mt-3 text-sm text-green-600">{smtpSuccess}</p>}

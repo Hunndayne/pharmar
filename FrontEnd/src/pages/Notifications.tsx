@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { notificationApi, type NotificationRecord } from '../api/notificationService'
 import { useAuth } from '../auth/AuthContext'
 import { formatDateTimeInAppTimeZone as formatDateTime } from '../utils/timezone'
+import { SkeletonCardList } from '../components/Skeleton'
 
 type CategoryFilter = 'all' | 'sale' | 'low_stock' | 'expiry_warning' | 'system' | 'general'
 type ReadFilter = 'all' | 'unread' | 'read'
@@ -159,7 +160,7 @@ export function Notifications() {
       </div>
 
       {error && <p className="text-sm text-coral-500">{error}</p>}
-      {loading && <p className="text-sm text-ink-500">Đang tải...</p>}
+      {loading && rows.length === 0 && <SkeletonCardList count={4} lines={2} />}
 
       {/* Notification list */}
       <div className="space-y-2">

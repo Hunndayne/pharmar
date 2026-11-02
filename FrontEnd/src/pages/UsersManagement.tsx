@@ -8,6 +8,7 @@ import {
 } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { formatDateTimeInAppTimeZone as formatDateTime } from '../utils/timezone'
+import { SkeletonStatValue, SkeletonTableRows } from '../components/Skeleton'
 
 type ActiveFilter = 'all' | 'active' | 'inactive'
 type HistorySuccessFilter = 'all' | 'success' | 'failed'
@@ -322,15 +323,15 @@ export function UsersManagement() {
       <section className="grid gap-4 sm:grid-cols-3">
         <div className="glass-card rounded-3xl p-5">
           <p className="text-xs text-ink-600">Tổng tài khoản</p>
-          <p className="mt-2 text-2xl font-semibold">{summary.total}</p>
+          <p className="mt-2 text-2xl font-semibold">{loading && rows.length === 0 ? <SkeletonStatValue /> : summary.total}</p>
         </div>
         <div className="glass-card rounded-3xl p-5">
           <p className="text-xs text-ink-600">Đang hoạt động</p>
-          <p className="mt-2 text-2xl font-semibold">{summary.active}</p>
+          <p className="mt-2 text-2xl font-semibold">{loading && rows.length === 0 ? <SkeletonStatValue /> : summary.active}</p>
         </div>
         <div className="glass-card rounded-3xl p-5">
           <p className="text-xs text-ink-600">Đã khóa</p>
-          <p className="mt-2 text-2xl font-semibold">{summary.inactive}</p>
+          <p className="mt-2 text-2xl font-semibold">{loading && rows.length === 0 ? <SkeletonStatValue /> : summary.inactive}</p>
         </div>
       </section>
 
@@ -383,11 +384,7 @@ export function UsersManagement() {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/70">
-              {loading ? (
-                <tr>
-                  <td className="px-6 py-6 text-sm text-ink-600" colSpan={7}>Đang tải dữ liệu...</td>
-                </tr>
-              ) : null}
+              {loading ? <SkeletonTableRows rows={6} cols={7} /> : null}
               {!loading && rows.length === 0 ? (
                 <tr>
                   <td className="px-6 py-6 text-sm text-ink-600" colSpan={7}>Không có tài khoản phù hợp.</td>
@@ -590,11 +587,7 @@ export function UsersManagement() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-ink-900/5">
-                    {historyLoading ? (
-                      <tr>
-                        <td className="px-4 py-4 text-ink-600" colSpan={6}>Đang tải lịch sử...</td>
-                      </tr>
-                    ) : null}
+                    {historyLoading ? <SkeletonTableRows rows={4} cols={6} /> : null}
                     {!historyLoading && historyRows.length === 0 ? (
                       <tr>
                         <td className="px-4 py-4 text-ink-600" colSpan={6}>Không có dữ liệu.</td>

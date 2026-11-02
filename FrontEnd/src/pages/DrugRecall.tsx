@@ -8,6 +8,7 @@ import {
   getMonthStartDateKeyInTimeZone,
   readStoredAppTimeZone,
 } from '../utils/timezone'
+import { SkeletonTableRows } from '../components/Skeleton'
 
 type DateMode = 'all' | 'range' | 'today'
 
@@ -372,10 +373,11 @@ export function DrugRecall() {
               </tr>
             </thead>
             <tbody>
-              {rows.length === 0 && (
+              {rows.length === 0 && loading ? <SkeletonTableRows rows={6} cols={16} /> : null}
+              {rows.length === 0 && !loading && (
                 <tr>
                   <td colSpan={16} className="px-4 py-8 text-center text-ink-400">
-                    {loading ? 'Đang tải...' : 'Không có dữ liệu'}
+                    Không có dữ liệu
                   </td>
                 </tr>
               )}

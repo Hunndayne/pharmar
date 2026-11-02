@@ -10,6 +10,7 @@ import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { exportToExcel, exportInvoiceExcel } from '../utils/exportFile'
 import { formatDateTimeInAppTimeZone as formatDateTime } from '../utils/timezone'
+import { SkeletonCardList, SkeletonStatCaption, SkeletonStatValue, SkeletonTableRows } from '../components/Skeleton'
 
 type InvoiceStatusFilter = 'all' | 'completed' | 'cancelled' | 'returned' | 'pending'
 type ReturnCondition = 'good' | 'damaged' | 'expired'
@@ -800,20 +801,20 @@ export function SalesHistory() {
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <div className="glass-card rounded-3xl p-5">
           <p className="text-xs uppercase tracking-[0.25em] text-ink-600">Tổng hóa đơn</p>
-          <p className="mt-3 text-2xl font-semibold text-ink-900">{summary.total}</p>
+          <p className="mt-3 text-2xl font-semibold text-ink-900">{loading && rows.length === 0 ? <SkeletonStatValue /> : summary.total}</p>
         </div>
         <div className="glass-card rounded-3xl p-5">
           <p className="text-xs uppercase tracking-[0.25em] text-ink-600">Hoàn thành (trang)</p>
-          <p className="mt-3 text-2xl font-semibold text-brand-600">{summary.completedOnPage}</p>
+          <p className="mt-3 text-2xl font-semibold text-brand-600">{loading && rows.length === 0 ? <SkeletonStatValue /> : summary.completedOnPage}</p>
         </div>
         <div className="glass-card rounded-3xl p-5">
           <p className="text-xs uppercase tracking-[0.25em] text-ink-600">Đã hủy (trang)</p>
-          <p className="mt-3 text-2xl font-semibold text-coral-500">{summary.cancelledOnPage}</p>
+          <p className="mt-3 text-2xl font-semibold text-coral-500">{loading && rows.length === 0 ? <SkeletonStatValue /> : summary.cancelledOnPage}</p>
         </div>
         <div className="glass-card rounded-3xl p-5">
           <p className="text-xs uppercase tracking-[0.25em] text-ink-600">Đã trả hàng (trang)</p>
-          <p className="mt-3 text-xl font-semibold text-sun-600">{formatCurrency(summary.debtTotalOnPage)}</p>
-          <p className="mt-1 text-xs text-ink-600">{summary.debtInvoicesOnPage} hóa đơn</p>
+          <p className="mt-3 text-xl font-semibold text-sun-600">{loading && rows.length === 0 ? <SkeletonStatValue className="my-0" /> : formatCurrency(summary.debtTotalOnPage)}</p>
+          <p className="mt-1 text-xs text-ink-600">{loading && rows.length === 0 ? <SkeletonStatCaption /> : `${summary.debtInvoicesOnPage} hóa đơn`}</p>
         </div>
       </section>
 
@@ -921,9 +922,7 @@ export function SalesHistory() {
 
       <section className="overflow-hidden rounded-3xl border border-white/60 bg-white/70">
         <div className="space-y-3 p-3 md:hidden">
-          {loading ? (
-            <p className="rounded-2xl bg-white px-4 py-3 text-sm text-ink-600">Äang táº£i dá»¯ liá»‡u...</p>
-          ) : null}
+          {loading ? <SkeletonCardList count={4} /> : null}
           {!loading && rows.length === 0 ? (
             <p className="rounded-2xl bg-white px-4 py-3 text-sm text-ink-600">KhÃ´ng cÃ³ hÃ³a Ä‘Æ¡n phÃ¹ há»£p bá»™ lá»c.</p>
           ) : null}
@@ -1053,13 +1052,7 @@ export function SalesHistory() {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/70">
-              {loading ? (
-                <tr>
-                  <td className="px-6 py-6 text-sm text-ink-600" colSpan={9}>
-                    Đang tải dữ liệu...
-                  </td>
-                </tr>
-              ) : null}
+              {loading ? <SkeletonTableRows rows={6} cols={9} /> : null}
 
               {!loading && rows.length === 0 ? (
                 <tr>

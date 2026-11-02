@@ -4,6 +4,7 @@ import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { exportToExcel } from '../utils/exportFile'
 import { formatDateTimeInAppTimeZone as formatDateTime } from '../utils/timezone'
+import { SkeletonTable } from '../components/Skeleton'
 
 type View = 'list' | 'detail'
 
@@ -396,7 +397,7 @@ export function StockAudit() {
           </button>
         </div>
 
-        {loading ? <p className="text-sm text-ink-600">Đang tải...</p> : null}
+        {loading ? <SkeletonTable rows={5} cols={8} /> : null}
 
         {!loading && audits.length === 0 ? (
           <p className="text-sm text-ink-600">Chưa có phiếu kiểm kê nào.</p>

@@ -9,6 +9,7 @@ import { storeApi, type StoreInfo } from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { resolveAssetUrl } from '../utils/assets'
 import { formatDateTimeInAppTimeZone as formatDateTime } from '../utils/timezone'
+import { SkeletonCardList } from '../components/Skeleton'
 
 type SearchMode = 'code' | 'phone'
 
@@ -257,7 +258,7 @@ export function PublicInvoiceLookup() {
           )}
 
           {error ? <p className="mt-3 text-sm text-coral-500">{error}</p> : null}
-          {loading ? <p className="mt-3 text-sm text-ink-600">Đang tra cứu...</p> : null}
+          {loading ? <SkeletonCardList count={2} lines={2} className="mt-4" /> : null}
         </section>
 
         {mode === 'phone' && invoiceList.length ? (

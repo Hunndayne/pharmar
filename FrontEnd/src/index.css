@@ -70,3 +70,37 @@ select {
   inset: 0;
   z-index: 4;
 }
+
+/* Skeleton shimmer: dải sáng quét ngang qua khối placeholder khi đang tải dữ liệu. */
+@keyframes skeleton-shimmer {
+  0% {
+    transform: translateX(-120%) skewX(-12deg);
+  }
+  100% {
+    transform: translateX(320%) skewX(-12deg);
+  }
+}
+
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.skeleton-shimmer {
+  animation: skeleton-shimmer 1.6s ease-in-out infinite;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shimmer {
+    width: 100%;
+    background: rgba(255, 255, 255, 0.55);
+    animation: skeleton-pulse 2s ease-in-out infinite;
+    will-change: opacity;
+  }
+}

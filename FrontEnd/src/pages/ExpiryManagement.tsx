@@ -7,6 +7,7 @@ import {
   formatDateInAppTimeZone as formatDate,
   formatDateTimeInAppTimeZone,
 } from '../utils/timezone'
+import { SkeletonStatValue, SkeletonTable } from '../components/Skeleton'
 
 type FilterGroup = 'all' | 'expired' | 'expiring_soon' | 'warning' | 'near_date'
 type ActiveTab = 'alerts' | 'disposal_log'
@@ -224,6 +225,18 @@ export function ExpiryManagement() {
       {activeTab === 'alerts' ? (
         <>
           {/* Stat cards - 5 tiers */}
+          {!alerts && loading ? (
+            <section className="grid gap-3 grid-cols-2 xl:grid-cols-5">
+              {['Đã hết hạn', 'Sắp hết hạn', 'Cảnh báo', 'Cận date', 'Tất cả'].map((label) => (
+                <div key={label} className="glass-card rounded-3xl p-5 text-left">
+                  <p className="text-xs uppercase tracking-[0.25em] text-ink-600">{label}</p>
+                  <p className="mt-3 text-2xl font-semibold">
+                    <SkeletonStatValue className="my-0.5" />
+                  </p>
+                </div>
+              ))}
+            </section>
+          ) : null}
           {alerts ? (
             <section className="grid gap-3 grid-cols-2 xl:grid-cols-5">
               <button
@@ -285,7 +298,7 @@ export function ExpiryManagement() {
               />
             </div>
 
-            {loading ? <p className="text-sm text-ink-600">Đang tải...</p> : null}
+            {loading ? <SkeletonTable rows={6} cols={9} /> : null}
 
             {!loading && filteredEntries.length === 0 ? (
               <p className="text-sm text-ink-600">
@@ -354,7 +367,7 @@ export function ExpiryManagement() {
             <p className="text-xs text-ink-600 mt-1">Lưu trữ theo tiêu chuẩn GPP - Bộ Y tế Việt Nam</p>
           </div>
 
-          {loadingLog ? <p className="text-sm text-ink-600">Đang tải...</p> : null}
+          {loadingLog ? <SkeletonTable rows={6} cols={10} /> : null}
 
           {!loadingLog && disposalLog !== null && disposalLog.length === 0 ? (
             <p className="text-sm text-ink-600">Chưa có bản ghi tiêu hủy nào.</p>

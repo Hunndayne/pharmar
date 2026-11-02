@@ -8,6 +8,7 @@ import {
 } from '../api/catalogService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
+import { SkeletonTable } from '../components/Skeleton'
 
 type ModalMode = 'create' | 'edit'
 
@@ -314,7 +315,9 @@ export function PrescriptionTemplates() {
 
       {/* List — card view on mobile, table on desktop */}
       {loading && (
-        <p className="py-6 text-center text-sm text-ink-600">Đang tải...</p>
+        <section className="overflow-hidden rounded-3xl border border-white/60 bg-white/70">
+          <SkeletonTable breakpoint="md" rows={5} cols={5} />
+        </section>
       )}
       {!loading && rows.length === 0 && (
         <p className="py-6 text-center text-sm text-ink-600">Không có đơn thuốc mẫu.</p>

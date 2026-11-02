@@ -3,6 +3,7 @@ import { ApiError } from '../api/usersService'
 import { systemApi, type SystemHealthResponse, type SystemHealthService } from '../api/systemService'
 import { formatDateTimeInAppTimeZone as formatDateTime } from '../utils/timezone'
 
+import { SkeletonTableRows } from '../components/Skeleton'
 const statusLabel: Record<string, string> = {
   up: 'Hoạt động',
   degraded: 'Cảnh báo',
@@ -108,11 +109,7 @@ export function SystemHealth() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/70">
-                {loading && !health ? (
-                  <tr>
-                    <td colSpan={6} className="px-6 py-6 text-ink-600">Đang tải trạng thái...</td>
-                  </tr>
-                ) : null}
+                {loading && !health ? <SkeletonTableRows rows={5} cols={6} /> : null}
                 {!loading && health?.services?.length ? (
                   health.services.map((service: SystemHealthService) => (
                     <tr key={service.name} className="hover:bg-white/80">

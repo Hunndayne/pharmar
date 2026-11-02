@@ -9,6 +9,7 @@ import {
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { formatDateTimeInAppTimeZone as formatDateTime } from '../utils/timezone'
+import { SkeletonStatValue, SkeletonTable } from '../components/Skeleton'
 
 type UrgencyFilter = 'all' | RestockUrgency
 
@@ -153,21 +154,21 @@ export function RestockSuggestions() {
         <article className="glass-card rounded-3xl p-5">
           <p className="text-xs uppercase tracking-[0.24em] text-ink-600">Cần hành động</p>
           <p className="mt-3 text-3xl font-semibold text-ink-900">
-            {data ? formatQuantity(data.total_actionable) : '-'}
+            {data ? formatQuantity(data.total_actionable) : loading ? <SkeletonStatValue className="my-1" /> : '-'}
           </p>
           <p className="mt-2 text-sm text-ink-600">Tổng số mặt hàng đang cần bổ sung theo cấu hình hiện tại</p>
         </article>
         <article className="glass-card rounded-3xl bg-coral-500/10 p-5">
           <p className="text-xs uppercase tracking-[0.24em] text-coral-500">Khẩn cấp</p>
           <p className="mt-3 text-3xl font-semibold text-coral-500">
-            {data ? formatQuantity(data.critical_count) : '-'}
+            {data ? formatQuantity(data.critical_count) : loading ? <SkeletonStatValue className="my-1" /> : '-'}
           </p>
           <p className="mt-2 text-sm text-coral-500">Nguy cơ hụt hàng ngay trong ngắn hạn</p>
         </article>
         <article className="glass-card rounded-3xl bg-amber-500/10 p-5">
           <p className="text-xs uppercase tracking-[0.24em] text-amber-700">Ưu tiên</p>
           <p className="mt-3 text-3xl font-semibold text-amber-700">
-            {data ? formatQuantity(data.high_count) : '-'}
+            {data ? formatQuantity(data.high_count) : loading ? <SkeletonStatValue className="my-1" /> : '-'}
           </p>
           <p className="mt-2 text-sm text-amber-700">Cần bổ sung sớm để giữ tồn an toàn</p>
         </article>
@@ -222,8 +223,10 @@ export function RestockSuggestions() {
         </div>
       </section>
 
-      {loading ? (
-        <p className="rounded-2xl bg-white/80 px-4 py-4 text-sm text-ink-600">Đang tải danh sách gợi ý nhập hàng...</p>
+      {loading && !items.length ? (
+        <div className="overflow-hidden rounded-3xl bg-white/80">
+          <SkeletonTable rows={6} cols={9} breakpoint="lg" />
+        </div>
       ) : null}
 
       {error ? (
