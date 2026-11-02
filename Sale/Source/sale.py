@@ -69,6 +69,33 @@ async def get_store_timezone(token: str | None = None) -> ZoneInfo:
     return resolve_store_timezone(settings_map.get("system.timezone") if isinstance(settings_map, dict) else None)
 
 
+def local_today(time_zone: ZoneInfo | None = None) -> date:
+    """Current calendar date in the store timezone (containers run in UTC)."""
+    return now_utc().astimezone(time_zone or DEFAULT_STORE_TIMEZONE).date()
+
+
+_store_timezone_cache: dict[str, Any] = {"value": None, "fetched_at": None}
+
+
+async def get_store_timezone_cached(ttl_seconds: int = 300) -> ZoneInfo:
+    """Store timezone with a short in-process cache; never raises.
+
+    On any failure returns the last known value or DEFAULT_STORE_TIMEZONE.
+    """
+    cached: ZoneInfo | None = _store_timezone_cache["value"]
+    fetched_at: datetime | None = _store_timezone_cache["fetched_at"]
+    now = now_utc()
+    if cached is not None and fetched_at is not None and (now - fetched_at).total_seconds() < ttl_seconds:
+        return cached
+    try:
+        value = await get_store_timezone()
+    except Exception:
+        return cached or DEFAULT_STORE_TIMEZONE
+    _store_timezone_cache["value"] = value
+    _store_timezone_cache["fetched_at"] = now
+    return value
+
+
 def build_utc_range_for_local_dates(
     date_from: date | None,
     date_to: date | None,
@@ -140,7 +167,7 @@ async def generate_next_daily_code(
     target_date: date | None = None,
     width: int = 3,
 ) -> str:
-    day = target_date or date.today()
+    day = target_date or local_today(await get_store_timezone_cached())
     prefix_day = f"{prefix}{day.strftime('%Y%m%d')}"
     rows = await db.scalars(select(code_column).where(code_column.like(f"{prefix_day}%")))
 
@@ -547,8 +574,8 @@ def remaining_points_after_returns(
     return redeem_left, earn_left
 
 
-def build_print_datetime(value: datetime) -> str:
-    return value.astimezone(timezone.utc).strftime("%d/%m/%Y %H:%M")
+def build_print_datetime(value: datetime, time_zone: ZoneInfo | None = None) -> str:
+    return value.astimezone(time_zone or DEFAULT_STORE_TIMEZONE).strftime("%d/%m/%Y %H:%M")
 
 
 def safe_uuid(value: Any) -> UUID | None:

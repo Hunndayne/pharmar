@@ -1,6 +1,6 @@
 """Scheduled daily restock suggestion email.
 
-Runs once per day at RESTOCK_EMAIL_TIME (HH:MM local time).
+Runs once per day at RESTOCK_EMAIL_TIME (HH:MM in the store timezone, STORE_TIMEZONE).
 Fetches restock items from Report Service using a short-lived service JWT,
 then sends an email notification if actionable items exist.
 """
@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import logging
+from zoneinfo import ZoneInfo
 
 import httpx
 from sqlalchemy import select
@@ -53,10 +54,21 @@ def _create_service_token() -> str:
 
 # ── scheduling ────────────────────────────────────────────────────────────────
 
-def _seconds_until_next(time_str: str) -> float:
-    """Seconds until the next occurrence of HH:MM in server local time."""
+def _store_timezone() -> ZoneInfo:
+    try:
+        return ZoneInfo((settings.STORE_TIMEZONE or "").strip())
+    except Exception:
+        return ZoneInfo("Asia/Ho_Chi_Minh")
+
+
+def _seconds_until_next(time_str: str, now: datetime.datetime | None = None) -> float:
+    """Seconds until the next occurrence of HH:MM in the store timezone (STORE_TIMEZONE).
+
+    `now` may be injected (tests); it is converted to the store timezone.
+    """
     h, m = (int(x) for x in time_str.strip().split(":"))
-    now = datetime.datetime.now()
+    tz = _store_timezone()
+    now = now.astimezone(tz) if now is not None else datetime.datetime.now(tz)
     target = now.replace(hour=h, minute=m, second=0, microsecond=0)
     if target <= now:
         target += datetime.timedelta(days=1)

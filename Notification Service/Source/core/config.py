@@ -55,7 +55,9 @@ class Settings(BaseSettings):
     # Restock email scheduler
     REPORT_SERVICE_URL: str = "http://report-service:8001"
     RESTOCK_EMAIL_ENABLED: bool = True
-    RESTOCK_EMAIL_TIME: str = "07:00"  # HH:MM local time of day
+    RESTOCK_EMAIL_TIME: str = "07:00"  # HH:MM in STORE_TIMEZONE
+    # Store timezone (containers run in UTC); used for scheduling.
+    STORE_TIMEZONE: str = "Asia/Ho_Chi_Minh"
 
     FRONTEND_URL: str = "https://pharmar.hunn.io.vn"
 
