@@ -30,6 +30,7 @@
 - **Store:** sàn `backup.max_files` ≥ 48; backup thất bại không đánh dấu "đã backup" (sẽ thử lại) và log `BACKUP_FAILED`; restore chạy `psql --no-psqlrc`, từ chối file có meta-command (`\!`) hoặc `COPY … PROGRAM`.
 
 ### Cải thiện giao diện
+- **Hiệu ứng tải trang:** mọi trang hiện khung xương (skeleton) có dải sáng quét ngang khi đang tải lần đầu — thẻ số liệu, biểu đồ, danh sách và bảng (cả dạng card trên mobile) — thay cho chữ "Đang tải…". Tôn trọng cài đặt giảm chuyển động của hệ điều hành. (bổ sung 2026-11-03, không đổi version)
 - **Phiên đăng nhập tự làm mới:** gặp 401 thì tự refresh token một lần rồi gửi lại, không còn chết sau 30 phút phải F5.
 - **Giỏ hàng POS giữ lại** khi chuyển trang/tải lại (lưu theo tài khoản); mỗi đơn có `client_request_id` gửi kèm khi thanh toán (chuẩn bị chống tạo trùng).
 - Tính lại tự động phân bổ lô không còn ghi đè thao tác vừa nhập; ô quét mã xóa ngay khi Enter và chọn lại khi lỗi.

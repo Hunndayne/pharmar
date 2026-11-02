@@ -18,6 +18,7 @@ import { useAuth } from '../auth/AuthContext'
 import { readAuthStorage } from '../auth/authStorage'
 import { readLocalDraft, removeLocalDraft, writeLocalDraft } from '../utils/localDraft'
 import { formatDateTimeInAppTimeZone } from '../utils/timezone'
+import { SkeletonText } from '../components/Skeleton'
 
 type UnitRole = 'single' | 'import' | 'intermediate' | 'retail'
 type ServiceFeeMode = 'split' | 'separate'
@@ -3867,7 +3868,7 @@ export function Pos() {
             </div>
           )}
 
-          {loading ? <p className="mt-3 text-sm text-ink-600">Đang tải danh mục thuốc...</p> : null}
+          {loading ? <SkeletonText lines={2} className="mt-3" /> : null}
           {loadError ? <p className="mt-3 text-sm text-coral-500">{loadError}</p> : null}
           {!loading && !loadError && !availableDrugs.length ? (
             <p className="mt-3 text-sm text-amber-700">

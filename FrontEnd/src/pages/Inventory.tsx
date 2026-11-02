@@ -15,6 +15,7 @@ import { useAuth } from '../auth/AuthContext'
 import { downloadCsv } from '../utils/csv'
 import { exportToExcel } from '../utils/exportFile'
 import { formatDateInAppTimeZone as formatDate } from '../utils/timezone'
+import { SkeletonStatValue, SkeletonTable } from '../components/Skeleton'
 
 type UnitConfig = {
   importUnit: { name: string; ratio: number } | null
@@ -385,7 +386,7 @@ export function Inventory() {
         ] as const).map(([value, label, count, tone]) => (
           <button key={value} type="button" onClick={() => { setQuickFilter(value); setPage(1) }} className={`glass-card min-w-0 rounded-2xl p-4 text-left transition sm:rounded-3xl sm:p-5 ${quickFilter === value ? 'ring-2 ring-brand-500/50' : 'hover:ring-1 hover:ring-ink-900/10'}`}>
             <p className="text-[10px] uppercase tracking-[0.2em] text-ink-600 sm:text-xs sm:tracking-[0.24em]">{label}</p>
-            <p className={`mt-2 text-2xl font-semibold sm:text-3xl ${tone}`}>{count.toLocaleString('vi-VN')}</p>
+            <p className={`mt-2 text-2xl font-semibold sm:text-3xl ${tone}`}>{loading && stockRows.length === 0 ? <SkeletonStatValue className="my-0" /> : count.toLocaleString('vi-VN')}</p>
           </button>
         ))}
       </section>
@@ -425,7 +426,7 @@ export function Inventory() {
       </section>
 
       <section className="space-y-3">
-        {loading && stockRows.length === 0 ? <div className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-4 text-sm text-ink-600">Đang tải dữ liệu tồn kho...</div> : null}
+        {loading && stockRows.length === 0 ? <div className="glass-card overflow-hidden rounded-3xl"><SkeletonTable rows={6} cols={6} /></div> : null}
         {!loading && stockRows.length === 0 ? <div className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-4 text-sm text-ink-600">Không có dữ liệu phù hợp bộ lọc.</div> : null}
 
         {stockRows.length > 0 ? (

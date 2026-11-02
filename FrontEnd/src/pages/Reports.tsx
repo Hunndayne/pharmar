@@ -22,6 +22,7 @@ import { downloadCsv } from '../utils/csv'
 import { exportToExcel, exportToPdf } from '../utils/exportFile'
 import { formatDateInTimeZone } from '../utils/timezone'
 
+import { SkeletonChart, SkeletonKpi, SkeletonTable } from '../components/Skeleton'
 const EXPENSE_CATEGORIES = [
   { value: 'electricity', label: 'Tiền điện' },
   { value: 'water', label: 'Tiền nước' },
@@ -710,7 +711,19 @@ export function Reports() {
         </section>
       ) : null}
 
-      {loading ? <p className="text-sm text-ink-600">Đang tải dữ liệu báo cáo...</p> : null}
+      {loading && summaryCards.length === 0 ? (
+        <div className="space-y-4">
+          <div className={`grid gap-4 sm:grid-cols-2 ${tab === 'profit' ? 'xl:grid-cols-3' : 'xl:grid-cols-4'}`}>
+            {Array.from({ length: tab === 'profit' ? 3 : 4 }, (_, index) => (
+              <SkeletonKpi key={index} />
+            ))}
+          </div>
+          <div className="glass-card rounded-3xl p-6">
+            <SkeletonChart className="h-56" />
+          </div>
+          <SkeletonTable rows={5} cols={5} className="glass-card overflow-hidden rounded-3xl" />
+        </div>
+      ) : null}
       {error ? <p className="text-sm text-coral-500">{error}</p> : null}
 
       {tab === 'revenue' && revenueData ? (

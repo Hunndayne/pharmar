@@ -10,6 +10,7 @@ import {
 import { catalogApi, type DrugGroupItem } from '../api/catalogService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
+import { SkeletonCardList } from '../components/Skeleton'
 
 type CategoryFormState = {
   id?: string
@@ -419,7 +420,7 @@ export function StoreDrugGroups() {
               </button>
             ) : null}
           </div>
-          {loading ? <p className="text-sm text-ink-600">Đang tải...</p> : null}
+          {loading ? <SkeletonCardList count={4} lines={2} /> : null}
           {!loading && rows.length === 0 ? (
             <p className="text-sm text-ink-600">Chưa có loại hàng.</p>
           ) : null}

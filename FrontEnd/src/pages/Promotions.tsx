@@ -10,6 +10,7 @@ import { useAuth } from '../auth/AuthContext'
 import { readLocalDraft, removeLocalDraft, writeLocalDraft } from '../utils/localDraft'
 import { formatDateInAppTimeZone as formatDate } from '../utils/timezone'
 
+import { SkeletonCardList, SkeletonStatValue, SkeletonTableRows } from '../components/Skeleton'
 type StatusFilter = 'all' | 'active' | 'inactive'
 type AutoApplyFilter = 'all' | 'auto' | 'manual'
 type ModalMode = 'create' | 'edit'
@@ -388,15 +389,15 @@ export function Promotions() {
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <div className="glass-card rounded-3xl p-5">
           <p className="text-xs text-ink-600">Tổng số chương trình</p>
-          <p className="mt-2 text-2xl font-semibold">{summary.total}</p>
+          <p className="mt-2 text-2xl font-semibold">{loading && rows.length === 0 ? <SkeletonStatValue /> : summary.total}</p>
         </div>
         <div className="glass-card rounded-3xl p-5">
           <p className="text-xs text-ink-600">Đang bật (trang này)</p>
-          <p className="mt-2 text-2xl font-semibold text-brand-600">{summary.activeOnPage}</p>
+          <p className="mt-2 text-2xl font-semibold text-brand-600">{loading && rows.length === 0 ? <SkeletonStatValue /> : summary.activeOnPage}</p>
         </div>
         <div className="glass-card rounded-3xl p-5">
           <p className="text-xs text-ink-600">Tự áp dụng (trang này)</p>
-          <p className="mt-2 text-2xl font-semibold text-ink-900">{summary.autoApplyOnPage}</p>
+          <p className="mt-2 text-2xl font-semibold text-ink-900">{loading && rows.length === 0 ? <SkeletonStatValue /> : summary.autoApplyOnPage}</p>
         </div>
       </section>
 
@@ -460,11 +461,7 @@ export function Promotions() {
 
       <section className="overflow-hidden rounded-3xl border border-white/60 bg-white/70">
         <div className="space-y-3 p-4 md:hidden">
-          {loading ? (
-            <div className="rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm text-ink-600">
-              Đang tải dữ liệu...
-            </div>
-          ) : null}
+          {loading ? <SkeletonCardList count={4} /> : null}
 
           {!loading && rows.length === 0 ? (
             <div className="rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm text-ink-600">
@@ -544,13 +541,7 @@ export function Promotions() {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/70">
-              {loading ? (
-                <tr>
-                  <td className="px-6 py-6 text-sm text-ink-600" colSpan={7}>
-                    Đang tải dữ liệu...
-                  </td>
-                </tr>
-              ) : null}
+              {loading ? <SkeletonTableRows rows={6} cols={7} /> : null}
 
               {!loading && rows.length === 0 ? (
                 <tr>

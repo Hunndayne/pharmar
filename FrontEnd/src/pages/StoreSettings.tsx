@@ -25,6 +25,7 @@ import {
   readStoredAppTimeZone,
 } from '../utils/timezone'
 import { NotificationSettings as NotificationSettingsSection } from './NotificationSettings'
+import { SkeletonCardList, SkeletonText } from '../components/Skeleton'
 
 type StoreInfoForm = {
   name: string
@@ -1196,7 +1197,7 @@ export function StoreSettings() {
           </button>
         </div>
 
-        {storeLoading ? <p className="mt-3 text-sm text-ink-600">Đang tải dữ liệu cửa hàng...</p> : null}
+        {storeLoading ? <SkeletonText lines={2} className="mt-3" /> : null}
         {storeError ? <p className="mt-3 text-sm text-coral-500">{storeError}</p> : null}
 
         <form onSubmit={onSubmitStoreInfo} className="mt-6 space-y-5">
@@ -1638,9 +1639,7 @@ export function StoreSettings() {
                     ) : null}
                   </div>
 
-                  {adsFilesLoading ? (
-                    <p className="text-xs text-ink-500">Dang tai danh sach anh quang cao...</p>
-                  ) : null}
+                  {adsFilesLoading && adsFilesSorted.length === 0 ? <SkeletonText lines={2} /> : null}
                   {!adsFilesLoading && adsFilesSorted.length === 0 ? (
                     <p className="text-xs text-ink-500">Chua co anh quang cao tren File Service.</p>
                   ) : null}
@@ -2049,7 +2048,7 @@ export function StoreSettings() {
           </div>
 
           {/* Backup list */}
-          {backupLoading ? <p className="mt-4 text-sm text-ink-600">Đang tải danh sách...</p> : null}
+          {backupLoading && backups.length === 0 ? <SkeletonCardList count={2} lines={2} className="mt-4" /> : null}
           {!backupLoading && backups.length === 0 ? (
             <p className="mt-4 text-sm text-ink-500">Chưa có bản sao lưu nào.</p>
           ) : null}

@@ -11,6 +11,7 @@ import { saleApi } from '../api/saleService'
 import { storeApi } from '../api/storeService'
 import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
+import { SkeletonChart, SkeletonKpi, SkeletonList } from '../components/Skeleton'
 import {
   formatDateShortInAppTimeZone as formatDateShort,
   formatDateTimeInTimeZone,
@@ -335,7 +336,11 @@ export function Dashboard() {
       <section className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
         {showSkeleton || !core ? (
           Array.from({ length: 4 }, (_, index) => (
-            <div key={index} className={`glass-card h-[118px] rounded-3xl ${showSkeleton ? 'animate-pulse' : ''}`} />
+            showSkeleton ? (
+              <SkeletonKpi key={index} />
+            ) : (
+              <div key={index} className="glass-card h-[118px] rounded-3xl" />
+            )
           ))
         ) : (
           <>
@@ -384,7 +389,11 @@ export function Dashboard() {
           />
 
           {!trend.length ? (
-            <div className={`mt-6 h-48 rounded-2xl bg-white/60 ${showSkeleton ? 'animate-pulse' : ''}`} />
+            showSkeleton ? (
+              <SkeletonChart className="mt-6 h-48" />
+            ) : (
+              <div className="mt-6 h-48 rounded-2xl bg-white/60" />
+            )
           ) : (
             <div className="mt-6 flex flex-1 flex-col">
               <div className="relative min-h-48 flex-1">
@@ -440,7 +449,11 @@ export function Dashboard() {
 
           <div className="mt-4 flex-1">
             {!core ? (
-              <div className={`h-40 rounded-2xl bg-white/60 ${showSkeleton ? 'animate-pulse' : ''}`} />
+              showSkeleton ? (
+                <SkeletonList rows={3} leading="dot" />
+              ) : (
+                <div className="h-40 rounded-2xl bg-white/60" />
+              )
             ) : alerts.length ? (
               <ul className="divide-y divide-ink-900/5">
                 {alerts.map((item) => {
@@ -523,7 +536,7 @@ export function Dashboard() {
           ) : null}
 
           {!restockData && !restockError ? (
-            <div className={`mt-4 h-40 rounded-2xl bg-white/60 ${loading ? 'animate-pulse' : ''}`} />
+            <SkeletonList rows={4} leading="none" className="mt-4" />
           ) : null}
 
           {restockData && !restockItems.length ? (
@@ -608,7 +621,11 @@ export function Dashboard() {
           <SectionHeader title="Bán chạy tháng này" subtitle="Theo doanh thu thuần" />
           <div className="mt-4">
             {!core ? (
-              <div className={`h-40 rounded-2xl bg-white/60 ${showSkeleton ? 'animate-pulse' : ''}`} />
+              showSkeleton ? (
+                <SkeletonList rows={5} leading="rank" trailing={false} />
+              ) : (
+                <div className="h-40 rounded-2xl bg-white/60" />
+              )
             ) : !topProducts.length ? (
               <p className="text-sm text-ink-500">Chưa có dữ liệu bán hàng tháng này.</p>
             ) : (

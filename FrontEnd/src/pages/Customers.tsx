@@ -4,6 +4,7 @@ import { ApiError } from '../api/usersService'
 import { useAuth } from '../auth/AuthContext'
 import { readLocalDraft, removeLocalDraft, writeLocalDraft } from '../utils/localDraft'
 import { formatDateInAppTimeZone as formatDate } from '../utils/timezone'
+import { SkeletonCardList, SkeletonStatValue, SkeletonTableRows } from '../components/Skeleton'
 
 type StatusFilter = 'all' | 'active' | 'inactive'
 type ModalMode = 'create' | 'edit'
@@ -240,15 +241,15 @@ export function Customers() {
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <div className="glass-card rounded-3xl p-5">
           <p className="text-xs text-ink-600">Tổng khách hàng</p>
-          <p className="mt-2 text-2xl font-semibold">{summary.total}</p>
+          <p className="mt-2 text-2xl font-semibold">{loading && rows.length === 0 ? <SkeletonStatValue /> : summary.total}</p>
         </div>
         <div className="glass-card rounded-3xl p-5">
           <p className="text-xs text-ink-600">Đang hoạt động (trang này)</p>
-          <p className="mt-2 text-2xl font-semibold text-brand-600">{summary.activeOnPage}</p>
+          <p className="mt-2 text-2xl font-semibold text-brand-600">{loading && rows.length === 0 ? <SkeletonStatValue /> : summary.activeOnPage}</p>
         </div>
         <div className="glass-card rounded-3xl p-5">
           <p className="text-xs text-ink-600">Ngừng hoạt động (trang này)</p>
-          <p className="mt-2 text-2xl font-semibold text-ink-600">{summary.inactiveOnPage}</p>
+          <p className="mt-2 text-2xl font-semibold text-ink-600">{loading && rows.length === 0 ? <SkeletonStatValue /> : summary.inactiveOnPage}</p>
         </div>
       </section>
 
@@ -303,11 +304,7 @@ export function Customers() {
 
       <section className="overflow-hidden rounded-3xl border border-white/60 bg-white/70">
         <div className="space-y-3 p-4 md:hidden">
-          {loading ? (
-            <div className="rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm text-ink-600">
-              ??ang t???i d??? li???u...
-            </div>
-          ) : null}
+          {loading ? <SkeletonCardList count={4} /> : null}
 
           {!loading && rows.length === 0 ? (
             <div className="rounded-2xl border border-ink-900/10 bg-white px-4 py-3 text-sm text-ink-600">
@@ -381,13 +378,7 @@ export function Customers() {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/70">
-              {loading ? (
-                <tr>
-                  <td className="px-6 py-6 text-sm text-ink-600" colSpan={9}>
-                    Đang tải dữ liệu...
-                  </td>
-                </tr>
-              ) : null}
+              {loading ? <SkeletonTableRows rows={6} cols={9} /> : null}
 
               {!loading && rows.length === 0 ? (
                 <tr>

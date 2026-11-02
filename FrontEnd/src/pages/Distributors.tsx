@@ -5,6 +5,7 @@ import { useAuth } from '../auth/AuthContext'
 import { isOwnerOrAdmin } from '../auth/permissions'
 import { readLocalDraft, removeLocalDraft, writeLocalDraft } from '../utils/localDraft'
 
+import { SkeletonCardList, SkeletonStatValue, SkeletonTableRows } from '../components/Skeleton'
 type StatusFilter = 'all' | 'active' | 'inactive'
 type ModalMode = 'create' | 'edit'
 
@@ -442,19 +443,19 @@ export function Distributors() {
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <article className="glass-card rounded-3xl p-5">
           <p className="text-xs uppercase tracking-[0.22em] text-ink-600">{TEXT.total}</p>
-          <p className="mt-2 text-3xl font-semibold text-ink-900">{summary.total}</p>
+          <p className="mt-2 text-3xl font-semibold text-ink-900">{loading && rows.length === 0 ? <SkeletonStatValue className="my-1" /> : summary.total}</p>
         </article>
         <article className="glass-card rounded-3xl p-5">
           <p className="text-xs uppercase tracking-[0.22em] text-ink-600">{TEXT.active}</p>
-          <p className="mt-2 text-3xl font-semibold text-brand-600">{summary.active}</p>
+          <p className="mt-2 text-3xl font-semibold text-brand-600">{loading && rows.length === 0 ? <SkeletonStatValue className="my-1" /> : summary.active}</p>
         </article>
         <article className="glass-card rounded-3xl p-5">
           <p className="text-xs uppercase tracking-[0.22em] text-ink-600">{TEXT.inactive}</p>
-          <p className="mt-2 text-3xl font-semibold text-ink-600">{summary.inactive}</p>
+          <p className="mt-2 text-3xl font-semibold text-ink-600">{loading && rows.length === 0 ? <SkeletonStatValue className="my-1" /> : summary.inactive}</p>
         </article>
         <article className="glass-card rounded-3xl p-5">
           <p className="text-xs uppercase tracking-[0.22em] text-ink-600">{TEXT.debt}</p>
-          <p className="mt-2 text-3xl font-semibold text-coral-500">{formatCurrency(summary.debt)}</p>
+          <p className="mt-2 text-3xl font-semibold text-coral-500">{loading && rows.length === 0 ? <SkeletonStatValue className="my-1" /> : formatCurrency(summary.debt)}</p>
         </article>
       </section>
 
@@ -509,7 +510,7 @@ export function Distributors() {
 
       <section className="overflow-hidden rounded-3xl border border-white/60 bg-white/70">
         <div className="space-y-3 p-3 md:hidden">
-          {loading ? <p className="rounded-2xl bg-white px-4 py-3 text-sm text-ink-600">{TEXT.loading}</p> : null}
+          {loading ? <SkeletonCardList count={4} /> : null}
           {!loading && rows.length === 0 ? (
             <p className="rounded-2xl bg-white px-4 py-3 text-sm text-ink-600">{TEXT.noData}</p>
           ) : null}
@@ -608,11 +609,7 @@ export function Distributors() {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/70">
-              {loading ? (
-                <tr>
-                  <td className="px-6 py-6 text-sm text-ink-600" colSpan={7}>{TEXT.loading}</td>
-                </tr>
-              ) : null}
+              {loading ? <SkeletonTableRows rows={6} cols={7} /> : null}
 
               {!loading && rows.length === 0 ? (
                 <tr>

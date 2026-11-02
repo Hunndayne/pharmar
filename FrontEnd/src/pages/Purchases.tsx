@@ -30,6 +30,7 @@ import {
   readStoredAppTimeZone,
   shiftDateKey,
 } from '../utils/timezone'
+import { SkeletonCardList, SkeletonStatCaption, SkeletonStatValue, SkeletonTableRows } from '../components/Skeleton'
 
 type Unit = {
   id: string
@@ -2888,7 +2889,7 @@ export function Purchases() {
         </div>
       ) : null}
 
-      {loadingOrders ? (
+      {loadingOrders && paged.length > 0 ? (
         <div className="rounded-2xl border border-ink-900/10 bg-white/70 px-4 py-3 text-sm text-ink-600">
           Đang đồng bộ dữ liệu nhập hàng từ API...
         </div>
@@ -2898,8 +2899,12 @@ export function Purchases() {
         {stats.map((item) => (
           <div key={item.label} className="glass-card min-w-0 rounded-2xl p-4 sm:rounded-3xl sm:p-5">
             <p className="text-[10px] uppercase tracking-[0.2em] text-ink-600 sm:text-xs sm:tracking-[0.28em]">{item.label}</p>
-            <p className="mt-2 text-xl font-semibold text-ink-900 sm:mt-3 sm:text-2xl">{item.value}</p>
-            <p className="mt-1 text-[11px] text-ink-600 sm:mt-2 sm:text-xs">{item.note}</p>
+            <p className="mt-2 text-xl font-semibold text-ink-900 sm:mt-3 sm:text-2xl">
+              {loadingOrders && paged.length === 0 ? <SkeletonStatValue className="my-0" /> : item.value}
+            </p>
+            <p className="mt-1 text-[11px] text-ink-600 sm:mt-2 sm:text-xs">
+              {loadingOrders && paged.length === 0 ? <SkeletonStatCaption /> : item.note}
+            </p>
           </div>
         ))}
       </section>
@@ -3044,7 +3049,8 @@ export function Purchases() {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/70">
-              {paged.length === 0 ? (
+              {loadingOrders && paged.length === 0 ? <SkeletonTableRows rows={6} cols={9} /> : null}
+              {paged.length === 0 && !loadingOrders ? (
                 <tr>
                   <td colSpan={9} className="px-6 py-6 text-sm text-ink-600">Không có phiếu nhập phù hợp.</td>
                 </tr>
@@ -3199,7 +3205,8 @@ export function Purchases() {
           </table>
         </div>
         <div className="space-y-3 p-3 md:hidden">
-          {paged.length === 0 ? (
+          {loadingOrders && paged.length === 0 ? <SkeletonCardList count={4} /> : null}
+          {paged.length === 0 && !loadingOrders ? (
             <div className="rounded-2xl border border-ink-900/10 bg-white/80 px-4 py-4 text-sm text-ink-600">
               Không có phiếu nhập phù hợp.
             </div>
