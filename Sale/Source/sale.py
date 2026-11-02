@@ -487,6 +487,31 @@ def proportion_points(points: int, amount_part: Decimal, amount_total: Decimal) 
     return int(value.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
+def restock_quantity(quantity: int, returned_quantity: int | None, conversion_rate: int | None) -> int:
+    """Base units to put back when cancelling an invoice: lines already returned were restocked by the return."""
+    remaining = max(int(quantity or 0) - int(returned_quantity or 0), 0)
+    return remaining * max(int(conversion_rate or 1), 1)
+
+
+def should_compensate_stock(context: dict) -> bool:
+    """Checkout failure must only return stock that inventory_reserve actually deducted."""
+    return bool(context.get("stock_reserved"))
+
+
+def remaining_points_after_returns(
+    points_used: int,
+    points_earned: int,
+    invoice_total: Decimal,
+    returned_amount: Decimal,
+    points_redeem_returned: int,
+) -> tuple[int, int]:
+    """(redeem points to refund, earn points to revoke) on cancel, net of what completed returns already reversed."""
+    redeem_left = max(int(points_used or 0) - int(points_redeem_returned or 0), 0)
+    earn_reversed = proportion_points(int(points_earned or 0), returned_amount, invoice_total)
+    earn_left = max(int(points_earned or 0) - earn_reversed, 0)
+    return redeem_left, earn_left
+
+
 def build_print_datetime(value: datetime) -> str:
     return value.astimezone(timezone.utc).strftime("%d/%m/%Y %H:%M")
 

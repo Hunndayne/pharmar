@@ -880,6 +880,15 @@ def _parse_iso_datetime(value: Any) -> datetime:
     raise ValueError("Invalid datetime value")
 
 
+def _sort_key_datetime(value: Any) -> str:
+    """Chuẩn hóa datetime/date/str/None thành chuỗi ISO so sánh được (bản ghi cũ là str, mới là datetime)."""
+    if value is None:
+        return ""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value)
+
+
 def _to_enum(enum_cls: type[Enum], value: Any, default: Enum) -> Enum:
     if isinstance(value, enum_cls):
         return value
@@ -2196,14 +2205,16 @@ def suggest_issue_plan(
     *,
     enable_fefo: bool,
     fefo_threshold_days: int,
+    pending: dict[str, int] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     day = as_of or date.today()
+    held = pending or {}
     candidates = [
         batch
         for batch in runtime_state.batches.values()
         if batch["drug_id"] == drug["id"]
         and batch_status(batch, day) == BatchStatus.ACTIVE
-        and batch["qty_remaining"] > 0
+        and batch["qty_remaining"] - held.get(batch["id"], 0) > 0
     ]
     candidates.sort(
         key=lambda batch: issue_sort_key(
@@ -2220,7 +2231,8 @@ def suggest_issue_plan(
     for batch in candidates:
         if remaining <= 0:
             break
-        allocated = min(remaining, batch["qty_remaining"])
+        available = batch["qty_remaining"] - held.get(batch["id"], 0)
+        allocated = min(remaining, available)
         if allocated <= 0:
             continue
         allocations.append(
@@ -2233,7 +2245,7 @@ def suggest_issue_plan(
                 "drug_name": drug["name"],
                 "received_date": batch["received_date"],
                 "exp_date": batch["exp_date"],
-                "available": batch["qty_remaining"],
+                "available": available,
                 "allocated": allocated,
                 "strategy": issue_strategy(
                     batch,
@@ -3811,6 +3823,8 @@ async def reserve(payload: ReserveRequest, token: str = Depends(oauth2_scheme)) 
     as_of_day = date.today()
     async with runtime_state.lock:
         reservation_items: list[dict[str, Any]] = []
+        # Số lượng đã giữ bởi các dòng trước trong cùng yêu cầu (chưa trừ vào batch).
+        pending: dict[str, int] = {}
 
         for item in payload.items:
             drug = resolve_drug(drug_code_or_sku=item.sku)
@@ -3820,6 +3834,7 @@ async def reserve(payload: ReserveRequest, token: str = Depends(oauth2_scheme)) 
                 as_of_day,
                 enable_fefo=fefo_enabled,
                 fefo_threshold_days=fefo_threshold_days,
+                pending=pending,
             )
 
             allocations: list[dict[str, Any]]
@@ -3836,14 +3851,15 @@ async def reserve(payload: ReserveRequest, token: str = Depends(oauth2_scheme)) 
                         status_code=409,
                         detail=f"Batch '{item.batch_id}' is not available for reservation",
                     )
-                if batch["qty_remaining"] < item.quantity:
-                    shortage = item.quantity - batch["qty_remaining"]
+                batch_available = batch["qty_remaining"] - pending.get(batch["id"], 0)
+                if batch_available < item.quantity:
+                    shortage = item.quantity - max(batch_available, 0)
                     raise HTTPException(
                         status_code=409,
                         detail={
                             "message": f"Not enough stock in batch '{item.batch_id}' for '{item.sku}'",
                             "requested": item.quantity,
-                            "available": batch["qty_remaining"],
+                            "available": max(batch_available, 0),
                             "shortage": shortage,
                             "batch_id": item.batch_id,
                         },
@@ -3859,7 +3875,7 @@ async def reserve(payload: ReserveRequest, token: str = Depends(oauth2_scheme)) 
                         "drug_name": drug["name"],
                         "received_date": batch["received_date"],
                         "exp_date": batch["exp_date"],
-                        "available": batch["qty_remaining"],
+                        "available": batch_available,
                         "allocated": item.quantity,
                         "strategy": issue_strategy(
                             batch,
@@ -3894,6 +3910,9 @@ async def reserve(payload: ReserveRequest, token: str = Depends(oauth2_scheme)) 
                             "shortage": shortage,
                         },
                     )
+
+            for allocation in allocations:
+                pending[allocation["batch_id"]] = pending.get(allocation["batch_id"], 0) + allocation["allocated"]
 
             reservation_items.append(
                 {
@@ -3955,7 +3974,7 @@ async def create_stock_audit(payload: StockAuditCreateRequest, token: str = Depe
                 "batch_id": batch_id,
                 "batch_code": batch.get("batch_code", ""),
                 "drug_id": batch.get("drug_id", ""),
-                "drug_code": drug.get("drug_code", ""),
+                "drug_code": drug.get("code", ""),
                 "drug_name": drug.get("name", ""),
                 "system_qty": batch.get("qty_remaining", 0),
                 "actual_qty": None,
@@ -3994,7 +4013,7 @@ async def list_stock_audits(
     if status:
         audits = [a for a in audits if a.get("status") == status]
 
-    audits.sort(key=lambda a: a.get("created_at", ""), reverse=True)
+    audits.sort(key=lambda a: _sort_key_datetime(a.get("created_at")), reverse=True)
     total = len(audits)
     start = (page - 1) * size
     page_items = audits[start : start + size]
@@ -4063,13 +4082,15 @@ async def complete_stock_audit(audit_id: str, token: str = Depends(oauth2_scheme
             if batch is None or batch.get("cancelled"):
                 continue
 
-            batch["qty_remaining"] = audit_item["actual_qty"]
+            # Áp chênh lệch lên tồn hiện tại (không ghi đè): hàng bán trong lúc kiểm kê không bị hoàn lại.
+            applied = max(batch["qty_remaining"] + diff, 0) - batch["qty_remaining"]
+            batch["qty_remaining"] += applied
             batch["updated_at"] = utc_now()
             movement = add_movement(
                 MovementType.STOCK_ADJUSTMENT,
                 batch["drug_id"],
                 batch["id"],
-                diff,
+                applied,
                 "stock_audit",
                 audit["id"],
                 actor_id,
@@ -4151,6 +4172,10 @@ async def create_drug_recall(payload: DrugRecallCreateRequest, token: str = Depe
     return {"message": "Drug recall created", "recall": recall}
 
 
+def _recall_date_key(recall: dict[str, Any]) -> str:
+    return (_sort_key_datetime(recall.get("issued_date")) or _sort_key_datetime(recall.get("created_at")))[:10]
+
+
 @router.get("/drug-recalls")
 async def list_drug_recalls(
     date_from: str | None = Query(default=None),
@@ -4164,12 +4189,12 @@ async def list_drug_recalls(
     recalls = list(runtime_state.drug_recalls.values())
 
     if date_from:
-        recalls = [r for r in recalls if (r.get("issued_date") or r.get("created_at", "")[:10]) >= date_from]
+        recalls = [r for r in recalls if _recall_date_key(r) >= date_from]
     if date_to:
-        recalls = [r for r in recalls if (r.get("issued_date") or r.get("created_at", "")[:10]) <= date_to]
+        recalls = [r for r in recalls if _recall_date_key(r) <= date_to]
 
     reverse = sort != "asc"
-    recalls.sort(key=lambda r: (r.get("issued_date") or r.get("created_at", "")[:10]), reverse=reverse)
+    recalls.sort(key=_recall_date_key, reverse=reverse)
     total = len(recalls)
     start = (page - 1) * size
     return {"items": recalls[start : start + size], "total": total, "page": page, "size": size}

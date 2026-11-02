@@ -2,6 +2,24 @@
 
 ---
 
+## V2.0 — 2026-11-03
+
+Đợt 1 sau rà soát toàn diện: sửa các lỗi làm sai tiền và tồn kho. Không đổi schema, không cần migrate dữ liệu; tương thích ngược hoàn toàn. Deploy cần build lại `sale-service`, `customer-service`, `inventory-service` và `frontend`.
+
+### Sửa lỗi
+- **Thanh toán thất bại không còn tạo tồn ảo.** Sale chỉ gọi hoàn kho khi Inventory đã thực sự trừ kho (reserve thành công). Trước đây mọi lần checkout bị từ chối (thiếu hàng, lô hết hạn, lỗi mạng) đều cộng thêm hàng vào kho.
+- **Điểm đã dùng được hoàn lại khi hủy hóa đơn, trả hàng hoặc checkout lỗi.** Mã tham chiếu gửi sang Customer dài 21 ký tự vượt giới hạn 20 nên bị từ chối âm thầm; đã rút ngắn (`inv_create_failed`, `inv_cancel_redeem`, `inv_return_redeem`). Checkout lỗi chỉ hoàn số điểm thực sự đã trừ, không hoàn điểm chưa dùng.
+- **Trả hàng không còn cộng nhầm điểm.** Sale gửi chiều rollback tường minh (`mode: reverse_earn | reverse_redeem`) thay vì để Customer đoán theo từ khóa; Customer vẫn chấp nhận thiếu `mode` để tương thích. Với `mode` tường minh, số điểm vượt mức còn hoàn được sẽ bị kẹp lại thay vì từ chối.
+- **Hủy hóa đơn đã trả một phần** chỉ nhập kho phần chưa trả (`quantity − returned_quantity`) và chỉ hoàn/thu hồi phần điểm còn lại.
+- **Reserve nhiều dòng cùng một lô** không còn làm tồn lô âm: kiểm tra cộng dồn trong cùng yêu cầu, áp dụng cho cả chọn lô tay và FEFO.
+- **Hoàn tất kiểm kê** áp chênh lệch (thực tế − hệ thống lúc tạo phiếu) lên tồn hiện tại thay vì ghi đè, nên hàng bán trong lúc kiểm kê không bị hoàn lại. Movement ghi đúng số đã áp.
+- **Sổ thu hồi và danh sách kiểm kê** không còn lỗi 500 sau khi restart do sort trộn kiểu ngày; bộ lọc ngày của sổ thu hồi cũng được sửa.
+- **Phiếu kiểm kê** hiện đúng mã thuốc (trước đây luôn trống).
+- **Dashboard hôm nay** không trừ hóa đơn hủy hai lần; thống kê theo thu ngân dùng phiếu trả thật thay vì tính hóa đơn hủy là trả hàng.
+
+### Cải thiện
+- Thêm test: Sale 10, Customer 19 (bộ test mới), Inventory 12. Chạy bằng `docker run python:3.11-slim` mount thư mục service (xem CHANGELOG V1.17 về môi trường Python).
+
 ## V1.18 — 2026-11-01
 
 ### Tính năng mới

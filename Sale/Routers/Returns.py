@@ -212,6 +212,7 @@ async def approve_return(
                         "customer_id": str(invoice.customer_id),
                         "points": rollback_earned,
                         "reference_type": "invoice_return_earn",
+                        "mode": "reverse_earn",
                         "reference_id": str(invoice.id),
                         "reference_code": invoice.code,
                         "note": "Return goods rollback earn points",
@@ -228,7 +229,8 @@ async def approve_return(
                     {
                         "customer_id": str(invoice.customer_id),
                         "points": rollback_redeem,
-                        "reference_type": "invoice_return_redeem",
+                        "reference_type": "inv_return_redeem",
+                        "mode": "reverse_redeem",
                         "reference_id": str(invoice.id),
                         "reference_code": invoice.code,
                         "note": "Return goods rollback redeem points",

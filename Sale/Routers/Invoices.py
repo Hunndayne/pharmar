@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from Source.core.config import get_settings
-from Source.db.models import Invoice, InvoiceItem, InvoicePayment, ReturnItem, SCHEMA_NAME, Shift
+from Source.db.models import Invoice, InvoiceItem, InvoicePayment, Return, ReturnItem, SCHEMA_NAME, Shift
 from Source.dependencies import (
     ROLE_MANAGER,
     ROLE_OWNER,
@@ -44,8 +44,11 @@ from Source.sale import (
     paginate_scalars,
     proportion_points,
     quantize_money,
+    remaining_points_after_returns,
+    restock_quantity,
     safe_decimal,
     safe_uuid,
+    should_compensate_stock,
     customer_internal_post,
 )
 from Source.schemas.sale import (
@@ -144,6 +147,7 @@ async def _prepare_invoice_creation(
     current_user: TokenUser,
     token: str,
     db: AsyncSession,
+    context: dict[str, Any],
 ) -> tuple[Invoice, list[InvoiceItem], list[InvoicePayment], dict[str, Any]]:
     # Shift open/close feature is temporarily disabled.
     open_shift: Shift | None = None
@@ -155,6 +159,8 @@ async def _prepare_invoice_creation(
         prefix=settings.INVOICE_PREFIX,
     )
     invoice_id = uuid4()
+    context["invoice_id"] = invoice_id
+    context["invoice_code"] = invoice_code
 
     reserve_items: list[dict[str, Any]] = []
     for item in payload.items:
@@ -167,6 +173,7 @@ async def _prepare_invoice_creation(
             reserve_item["batch_id"] = item.batch_id
         reserve_items.append(reserve_item)
     await inventory_reserve(invoice_code, reserve_items, token)
+    context["stock_reserved"] = True
 
     customer_snapshot: dict[str, Any] | None = None
     tier_discount_percent = Decimal("0.00")
@@ -285,6 +292,7 @@ async def _prepare_invoice_creation(
             if points_discount > points_discount_base_amount:
                 points_discount = points_discount_base_amount
             points_used_applied = int(redeem_result.get("points_used", payload.points_used) or 0)
+            context["points_used_applied"] = points_used_applied
 
     total_discount = _normalize_decimal(line_discount_total + tier_discount + promotion_discount + points_discount)
     total_amount = _normalize_decimal(subtotal - total_discount)
@@ -405,14 +413,14 @@ async def _prepare_invoice_creation(
         note=payload.note,
     )
 
-    context = {
-        "invoice_id": invoice_id,
-        "invoice_code": invoice_code,
-        "promotion_validated": promotion_validated,
-        "promotion_order_amount": promotion_base_amount,
-        "points_used_applied": points_used_applied,
-        "points_earned": points_earned,
-    }
+    context.update(
+        {
+            "promotion_validated": promotion_validated,
+            "promotion_order_amount": promotion_base_amount,
+            "points_used_applied": points_used_applied,
+            "points_earned": points_earned,
+        }
+    )
 
     return invoice, invoice_items, invoice_payments, context
 
@@ -429,7 +437,7 @@ async def process_checkout(
     context: dict[str, Any] = {}
 
     try:
-        invoice, invoice_items, invoice_payments, context = await _prepare_invoice_creation(payload, current_user, token, db)
+        invoice, invoice_items, invoice_payments, context = await _prepare_invoice_creation(payload, current_user, token, db, context)
         db.add(invoice)
         db.add_all(invoice_items)
         db.add_all(invoice_payments)
@@ -437,26 +445,28 @@ async def process_checkout(
         await db.commit()
     except Exception:
         await db.rollback()
-        for item in payload.items:
-            conversion_rate = max(int(item.conversion_rate or 1), 1)
-            try:
-                await inventory_return_stock(item.batch_id, item.quantity * conversion_rate, token)
-            except Exception:
-                pass
-        points_to_rollback = int(context.get("points_used_applied", payload.points_used if payload.points_used > 0 else 0) or 0)
+        if should_compensate_stock(context):
+            for item in payload.items:
+                conversion_rate = max(int(item.conversion_rate or 1), 1)
+                try:
+                    await inventory_return_stock(item.batch_id, item.quantity * conversion_rate, token)
+                except Exception:
+                    pass
+        points_to_rollback = int(context.get("points_used_applied", 0) or 0)
         if payload.customer_id and points_to_rollback > 0:
+            rollback_payload: dict[str, Any] = {
+                "customer_id": str(payload.customer_id),
+                "points": points_to_rollback,
+                "reference_type": "inv_create_failed",
+                "mode": "reverse_redeem",
+                "note": "Rollback redeem points because invoice creation failed",
+            }
+            if context.get("invoice_id") is not None:
+                rollback_payload["reference_id"] = str(context["invoice_id"])
+            if context.get("invoice_code"):
+                rollback_payload["reference_code"] = context["invoice_code"]
             try:
-                await customer_internal_post(
-                    "points/rollback",
-                    {
-                        "customer_id": str(payload.customer_id),
-                        "points": points_to_rollback,
-                        "reference_type": "invoice_create_failed",
-                        "reference_id": str(context.get("invoice_id")),
-                        "reference_code": context.get("invoice_code"),
-                        "note": "Rollback redeem points because invoice creation failed",
-                    },
-                )
+                await customer_internal_post("points/rollback", rollback_payload)
             except Exception:
                 pass
         raise
@@ -885,41 +895,61 @@ async def cancel_invoice(
     }
 
     for item in invoice.items:
-        conversion_rate = max(int(item.conversion_rate or 1), 1)
-        ok = await inventory_return_stock(item.batch_id, item.quantity * conversion_rate, token)
+        restock_units = restock_quantity(item.quantity, item.returned_quantity, item.conversion_rate)
+        if restock_units <= 0:
+            continue
+        ok = await inventory_return_stock(item.batch_id, restock_units, token)
         rollback["stock_returned"] = rollback["stock_returned"] and ok
 
-    if invoice.customer_id and invoice.points_used > 0:
+    returns_total, points_already_returned = (
+        await db.execute(
+            select(
+                func.coalesce(func.sum(Return.total_return_amount), 0),
+                func.coalesce(func.sum(Return.points_returned), 0),
+            ).where(Return.invoice_id == invoice.id, Return.status == "completed")
+        )
+    ).one()
+    redeem_to_refund, earn_to_revoke = remaining_points_after_returns(
+        invoice.points_used,
+        invoice.points_earned,
+        invoice.total_amount,
+        safe_decimal(returns_total),
+        int(points_already_returned or 0),
+    )
+
+    if invoice.customer_id and redeem_to_refund > 0:
         try:
             result = await customer_internal_post(
                 "points/rollback",
                 {
                     "customer_id": str(invoice.customer_id),
-                    "points": int(invoice.points_used),
-                    "reference_type": "invoice_cancel_redeem",
+                    "points": redeem_to_refund,
+                    "reference_type": "inv_cancel_redeem",
+                    "mode": "reverse_redeem",
                     "reference_id": str(invoice.id),
                     "reference_code": invoice.code,
                     "note": "Cancel invoice rollback redeem",
                 },
             )
-            rollback["points_refunded"] = int(result.get("points_rolled_back", invoice.points_used) or 0)
+            rollback["points_refunded"] = int(result.get("points_rolled_back", redeem_to_refund) or 0)
         except Exception:
             rollback["points_refunded"] = 0
 
-    if invoice.customer_id and invoice.points_earned > 0:
+    if invoice.customer_id and earn_to_revoke > 0:
         try:
             result = await customer_internal_post(
                 "points/rollback",
                 {
                     "customer_id": str(invoice.customer_id),
-                    "points": int(invoice.points_earned),
+                    "points": earn_to_revoke,
                     "reference_type": "invoice_cancel_earn",
+                    "mode": "reverse_earn",
                     "reference_id": str(invoice.id),
                     "reference_code": invoice.code,
                     "note": "Cancel invoice rollback earn",
                 },
             )
-            rollback["points_earned_revoked"] = int(result.get("points_rolled_back", invoice.points_earned) or 0)
+            rollback["points_earned_revoked"] = int(result.get("points_rolled_back", earn_to_revoke) or 0)
         except Exception:
             rollback["points_earned_revoked"] = 0
 
