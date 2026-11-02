@@ -364,6 +364,7 @@ export function StoreSettings() {
   const [bkAutoInterval, setBkAutoInterval] = useState('24')
   const [bkMaxFiles, setBkMaxFiles] = useState('10')
   const [bkInternalTokenTtlMinutes, setBkInternalTokenTtlMinutes] = useState('30')
+  const [bkHeartbeatUrl, setBkHeartbeatUrl] = useState('')
   const [bkSettingsSaving, setBkSettingsSaving] = useState(false)
   const [adsFiles, setAdsFiles] = useState<FileRecord[]>([])
   const [adsFilesLoading, setAdsFilesLoading] = useState(false)
@@ -474,6 +475,7 @@ export function StoreSettings() {
       setBkInternalTokenTtlMinutes(
         asNumberString(bs['backup.internal_service_token_expire_minutes'], 30),
       )
+      setBkHeartbeatUrl(asString(bs['backup.heartbeat_url'], ''))
     } catch {
       // silent
     }
@@ -677,6 +679,7 @@ export function StoreSettings() {
           1,
           Math.trunc(Number(bkInternalTokenTtlMinutes) || 30),
         ),
+        'backup.heartbeat_url': bkHeartbeatUrl.trim(),
       })
       setBackupMessage('Đã lưu cấu hình sao lưu.')
     } catch (err) {
@@ -2151,6 +2154,23 @@ export function StoreSettings() {
             <p className="mt-1 text-xs text-ink-500">
               {`Đẩy bản sao lưu mới lên R2, R2 sẽ giữ tối đa ${Math.max(1, Math.trunc(Number(bkMaxFiles) || 10))} bản theo cấu hình. Vẫn có thể kéo bản sao lưu mới nhất từ R2 về danh sách local.`}
             </p>
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-ink-900" htmlFor="backup-heartbeat-url">
+                URL heartbeat (healthchecks.io)
+              </label>
+              <input
+                id="backup-heartbeat-url"
+                type="url"
+                value={bkHeartbeatUrl}
+                onChange={(e) => setBkHeartbeatUrl(e.target.value)}
+                placeholder="https://hc-ping.com/..."
+                className="mt-1 w-full rounded-2xl border border-ink-900/10 bg-white px-4 py-2"
+              />
+              <p className="mt-1 text-xs text-ink-500">
+                Hệ thống gọi URL này sau mỗi lần sao lưu tự động thành công. Nếu quá hạn không có tín hiệu,
+                healthchecks.io sẽ báo cho bạn (sao lưu lỗi hoặc server ngừng hoạt động). Để trống để tắt.
+              </p>
+            </div>
             <div className="mt-4 flex flex-wrap gap-2">
               <button
                 type="button"

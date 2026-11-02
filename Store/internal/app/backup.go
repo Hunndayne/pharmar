@@ -1020,12 +1020,13 @@ func (s *Service) checkAndRunAutoBackup(ctx context.Context, lastBackup *time.Ti
 		_, statErr := os.Stat(filepath.Join(s.cfg.BackupDir, filepath.Base(pending.Filename)))
 		if statErr == nil && time.Since(pending.CreatedAt) < interval {
 			if err := s.syncBackupToR2WithRetention(ctx, *pending); err != nil {
-				log.Printf("BACKUP_FAILED: retry sync of %s to R2 failed: %v", pending.Filename, err)
+				s.onBackupFailure(ctx, fmt.Sprintf("retry sync of %s to R2 failed", pending.Filename), err)
 				return
 			}
 			log.Printf("auto-backup: retried sync of %s to R2 succeeded", pending.Filename)
 			s.pendingR2Sync = nil
 			*lastBackup = time.Now()
+			s.onBackupSuccess(ctx)
 			return
 		}
 		s.pendingR2Sync = nil
@@ -1038,7 +1039,7 @@ func (s *Service) checkAndRunAutoBackup(ctx context.Context, lastBackup *time.Ti
 	log.Printf("auto-backup: creating scheduled backup")
 	record, err := s.CreateBackup(ctx, "Sao luu tu dong", "system")
 	if err != nil {
-		log.Printf("BACKUP_FAILED: create scheduled backup: %v", err)
+		s.onBackupFailure(ctx, "create scheduled backup", err)
 		return
 	}
 
@@ -1047,13 +1048,14 @@ func (s *Service) checkAndRunAutoBackup(ctx context.Context, lastBackup *time.Ti
 		if err := s.syncBackupToR2WithRetention(ctx, record); err != nil {
 			// Keep lastBackup unchanged so the next tick retries instead of waiting a full interval.
 			s.pendingR2Sync = &record
-			log.Printf("BACKUP_FAILED: sync of %s to R2 failed, will retry on next tick: %v", record.Filename, err)
+			s.onBackupFailure(ctx, fmt.Sprintf("sync of %s to R2 failed, will retry on next tick", record.Filename), err)
 			return
 		}
 		log.Printf("auto-backup: synced backup to R2 with retention")
 	}
 	*lastBackup = time.Now()
 	log.Printf("auto-backup: completed successfully")
+	s.onBackupSuccess(ctx)
 }
 
 // splitByDatabase parses a combined backup SQL into per-database sections.

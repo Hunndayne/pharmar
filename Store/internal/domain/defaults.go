@@ -371,6 +371,14 @@ func DefaultSettings() map[string]DefaultSetting {
 			IsPublic:    false,
 		},
 		{
+			Key:         "backup.heartbeat_url",
+			Value:       "",
+			GroupName:   "backup",
+			DataType:    "string",
+			Description: "URL heartbeat (healthchecks.io) goi GET sau moi lan sao luu thanh cong",
+			IsPublic:    false,
+		},
+		{
 			Key:         "system.timezone",
 			Value:       "Asia/Ho_Chi_Minh",
 			GroupName:   "system",

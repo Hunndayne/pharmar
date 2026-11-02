@@ -11,22 +11,24 @@ import (
 )
 
 type Config struct {
-	AppName             string
-	AppEnv              string
-	AppPort             int
-	DatabaseURL         string
-	RedisURL            string
-	FileServiceURL      string
-	InventoryServiceURL string
-	CatalogServiceURL   string
-	InternalTokenTTL    time.Duration
-	SettingsCacheTTL    time.Duration
-	JWTSecretKey        string
-	JWTAlgorithm        string
-	LogoUploadDir       string
-	BackupDir           string
-	DefaultStoreName    string
-	CORSAllowedOrigins  []string
+	AppName                    string
+	AppEnv                     string
+	AppPort                    int
+	DatabaseURL                string
+	RedisURL                   string
+	FileServiceURL             string
+	InventoryServiceURL        string
+	CatalogServiceURL          string
+	NotificationServiceURL     string
+	NotificationInternalAPIKey string
+	InternalTokenTTL           time.Duration
+	SettingsCacheTTL           time.Duration
+	JWTSecretKey               string
+	JWTAlgorithm               string
+	LogoUploadDir              string
+	BackupDir                  string
+	DefaultStoreName           string
+	CORSAllowedOrigins         []string
 }
 
 var weakSecrets = map[string]bool{
@@ -82,22 +84,24 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		AppName:             getEnv("APP_NAME", "Store Service"),
-		AppEnv:              getEnv("APP_ENV", "development"),
-		AppPort:             appPort,
-		DatabaseURL:         getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/pharmar_store?sslmode=disable"),
-		RedisURL:            getEnv("REDIS_URL", "redis://localhost:6379/0"),
-		FileServiceURL:      strings.TrimRight(getEnv("FILE_SERVICE_URL", "http://file-service:8009"), "/"),
-		InventoryServiceURL: strings.TrimRight(getEnv("INVENTORY_SERVICE_URL", "http://inventory-service:8002"), "/"),
-		CatalogServiceURL:   strings.TrimRight(getEnv("CATALOG_SERVICE_URL", "http://catalog-service:8006"), "/"),
-		InternalTokenTTL:    time.Duration(internalTokenTTLMinutes) * time.Minute,
-		SettingsCacheTTL:    time.Duration(settingsCacheTTLSeconds) * time.Second,
-		JWTSecretKey:        getEnv("JWT_SECRET_KEY", "change-this-secret"),
-		JWTAlgorithm:        getEnv("JWT_ALGORITHM", "HS256"),
-		LogoUploadDir:       getEnv("LOGO_UPLOAD_DIR", "./uploads"),
-		BackupDir:           getEnv("BACKUP_DIR", "./backups"),
-		DefaultStoreName:    getEnv("DEFAULT_STORE_NAME", "Nha thuoc Pharmar"),
-		CORSAllowedOrigins:  corsOrigins,
+		AppName:                    getEnv("APP_NAME", "Store Service"),
+		AppEnv:                     getEnv("APP_ENV", "development"),
+		AppPort:                    appPort,
+		DatabaseURL:                getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/pharmar_store?sslmode=disable"),
+		RedisURL:                   getEnv("REDIS_URL", "redis://localhost:6379/0"),
+		FileServiceURL:             strings.TrimRight(getEnv("FILE_SERVICE_URL", "http://file-service:8009"), "/"),
+		InventoryServiceURL:        strings.TrimRight(getEnv("INVENTORY_SERVICE_URL", "http://inventory-service:8002"), "/"),
+		CatalogServiceURL:          strings.TrimRight(getEnv("CATALOG_SERVICE_URL", "http://catalog-service:8006"), "/"),
+		NotificationServiceURL:     strings.TrimRight(getEnv("NOTIFICATION_SERVICE_URL", "http://notification-service:8010"), "/"),
+		NotificationInternalAPIKey: strings.TrimSpace(getEnv("NOTIFICATION_INTERNAL_API_KEY", "")),
+		InternalTokenTTL:           time.Duration(internalTokenTTLMinutes) * time.Minute,
+		SettingsCacheTTL:           time.Duration(settingsCacheTTLSeconds) * time.Second,
+		JWTSecretKey:               getEnv("JWT_SECRET_KEY", "change-this-secret"),
+		JWTAlgorithm:               getEnv("JWT_ALGORITHM", "HS256"),
+		LogoUploadDir:              getEnv("LOGO_UPLOAD_DIR", "./uploads"),
+		BackupDir:                  getEnv("BACKUP_DIR", "./backups"),
+		DefaultStoreName:           getEnv("DEFAULT_STORE_NAME", "Nha thuoc Pharmar"),
+		CORSAllowedOrigins:         corsOrigins,
 	}
 
 	if strings.TrimSpace(cfg.DatabaseURL) == "" {

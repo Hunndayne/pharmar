@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -44,6 +45,14 @@ type Service struct {
 
 	// pendingR2Sync is the last auto-backup whose R2 upload failed; only the backup job goroutine touches it.
 	pendingR2Sync *domain.BackupRecord
+
+	// backupFailStreak counts consecutive failed auto-backup runs; only the backup job goroutine touches it.
+	backupFailStreak int
+	// backupNotifyConfigWarned makes the "notification not configured" log appear once.
+	backupNotifyConfigWarned bool
+	// alertClient and heartbeatURLFn can be replaced in tests; nil means defaults.
+	alertClient    *http.Client
+	heartbeatURLFn func(ctx context.Context) string
 }
 
 func New(ctx context.Context, cfg config.Config) (*Service, error) {
