@@ -46,6 +46,15 @@
 - `deploy.sh`: giữ `FrontEnd/nginx.conf` của server, pg_dumpall trước khi đổi, build + up các service chỉ định, chờ healthy, so số thuốc/lô/tồn trước–sau, prune image.
 - Test mới: Sale 21, Customer 19, Inventory 14, Gateway 4, Go (File/Store).
 
+### Bổ sung V2.0 (đợt 2, 2026-11-03) — các việc hoãn từ audit
+Vẫn là V2.0 (không đổi `CURRENT_VERSION`, không có popup mới). Deploy cần build lại: `sale-service`, `inventory-service`, `notification-service`, `report-service`, `catalog-service`, `customer-service`, `users-service`, `api-gateway`, `store-service`, `file-service`, `payment-qr-service`, `ai-service`, `frontend`. **Lưu ý múi giờ:** ngay sau deploy, mã hóa đơn chuyển từ ngày UTC sang ngày Việt Nam; nếu deploy sau 17:00 UTC (00:00 VN) thì mã `HDyyyymmdd` của hôm đó nhảy sang ngày hôm sau và bắt đầu lại từ 001 (không trùng mã, chỉ nhìn lạ).
+
+- **Múi giờ cửa hàng (Asia/Ho_Chi_Minh) thay cho UTC của container.** Không đặt `TZ` toàn cục, DB vẫn lưu UTC. Sale: mã hóa đơn/phiếu trả/ca lấy ngày theo múi giờ cửa hàng (đọc `system.timezone` từ Store, cache 5 phút, lỗi thì dùng mặc định); giờ in hóa đơn hiện giờ Việt Nam. Inventory: trạng thái lô hết hạn, tồn bán được, FEFO, reserve, cảnh báo và sổ xuất-nhập-tồn tính theo ngày Việt Nam (`store_today()`, `local_date()`; env `STORE_TIMEZONE`). Notification: email gợi ý nhập hàng 07:00 theo giờ Việt Nam (trước đây 07:00 UTC = 14:00 VN).
+- **Auth cho endpoint còn hở:** Inventory `GET /batches`, `/batches/paged`, `/batches/{id}`, `/batches/qr/{qr}`, `/batches/suggest-issue` bắt buộc JWT; Report `/summary`, `/events` xác thực chữ ký HS256 + hạn token (trước chỉ kiểm tra header có mặt). Frontend (POS chọn lô, Nhập hàng hydrate mã lô) và Catalog (kiểm tra tồn khi xóa sản phẩm, tự ký JWT nội bộ) đã truyền token trước khi siết.
+- **Nâng dependency có CVE:** fastapi 0.109.0 → 0.115.14 (starlette ≥0.40), python-multipart 0.0.6 → 0.0.20, python-jose 3.3.0 → 3.5.0, jinja2 3.1.3 → 3.1.6 (Notification); Go `golang-jwt/jwt/v5` 5.2.1 → 5.3.1 (Store, File, AI); image build `golang:1.22-alpine` → `golang:1.23-alpine` (Store, File, Payment QR). Pydantic/SQLAlchemy/asyncpg giữ nguyên.
+- **Cảnh báo sao lưu lỗi / server ngừng:** setting `backup.heartbeat_url` (Cài đặt → Sao lưu; rỗng = tắt) được GET sau mỗi lần sao lưu tự động thành công (dead-man's switch kiểu healthchecks.io, timeout 10 s, lỗi chỉ log). Sao lưu thất bại 2 lần liên tiếp → thông báo hệ thống + email cho owner qua Notification Service (nhắc lại mỗi ~6 giờ nếu còn lỗi). `store-service` nhận `NOTIFICATION_SERVICE_URL`, `NOTIFICATION_INTERNAL_API_KEY` (mặc định = `CUSTOMER_INTERNAL_API_KEY`). Hướng dẫn healthchecks.io + UptimeRobot trong `docker.md`.
+- Test mới: Sale 11, Inventory 27, Notification 4 (thư mục `tests/` mới), Report 15 (thư mục `tests/` mới), Catalog 1, Go Store 4.
+
 ## V1.18 — 2026-11-01
 
 ### Tính năng mới

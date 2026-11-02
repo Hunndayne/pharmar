@@ -569,7 +569,7 @@ export const inventoryApi = {
     exp_from?: string
     exp_to?: string
     hide_zero?: boolean
-  }) => requestInventoryJson<InventoryBatch[]>('/inventory/batches', { method: 'GET' }, undefined, params),
+  }, token?: string) => requestInventoryJson<InventoryBatch[]>('/inventory/batches', { method: 'GET' }, token, params),
 
   listBatchesPaged: (params?: {
     page?: number
@@ -581,16 +581,16 @@ export const inventoryApi = {
     exp_from?: string
     exp_to?: string
     hide_zero?: boolean
-  }) =>
+  }, token?: string) =>
     requestInventoryJson<InventoryBatchPagedResponse>(
       '/inventory/batches/paged',
       { method: 'GET' },
-      undefined,
+      token,
       params,
     ),
 
-  getBatchDetail: (batchId: string) =>
-    requestInventoryJson<InventoryBatchDetail>(`/inventory/batches/${batchId}`, { method: 'GET' }),
+  getBatchDetail: (batchId: string, token?: string) =>
+    requestInventoryJson<InventoryBatchDetail>(`/inventory/batches/${batchId}`, { method: 'GET' }, token),
 
   getBatchByQr: (qrValue: string, token?: string) =>
     requestInventoryJson<InventoryBatchDetail>(

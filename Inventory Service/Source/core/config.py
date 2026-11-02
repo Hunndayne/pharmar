@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     CATALOG_SYNC_TIMEOUT_SECONDS: float = 8.0
     STORE_SETTINGS_TIMEOUT_SECONDS: float = 3.0
     STORE_SETTINGS_TTL_SECONDS: int = 30
+    STORE_TIMEZONE: str = "Asia/Ho_Chi_Minh"
     STATE_FILE_PATH: str = "/data/runtime_state.json"
     STATE_PERSISTENCE: str = "postgres"
     # Chỉ có nghĩa khi STATE_PERSISTENCE=postgres. "blob" = công tắc rollback tức thì: quay về

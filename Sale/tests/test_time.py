@@ -31,19 +31,25 @@ def test_future_time_clamps_negative_to_one_minute_minimum():
 
 def test_build_print_datetime_converts_utc_input():
     value = datetime(2024, 6, 15, 23, 45, tzinfo=timezone.utc)
-    assert sale.build_print_datetime(value) == "15/06/2024 23:45"
+    # 23:45 UTC is 06:45 next day in Vietnam (UTC+7).
+    assert sale.build_print_datetime(value) == "16/06/2024 06:45"
 
 
-def test_build_print_datetime_converts_non_utc_input_to_utc():
+def test_build_print_datetime_keeps_vietnam_input():
     # 2024-01-01 10:30 in Asia/Ho_Chi_Minh (UTC+7) -> 2024-01-01 03:30 UTC.
     value = datetime(2024, 1, 1, 10, 30, tzinfo=ICT)
-    assert sale.build_print_datetime(value) == "01/01/2024 03:30"
+    assert sale.build_print_datetime(value) == "01/01/2024 10:30"
 
 
 def test_build_print_datetime_crosses_date_boundary():
-    # Early morning ICT rolls back to the previous UTC day.
-    value = datetime(2024, 1, 2, 2, 0, tzinfo=ICT)
-    assert sale.build_print_datetime(value) == "01/01/2024 19:00"
+    # 17:30 UTC on Jan 1 is already Jan 2, 00:30 in Vietnam.
+    value = datetime(2024, 1, 1, 17, 30, tzinfo=timezone.utc)
+    assert sale.build_print_datetime(value) == "02/01/2024 00:30"
+
+
+def test_build_print_datetime_honours_explicit_timezone():
+    value = datetime(2024, 1, 1, 10, 30, tzinfo=ICT)
+    assert sale.build_print_datetime(value, timezone.utc) == "01/01/2024 03:30"
 
 
 def test_build_utc_range_both_none():

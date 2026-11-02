@@ -7,6 +7,7 @@ from datetime import date, datetime, time, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 from urllib.parse import parse_qs, unquote, urlparse
 
 import asyncpg
@@ -192,6 +193,20 @@ async def fetch_inventory_settings(force: bool = False) -> dict[str, Any]:
         except (httpx.HTTPError, ValueError):
             pass
 
+        # Best-effort: store timezone from the "system" settings group (failures are ignored).
+        try:
+            timeout = httpx.Timeout(settings.STORE_SETTINGS_TIMEOUT_SECONDS)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(f"{base_url.rstrip('/')}/api/v1/store/settings/group/system")
+            if response.status_code < 400:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    zone = _resolve_zone(payload.get("system.timezone"))
+                    if zone is not None:
+                        runtime_state.store_timezone = zone
+        except Exception:
+            pass
+
     normalized = normalize_inventory_settings(merged)
     runtime_state.inventory_settings = {
         "data": normalized,
@@ -202,6 +217,38 @@ async def fetch_inventory_settings(force: bool = False) -> dict[str, Any]:
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+_FALLBACK_STORE_TIMEZONE_NAME = "Asia/Ho_Chi_Minh"
+
+
+def _resolve_zone(name: Any) -> ZoneInfo | None:
+    raw = str(name or "").strip()
+    if not raw:
+        return None
+    try:
+        return ZoneInfo(raw)
+    except Exception:
+        return None
+
+
+DEFAULT_STORE_TIMEZONE: ZoneInfo = _resolve_zone(settings.STORE_TIMEZONE) or ZoneInfo(_FALLBACK_STORE_TIMEZONE_NAME)
+
+
+def store_timezone() -> ZoneInfo:
+    return getattr(runtime_state, "store_timezone", None) or DEFAULT_STORE_TIMEZONE
+
+
+def store_today() -> date:
+    """Current calendar date in the store timezone (containers run in UTC)."""
+    return utc_now().astimezone(store_timezone()).date()
+
+
+def local_date(value: datetime) -> date:
+    """Calendar date of a timestamp in the store timezone; naive values are assumed UTC."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(store_timezone()).date()
 
 
 def as_utc_datetime(day: date, hour: int = 9, minute: int = 0) -> datetime:
@@ -1682,7 +1729,7 @@ def get_receipt_or_404(receipt_id: str) -> dict[str, Any]:
 
 
 def batch_status(batch: dict[str, Any], as_of: date | None = None) -> BatchStatus:
-    day = as_of or date.today()
+    day = as_of or store_today()
     if batch["cancelled"]:
         return BatchStatus.CANCELLED
     if batch["qty_remaining"] <= 0:
@@ -1731,7 +1778,7 @@ def add_movement(
 
 def stock_total_for_drug(drug_id: str, as_of: date | None = None) -> int:
     # Chỉ tính tồn có thể bán: lô hết hạn / đã đánh dấu hết hạn không được cộng vào.
-    day = as_of or date.today()
+    day = as_of or store_today()
     return sum(
         batch["qty_remaining"]
         for batch in runtime_state.batches.values()
@@ -1747,7 +1794,7 @@ def stock_status_for_drug(
     expiry_warning_days: int = 30,
     near_date_days: int = 90,
 ) -> str:
-    day = as_of or date.today()
+    day = as_of or store_today()
     drug = runtime_state.drugs[drug_id]
     batches = [
         batch
@@ -1796,7 +1843,7 @@ def movement_to_view(movement: dict[str, Any]) -> dict[str, Any]:
 
 
 def batch_to_view(batch: dict[str, Any], as_of: date | None = None) -> dict[str, Any]:
-    day = as_of or date.today()
+    day = as_of or store_today()
     drug = runtime_state.drugs.get(batch["drug_id"])
     supplier = runtime_state.suppliers.get(batch["supplier_id"])
     supplier_name = supplier["name"] if supplier else batch.get("supplier_name", "")
@@ -2209,7 +2256,7 @@ def suggest_issue_plan(
     fefo_threshold_days: int,
     pending: dict[str, int] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    day = as_of or date.today()
+    day = as_of or store_today()
     held = pending or {}
     candidates = [
         batch
@@ -2649,7 +2696,7 @@ async def get_stock(token: str | None = Depends(optional_oauth2_scheme)) -> dict
 async def get_stock_summary(token: str | None = Depends(optional_oauth2_scheme)) -> list[dict[str, Any]]:
     await maybe_sync_catalog_drugs(token)
     inventory_settings = await fetch_inventory_settings()
-    day = date.today()
+    day = store_today()
     low_stock_threshold = _to_non_negative_int(inventory_settings.get("inventory.low_stock_threshold"), 10)
     expiry_warning_days = _to_non_negative_int(inventory_settings.get("inventory.expiry_warning_days"), 30)
     near_date_days = _to_non_negative_int(inventory_settings.get("inventory.near_date_days"), 90)
@@ -2699,7 +2746,7 @@ async def list_stock_drugs_paged(
 ) -> dict[str, Any]:
     await maybe_sync_catalog_drugs(token)
     inventory_settings = await fetch_inventory_settings()
-    day = date.today()
+    day = store_today()
     low_stock_threshold = _to_non_negative_int(inventory_settings.get("inventory.low_stock_threshold"), 10)
     expiry_warning_days = _to_non_negative_int(inventory_settings.get("inventory.expiry_warning_days"), 30)
     near_date_days = _to_non_negative_int(inventory_settings.get("inventory.near_date_days"), 90)
@@ -2765,7 +2812,7 @@ async def get_stock_detail(drug_id: str, token: str | None = Depends(optional_oa
     await maybe_sync_catalog_drugs(token)
     inventory_settings = await fetch_inventory_settings()
     drug = resolve_drug(drug_id=drug_id)
-    day = date.today()
+    day = store_today()
     low_stock_threshold = _to_non_negative_int(inventory_settings.get("inventory.low_stock_threshold"), 10)
     expiry_warning_days = _to_non_negative_int(inventory_settings.get("inventory.expiry_warning_days"), 30)
     near_date_days = _to_non_negative_int(inventory_settings.get("inventory.near_date_days"), 90)
@@ -3453,8 +3500,10 @@ async def list_batches(
     exp_from: date | None = Query(default=None),
     exp_to: date | None = Query(default=None),
     hide_zero: bool = Query(default=False),
+    token: str = Depends(oauth2_scheme),
 ) -> list[dict[str, Any]]:
-    day = date.today()
+    get_current_subject(token)
+    day = store_today()
     records = filter_batches(
         list(runtime_state.batches.values()),
         day=day,
@@ -3480,8 +3529,10 @@ async def list_batches_paged(
     exp_from: date | None = Query(default=None),
     exp_to: date | None = Query(default=None),
     hide_zero: bool = Query(default=False),
+    token: str = Depends(oauth2_scheme),
 ) -> dict[str, Any]:
-    day = date.today()
+    get_current_subject(token)
+    day = store_today()
     base_records = filter_batches(
         list(runtime_state.batches.values()),
         day=day,
@@ -3519,7 +3570,8 @@ async def list_batches_paged(
 
 
 @router.get("/batches/qr/{qr_value}")
-async def get_batch_by_qr(qr_value: str) -> dict[str, Any]:
+async def get_batch_by_qr(qr_value: str, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+    get_current_subject(token)
     batch = find_batch_by_qr(qr_value)
     if batch is None:
         raise HTTPException(status_code=404, detail=f"Batch not found for QR '{qr_value}'")
@@ -3537,11 +3589,13 @@ async def suggest_batches_for_issue(
     drug_id: str | None = Query(default=None),
     drug_code: str | None = Query(default=None),
     as_of: date | None = Query(default=None),
+    token: str = Depends(oauth2_scheme),
 ) -> dict[str, Any]:
+    get_current_subject(token)
     if not drug_id and not drug_code:
         raise HTTPException(status_code=400, detail="Provide drug_id or drug_code")
     drug = resolve_drug(drug_id=drug_id, drug_code_or_sku=drug_code)
-    day = as_of or date.today()
+    day = as_of or store_today()
     inventory_settings = await fetch_inventory_settings()
     fefo_enabled = _to_bool(inventory_settings.get("inventory.enable_fefo"), True)
     fefo_threshold_days = _to_positive_int(
@@ -3572,7 +3626,8 @@ async def suggest_batches_for_issue(
 
 
 @router.get("/batches/{batch_id}")
-async def get_batch_detail(batch_id: str) -> dict[str, Any]:
+async def get_batch_detail(batch_id: str, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+    get_current_subject(token)
     batch = get_batch_or_404(batch_id)
     history = [
         movement_to_view(m)
@@ -3586,7 +3641,7 @@ async def update_batch_status(batch_id: str, payload: BatchStatusUpdateRequest, 
     async with runtime_state.lock:
         batch = get_batch_or_404(batch_id)
         now = utc_now()
-        today = date.today()
+        today = store_today()
 
         if payload.status == BatchStatus.CANCELLED:
             if batch["cancelled"]:
@@ -3709,8 +3764,8 @@ async def movement_report(
         drug_record = runtime_state.drugs[drug_id]
         movements = [m for m in runtime_state.movements if m["drug_id"] == drug_id]
 
-        opening_stock = sum(m["quantity_delta"] for m in movements if m["occurred_at"].date() < date_from)
-        in_period = [m for m in movements if date_from <= m["occurred_at"].date() <= date_to]
+        opening_stock = sum(m["quantity_delta"] for m in movements if local_date(m["occurred_at"]) < date_from)
+        in_period = [m for m in movements if date_from <= local_date(m["occurred_at"]) <= date_to]
 
         imported_qty = sum(m["quantity_delta"] for m in in_period if m["event_type"] == MovementType.IMPORT_RECEIPT and m["quantity_delta"] > 0)
         exported_qty = sum(-m["quantity_delta"] for m in in_period if m["event_type"] == MovementType.SALE_RESERVE and m["quantity_delta"] < 0)
@@ -3741,7 +3796,7 @@ async def inventory_alerts(
     as_of: date | None = Query(default=None),
 ) -> dict[str, Any]:
     inventory_settings = await fetch_inventory_settings()
-    day = as_of or date.today()
+    day = as_of or store_today()
     configured_low_stock_threshold = _to_non_negative_int(
         inventory_settings.get("inventory.low_stock_threshold"),
         10,
@@ -3822,7 +3877,7 @@ async def reserve(payload: ReserveRequest, token: str = Depends(oauth2_scheme)) 
         inventory_settings.get("inventory.fefo_threshold_days"),
         default=settings.FEFO_THRESHOLD_DAYS,
     )
-    as_of_day = date.today()
+    as_of_day = store_today()
     async with runtime_state.lock:
         reservation_items: list[dict[str, Any]] = []
         # Số lượng đã giữ bởi các dòng trước trong cùng yêu cầu (chưa trừ vào batch).
