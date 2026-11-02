@@ -736,6 +736,46 @@ def _create_internal_service_token() -> str:
     return f"{encoded_header}.{encoded_payload}.{_base64url_encode(signature)}"
 
 
+def _base64url_decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _verify_access_token(authorization: str | None) -> dict[str, Any]:
+    """Xác thực JWT HS256 (chữ ký, exp, type) cho các route Report tự phục vụ dữ liệu từ Redis."""
+    invalid = HTTPException(status_code=401, detail="Invalid token", headers={"WWW-Authenticate": "Bearer"})
+    scheme, _, token = (authorization or "").strip().partition(" ")
+    if scheme.lower() != "bearer":
+        raise invalid
+    parts = token.strip().split(".")
+    if len(parts) != 3:
+        raise invalid
+    try:
+        header = json.loads(_base64url_decode(parts[0]))
+        payload = json.loads(_base64url_decode(parts[1]))
+        signature = _base64url_decode(parts[2])
+    except (ValueError, TypeError):
+        raise invalid from None
+    if not isinstance(header, dict) or not isinstance(payload, dict):
+        raise invalid
+    if header.get("alg") != "HS256" or settings.JWT_ALGORITHM.strip().upper() != "HS256":
+        raise invalid
+
+    expected = hmac.new(
+        settings.JWT_SECRET_KEY.encode("utf-8"),
+        f"{parts[0]}.{parts[1]}".encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    if not hmac.compare_digest(signature, expected):
+        raise invalid
+
+    exp = payload.get("exp")
+    if isinstance(exp, bool) or not isinstance(exp, int) or exp <= int(datetime.now(timezone.utc).timestamp()):
+        raise invalid
+    if payload.get("type") not in {None, "access"}:
+        raise invalid
+    return payload
+
+
 def _internal_authorization_header() -> str:
     return f"Bearer {_create_internal_service_token()}"
 
@@ -2249,7 +2289,8 @@ async def health() -> dict[str, str]:
 
 
 @app.get("/api/v1/report/summary")
-async def summary() -> dict[str, float | int]:
+async def summary(authorization: str | None = Header(default=None)) -> dict[str, float | int]:
+    _verify_access_token(authorization)
     saved = await app.state.redis.hgetall(_SUMMARY_KEY)
     return {
         "total_sales": int(saved.get("total_sales", 0)),
@@ -2260,7 +2301,8 @@ async def summary() -> dict[str, float | int]:
 
 
 @app.get("/api/v1/report/events")
-async def events() -> list[dict[str, object]]:
+async def events(authorization: str | None = Header(default=None)) -> list[dict[str, object]]:
+    _verify_access_token(authorization)
     raw_events = await app.state.redis.lrange(_EVENTS_KEY, 0, _MAX_EVENTS - 1)
     return [json.loads(event) for event in raw_events]
 

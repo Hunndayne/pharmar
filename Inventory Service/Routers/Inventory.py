@@ -3500,7 +3500,9 @@ async def list_batches(
     exp_from: date | None = Query(default=None),
     exp_to: date | None = Query(default=None),
     hide_zero: bool = Query(default=False),
+    token: str = Depends(oauth2_scheme),
 ) -> list[dict[str, Any]]:
+    get_current_subject(token)
     day = store_today()
     records = filter_batches(
         list(runtime_state.batches.values()),
@@ -3527,7 +3529,9 @@ async def list_batches_paged(
     exp_from: date | None = Query(default=None),
     exp_to: date | None = Query(default=None),
     hide_zero: bool = Query(default=False),
+    token: str = Depends(oauth2_scheme),
 ) -> dict[str, Any]:
+    get_current_subject(token)
     day = store_today()
     base_records = filter_batches(
         list(runtime_state.batches.values()),
@@ -3566,7 +3570,8 @@ async def list_batches_paged(
 
 
 @router.get("/batches/qr/{qr_value}")
-async def get_batch_by_qr(qr_value: str) -> dict[str, Any]:
+async def get_batch_by_qr(qr_value: str, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+    get_current_subject(token)
     batch = find_batch_by_qr(qr_value)
     if batch is None:
         raise HTTPException(status_code=404, detail=f"Batch not found for QR '{qr_value}'")
@@ -3584,7 +3589,9 @@ async def suggest_batches_for_issue(
     drug_id: str | None = Query(default=None),
     drug_code: str | None = Query(default=None),
     as_of: date | None = Query(default=None),
+    token: str = Depends(oauth2_scheme),
 ) -> dict[str, Any]:
+    get_current_subject(token)
     if not drug_id and not drug_code:
         raise HTTPException(status_code=400, detail="Provide drug_id or drug_code")
     drug = resolve_drug(drug_id=drug_id, drug_code_or_sku=drug_code)
@@ -3619,7 +3626,8 @@ async def suggest_batches_for_issue(
 
 
 @router.get("/batches/{batch_id}")
-async def get_batch_detail(batch_id: str) -> dict[str, Any]:
+async def get_batch_detail(batch_id: str, token: str = Depends(oauth2_scheme)) -> dict[str, Any]:
+    get_current_subject(token)
     batch = get_batch_or_404(batch_id)
     history = [
         movement_to_view(m)

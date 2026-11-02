@@ -2027,7 +2027,7 @@ export function Purchases() {
           if (existingBatchCode || !line.batchId) return line
 
           try {
-            const detail = await inventoryApi.getBatchDetail(line.batchId)
+            const detail = await inventoryApi.getBatchDetail(line.batchId, accessToken || undefined)
             const hydratedBatchCode = normalizeBatchCode(detail.batch.batch_code)
             if (!hydratedBatchCode) return line
             return {
@@ -2070,7 +2070,7 @@ export function Purchases() {
 
       return hasHydratedChanges ? { ...order, lines: nextLines } : order
     },
-    [isLockedReceiptEdit],
+    [isLockedReceiptEdit, accessToken],
   )
 
   const saveOrder = async () => {

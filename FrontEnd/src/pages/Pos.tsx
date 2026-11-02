@@ -1772,7 +1772,7 @@ export function Pos() {
         const relatedBatches = await inventoryApi.listBatches({
           search: params.drugCode,
           status: 'active',
-        })
+        }, token?.access_token)
 
         const activeCandidates = relatedBatches.filter((batch) => {
           if (batch.qty_remaining <= 0) return false
@@ -1807,7 +1807,7 @@ export function Pos() {
         return null
       }
     },
-    [sellByLot, fefoEnabled, fefoThresholdDays],
+    [sellByLot, fefoEnabled, fefoThresholdDays, token?.access_token],
   )
 
   const applyItemPolicyCheck = useCallback(
@@ -2111,7 +2111,7 @@ export function Pos() {
                 )
               }
 
-              const byBarcodeDetail = await inventoryApi.getBatchDetail(suggestedBatch.batch_id)
+              const byBarcodeDetail = await inventoryApi.getBatchDetail(suggestedBatch.batch_id, token?.access_token)
               await buildItemFromBatch(
                 byBarcodeDetail,
                 activeOrder.id,
@@ -2355,7 +2355,7 @@ export function Pos() {
         )
       }
 
-      const batchDetail = await inventoryApi.getBatchDetail(suggestedBatch.batch_id)
+      const batchDetail = await inventoryApi.getBatchDetail(suggestedBatch.batch_id, token?.access_token)
       await buildItemFromBatch(batchDetail, orderId, quantity, drug, unit)
       return 'batch'
     },

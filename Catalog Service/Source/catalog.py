@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 import json
 import logging
@@ -7,6 +8,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import HTTPException, status
+from jose import jwt
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -487,6 +489,21 @@ def _is_inventory_drug_not_found(response: httpx.Response) -> bool:
     return isinstance(detail, str) and detail.startswith("Drug not found")
 
 
+def create_internal_service_token() -> str:
+    """JWT ngắn hạn để Catalog gọi Inventory (các route /batches* yêu cầu đăng nhập)."""
+    now = datetime.now(timezone.utc)
+    claims = {
+        "sub": "catalog-service",
+        "username": "catalog-service",
+        "role": "owner",
+        "type": "access",
+        "iat": int(now.timestamp()),
+        "nbf": int(now.timestamp()),
+        "exp": int((now + timedelta(minutes=5)).timestamp()),
+    }
+    return jwt.encode(claims, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+
 async def fetch_inventory_batches_for_product(product_id: UUID) -> list[dict[str, Any]]:
     """Mọi lô của sản phẩm bên Inventory; [] khi Inventory chưa từng biết thuốc này.
 
@@ -499,9 +516,10 @@ async def fetch_inventory_batches_for_product(product_id: UUID) -> list[dict[str
         raise _inventory_unverifiable(product_id, "INVENTORY_SERVICE_URL chưa cấu hình")
 
     target_url = f"{base_url.rstrip('/')}/api/v1/inventory/batches"
+    headers = {"Authorization": f"Bearer {create_internal_service_token()}"}
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
-            response = await client.get(target_url, params={"drug": str(product_id)})
+            response = await client.get(target_url, params={"drug": str(product_id)}, headers=headers)
     except httpx.HTTPError as exc:
         raise _inventory_unverifiable(product_id, f"lỗi kết nối {exc.__class__.__name__}") from exc
 

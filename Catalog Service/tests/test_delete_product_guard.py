@@ -10,6 +10,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi import HTTPException
+from jose import jwt
 
 from Routers import Products
 from Source import catalog
@@ -62,6 +63,21 @@ def _delete(env):
 def _assert_untouched(env):
     assert env.db.deleted == [] and env.db.commits == 0
     assert env.product.is_active is True
+
+
+def test_inventory_request_carries_internal_service_token(env, monkeypatch):
+    monkeypatch.setattr(catalog.settings, "JWT_SECRET_KEY", "test-secret-key-0123456789abcdef")
+    _delete(env)
+    header = env.requests[0].headers["authorization"]
+    assert header.startswith("Bearer ")
+    claims = jwt.decode(
+        header.removeprefix("Bearer "),
+        catalog.settings.JWT_SECRET_KEY,
+        algorithms=[catalog.settings.JWT_ALGORITHM],
+    )
+    assert claims["sub"] == "catalog-service"
+    assert claims["role"] == "owner"
+    assert claims["type"] == "access"
 
 
 def test_refuses_when_inventory_has_stock(env):
